@@ -52,17 +52,16 @@ func New(rt *runtime.Runtime, sessions *auth.Store) *API {
 func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	// 无需鉴权：容器健康检查、首次初始化引导与登录。
+	// 无需鉴权：容器健康检查、登录前的界面自举信息与登录本身。
 	mux.HandleFunc("GET "+BasePath+"/health", a.handleHealth)
-	mux.HandleFunc("GET "+BasePath+"/setup/state", a.handleSetupState)
-	mux.HandleFunc("POST "+BasePath+"/setup", a.handleSetup)
+	mux.HandleFunc("GET "+BasePath+"/bootstrap", a.handleBootstrap)
 	mux.HandleFunc("POST "+BasePath+"/login", a.handleLogin)
 	mux.HandleFunc("POST "+BasePath+"/logout", a.handleLogout)
 
 	mux.HandleFunc("GET "+BasePath+"/status", a.protected(a.handleStatus))
 	mux.HandleFunc("GET "+BasePath+"/config", a.protected(a.handleGetConfig))
 	mux.HandleFunc("PUT "+BasePath+"/settings", a.protected(a.handlePutSettings))
-	mux.HandleFunc("POST "+BasePath+"/password", a.protected(a.handleChangePassword))
+	mux.HandleFunc("POST "+BasePath+"/account", a.protected(a.handleUpdateAccount))
 
 	mux.HandleFunc("GET "+BasePath+"/upstreams", a.protected(a.handleUpstreams))
 	mux.HandleFunc("POST "+BasePath+"/upstreams", a.protected(a.handleCreateUpstream))
@@ -86,14 +85,6 @@ func (a *API) Handler() http.Handler {
 // protected 要求请求带上有效的会话令牌，或者配置里的应急令牌。
 func (a *API) protected(next http.HandlerFunc) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		if !a.rt.Config().Auth.IsConfigured() {
-			// 实例还没初始化，引导前端去设置向导而不是反复弹登录框。
-			writeJSON(writer, http.StatusForbidden, map[string]any{
-				"error": "实例尚未初始化，请先设置管理口令",
-				"code":  "setup_required",
-			})
-			return
-		}
 		if !a.authorized(request) {
 			writer.Header().Set("WWW-Authenticate", "Bearer realm=aetherlink")
 			writeJSON(writer, http.StatusUnauthorized, map[string]any{
@@ -136,71 +127,45 @@ func (a *API) handleHealth(writer http.ResponseWriter, request *http.Request) {
 	writeJSON(writer, http.StatusOK, map[string]any{"status": "ok", "version": Version})
 }
 
-// handleSetupState 让前端知道该显示设置向导还是登录页。
-func (a *API) handleSetupState(writer http.ResponseWriter, request *http.Request) {
+// handleBootstrap 给登录页提供最少的自举信息：版本号、是否仍是默认凭据。
+// 不需要鉴权，因此绝不能在这里泄露上游地址、密钥或配置文件路径。
+func (a *API) handleBootstrap(writer http.ResponseWriter, request *http.Request) {
 	cfg := a.rt.Config()
-	writeJSON(writer, http.StatusOK, map[string]any{
-		"configured":        cfg.Auth.IsConfigured(),
-		"upstreamCount":     len(cfg.Upstreams),
-		"version":           Version,
-		"minPasswordLength": auth.MinPasswordLength,
-		"configPath":        a.rt.ConfigPath(),
-	})
+	payload := map[string]any{
+		"version":            Version,
+		"defaultCredentials": cfg.Auth.DefaultCredentials,
+		"minPasswordLength":  auth.MinPasswordLength,
+	}
+	if cfg.Auth.DefaultCredentials {
+		// 仅在还没改过账号时回显内置凭据，用来预填登录框。
+		// 改过之后就不再提，免得给暴力破解者多一条线索。
+		payload["defaultUsername"] = auth.DefaultUsername
+		payload["defaultPassword"] = auth.DefaultPassword
+	}
+	writeJSON(writer, http.StatusOK, payload)
 }
 
-type passwordPayload struct {
-	Password        string `json:"password"`
+type loginPayload struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type accountPayload struct {
 	CurrentPassword string `json:"currentPassword"`
+	Username        string `json:"username"`
 	NewPassword     string `json:"newPassword"`
 }
 
-// handleSetup 设置首个管理口令。仅在未初始化时可用，避免被用来重置口令。
-func (a *API) handleSetup(writer http.ResponseWriter, request *http.Request) {
-	var payload passwordPayload
-	if !decodeJSON(writer, request, &payload) {
-		return
-	}
-	if a.rt.Config().Auth.IsConfigured() {
-		writeError(writer, http.StatusConflict, "实例已初始化，请使用登录接口")
-		return
-	}
-	derived, err := auth.Derive(payload.Password)
-	if err != nil {
-		writeError(writer, http.StatusBadRequest, err.Error())
-		return
-	}
-	err = a.rt.Apply(func(draft *config.Config) error {
-		if draft.Auth.IsConfigured() {
-			return errors.New("实例已初始化")
-		}
-		draft.Auth = derived
-		return nil
-	})
-	if err != nil {
-		writeError(writer, http.StatusInternalServerError, err.Error())
-		return
-	}
-	logx.Infof("[adminapi] 管理口令已设置，实例初始化完成")
-	a.issueSession(writer)
-}
-
 func (a *API) handleLogin(writer http.ResponseWriter, request *http.Request) {
-	var payload passwordPayload
+	var payload loginPayload
 	if !decodeJSON(writer, request, &payload) {
 		return
 	}
 	cfg := a.rt.Config()
-	if !cfg.Auth.IsConfigured() {
-		writeJSON(writer, http.StatusForbidden, map[string]any{
-			"error": "实例尚未初始化，请先设置管理口令",
-			"code":  "setup_required",
-		})
-		return
-	}
-	if err := auth.Verify(cfg.Auth, payload.Password); err != nil {
-		// 统一返回 401 且不区分原因，避免暴露口令是否存在等细节。
+	if err := auth.VerifyLogin(cfg.Auth, payload.Username, payload.Password); err != nil {
+		// 统一返回 401 且不区分原因，避免暴露用户名是否存在这类细节。
 		logx.Warnf("[adminapi] 登录失败：%v", err)
-		writeError(writer, http.StatusUnauthorized, "口令不正确")
+		writeError(writer, http.StatusUnauthorized, "账号或密码不正确")
 		return
 	}
 	a.issueSession(writer)
@@ -220,18 +185,30 @@ func (a *API) handleLogout(writer http.ResponseWriter, request *http.Request) {
 	writeJSON(writer, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleChangePassword 改口令后注销所有会话，包括调用方自己。
-func (a *API) handleChangePassword(writer http.ResponseWriter, request *http.Request) {
-	var payload passwordPayload
+// handleUpdateAccount 修改用户名与/或密码。改完注销所有会话，包括调用方自己。
+// 只想改用户名时把新密码留空即可，但当前密码始终要验，避免会话被盗后直接改账号。
+func (a *API) handleUpdateAccount(writer http.ResponseWriter, request *http.Request) {
+	var payload accountPayload
 	if !decodeJSON(writer, request, &payload) {
 		return
 	}
 	cfg := a.rt.Config()
 	if err := auth.Verify(cfg.Auth, payload.CurrentPassword); err != nil {
-		writeError(writer, http.StatusUnauthorized, "当前口令不正确")
+		writeError(writer, http.StatusUnauthorized, "当前密码不正确")
 		return
 	}
-	derived, err := auth.Derive(payload.NewPassword)
+
+	username := auth.NormalizeUsername(payload.Username)
+	if username == "" {
+		username = cfg.Auth.Username
+	}
+	password := payload.NewPassword
+	if strings.TrimSpace(password) == "" {
+		// 只改用户名：沿用当前密码需要重新派生，因为盐与哈希是绑在一起的。
+		password = payload.CurrentPassword
+	}
+
+	derived, err := auth.Derive(username, password)
 	if err != nil {
 		writeError(writer, http.StatusBadRequest, err.Error())
 		return
@@ -244,7 +221,7 @@ func (a *API) handleChangePassword(writer http.ResponseWriter, request *http.Req
 		return
 	}
 	a.sessions.RevokeAll()
-	logx.Infof("[adminapi] 管理口令已更新，所有会话已注销")
+	logx.Infof("[adminapi] 管理账号已更新为 %s，所有会话已注销", username)
 	writeJSON(writer, http.StatusOK, map[string]any{"ok": true, "reloginRequired": true})
 }
 
@@ -260,6 +237,8 @@ type statusResponse struct {
 	UpstreamCount   int       `json:"upstreamCount"`
 	EnabledCount    int       `json:"enabledUpstreamCount"`
 	Sessions        int       `json:"sessions"`
+	Username        string    `json:"username"`
+	DefaultCreds    bool      `json:"defaultCredentials"`
 	ConfigPath      string    `json:"configPath"`
 	RestartRequired bool      `json:"restartRequired"`
 	BootListen      string    `json:"bootListen"`
@@ -285,6 +264,8 @@ func (a *API) handleStatus(writer http.ResponseWriter, request *http.Request) {
 		UpstreamCount:   len(cfg.Upstreams),
 		EnabledCount:    enabled,
 		Sessions:        a.sessions.Count(),
+		Username:        cfg.Auth.Username,
+		DefaultCreds:    cfg.Auth.DefaultCredentials,
 		ConfigPath:      a.rt.ConfigPath(),
 		RestartRequired: a.rt.RestartRequired(),
 		BootListen:      a.rt.BootListen(),
@@ -342,6 +323,11 @@ func (a *API) handleGetConfig(writer http.ResponseWriter, request *http.Request)
 			"configPath":        a.rt.ConfigPath(),
 			"restartRequired":   a.rt.RestartRequired(),
 			"breakGlassEnabled": strings.TrimSpace(cfg.Server.AdminToken) != "",
+		},
+		"account": map[string]any{
+			"username":           cfg.Auth.Username,
+			"defaultCredentials": cfg.Auth.DefaultCredentials,
+			"minPasswordLength":  auth.MinPasswordLength,
 		},
 		"settings":  settingsFromConfig(cfg),
 		"upstreams": a.describeUpstreams(cfg.Upstreams),

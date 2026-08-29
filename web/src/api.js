@@ -41,7 +41,7 @@ async function request(path, options = {}) {
     const message = payload?.error || `${response.status} ${response.statusText}`
     const error = new Error(message)
     error.status = response.status
-    // code 让界面区分「需要初始化」和「需要登录」两种失败。
+    // code 让界面区分不同的失败原因（目前只有 unauthorized）。
     error.code = payload?.code || ''
     throw error
   }
@@ -51,12 +51,11 @@ async function request(path, options = {}) {
 const jsonBody = (payload) => ({ body: JSON.stringify(payload ?? {}) })
 
 export const api = {
-  setupState: () => request('/setup/state'),
-  setup: (password) => request('/setup', { method: 'POST', ...jsonBody({ password }) }),
-  login: (password) => request('/login', { method: 'POST', ...jsonBody({ password }) }),
+  bootstrap: () => request('/bootstrap'),
+  login: (username, password) => request('/login', { method: 'POST', ...jsonBody({ username, password }) }),
   logout: () => request('/logout', { method: 'POST', ...jsonBody({}) }),
-  changePassword: (currentPassword, newPassword) =>
-    request('/password', { method: 'POST', ...jsonBody({ currentPassword, newPassword }) }),
+  updateAccount: (currentPassword, username, newPassword) =>
+    request('/account', { method: 'POST', ...jsonBody({ currentPassword, username, newPassword }) }),
 
   status: () => request('/status'),
   config: () => request('/config'),

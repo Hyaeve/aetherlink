@@ -150,6 +150,48 @@ func TestServeHTTPWithoutUpstreamsIs404(t *testing.T) {
 	}
 }
 
+// RootUpstreamMounted 决定裸访问 / 是跳管理界面还是交给上游，因此要覆盖三态：
+// 没有上游、上游挂在子路径、上游挂在根路径。
+func TestRootUpstreamMounted(t *testing.T) {
+	rt, _ := newRuntime(t)
+	if rt.RootUpstreamMounted() {
+		t.Fatal("a fresh runtime has no upstream on /")
+	}
+
+	if err := rt.Apply(func(draft *config.Config) error {
+		up := absUpstream("abs", "http://127.0.0.1:13378")
+		up.Prefix = "/read"
+		draft.Upstreams = []config.Upstream{up}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if rt.RootUpstreamMounted() {
+		t.Fatal("an upstream mounted on /read must not claim /")
+	}
+
+	if err := rt.Apply(func(draft *config.Config) error {
+		draft.Upstreams = []config.Upstream{absUpstream("abs", "http://127.0.0.1:13378")}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !rt.RootUpstreamMounted() {
+		t.Fatal("an upstream with the default prefix owns /")
+	}
+
+	// 停用的上游不再服务，根路径应当归还给管理界面。
+	if err := rt.Apply(func(draft *config.Config) error {
+		draft.Upstreams[0].Enabled = config.Bool(false)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if rt.RootUpstreamMounted() {
+		t.Fatal("a disabled upstream must not keep claiming /")
+	}
+}
+
 func TestDisabledUpstreamIsNotMounted(t *testing.T) {
 	rt, _ := newRuntime(t)
 	if err := rt.Apply(func(draft *config.Config) error {

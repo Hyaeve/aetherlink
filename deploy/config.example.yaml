@@ -1,8 +1,8 @@
 # AetherLink 以太链接 配置示例
 #
 # 正常情况下你不需要手写这个文件：容器首次启动会在 /config/config.yaml
-# 自动生成一份默认配置，之后管理口令、上游地址与 API 密钥、302 策略都在
-# 网页（http://宿主机:15151/aetherlink/）上填写，并由 AetherLink 写回本文件。
+# 自动生成一份默认配置（含内置账号 admin / password），之后管理账号、上游地址与
+# API 密钥、302 策略都在网页（http://宿主机:15151）上填写，并由 AetherLink 写回本文件。
 #
 # 这里列出全部字段，只为说明磁盘上会存些什么、以及排障时可以手工改什么。
 # 手工改完需要重启容器才会读取。
@@ -13,13 +13,20 @@ server:
   listen: ":5151"
   log_level: info
   log_buffer: 500
-  # 应急令牌：可绕过口令登录，仅在忘记口令时通过环境变量
+  # 应急令牌：可绕过账号登录，仅在忘记密码时通过环境变量
   # AETHERLINK_ADMIN_TOKEN 临时注入，平时应保持缺省（不写这一行）。
   # admin_token: ""
 
-# 管理口令的校验材料，由网页上的「初始化」或「修改口令」写入。
-# 只保存 PBKDF2-SHA256 的派生值与随机盐，明文口令不落盘。
-# 忘记口令时删掉整个 auth 段并重启容器，即可重新走一次初始化向导。
+# 管理账号的校验材料。首次启动会写入内置账号 admin / password，之后由网页
+# 「设置 → 管理账号」覆盖。只保存 PBKDF2-SHA256 的派生值与随机盐，明文密码不落盘。
+# 忘记密码时删掉整个 auth 段并重启容器，即可恢复成内置账号。
+# 写入后的样子：
+# auth:
+#   username: admin
+#   algorithm: pbkdf2-sha256
+#   iterations: 210000
+#   salt: "<base64>"
+#   password_hash: "<base64>"
 auth: {}
 
 redirect:

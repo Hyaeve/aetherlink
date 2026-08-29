@@ -45,13 +45,13 @@ const tabs = [
   }
 ]
 
-// gate 决定首屏：loading / setup（首次设置口令）/ login / app。
+// gate 决定首屏：loading / login / app。没有初始化向导——首次启动就带内置账号。
 const gate = ref('loading')
 const activeTab = ref('upstreams')
-const setupState = ref(null)
+const boot = ref(null)
 
+const username = ref('')
 const password = ref('')
-const passwordAgain = ref('')
 const authBusy = ref(false)
 const authError = ref('')
 
@@ -59,24 +59,18 @@ const status = ref(null)
 const statusError = ref('')
 let statusTimer = null
 
-const minLength = computed(() => setupState.value?.minPasswordLength ?? 8)
 const activeLabel = computed(() => tabs.find((tab) => tab.id === activeTab.value)?.label || '')
 
 async function bootstrap() {
   try {
-    setupState.value = await api.setupState()
+    boot.value = await api.bootstrap()
   } catch (error) {
-    // 连 /setup/state 都拿不到，说明后端还没起来或被别的东西挡住了。
+    // 连 /bootstrap 都拿不到，说明后端还没起来或被别的东西挡住了。
     authError.value = error.message
-    gate.value = 'login'
-    return
-  }
-  if (!setupState.value.configured) {
-    gate.value = 'setup'
-    return
   }
   if (!getToken()) {
     gate.value = 'login'
+    prefillDefaults()
     return
   }
   // 有旧令牌就先试一次，能用就直接进主界面。
@@ -86,6 +80,15 @@ async function bootstrap() {
   } catch {
     setToken('')
     gate.value = 'login'
+    prefillDefaults()
+  }
+}
+
+// 仍是内置账号时把输入框填好，第一次进来点一下登录就行。
+function prefillDefaults() {
+  if (boot.value?.defaultCredentials) {
+    username.value = boot.value.defaultUsername || 'admin'
+    password.value = boot.value.defaultPassword || 'password'
   }
 }
 
@@ -93,7 +96,6 @@ function enterApp() {
   gate.value = 'app'
   authError.value = ''
   password.value = ''
-  passwordAgain.value = ''
   if (statusTimer) clearInterval(statusTimer)
   statusTimer = setInterval(refreshStatus, 15000)
 }
@@ -104,36 +106,11 @@ async function refreshStatus() {
     statusError.value = ''
   } catch (error) {
     statusError.value = error.message
-    if (error.status === 401 || error.code === 'setup_required') {
+    if (error.status === 401) {
       setToken('')
       status.value = null
-      gate.value = error.code === 'setup_required' ? 'setup' : 'login'
+      gate.value = 'login'
     }
-  }
-}
-
-async function submitSetup() {
-  authError.value = ''
-  if (password.value.length < minLength.value) {
-    authError.value = `管理口令至少需要 ${minLength.value} 个字符`
-    return
-  }
-  if (password.value !== passwordAgain.value) {
-    authError.value = '两次输入的口令不一致'
-    return
-  }
-  authBusy.value = true
-  try {
-    const result = await api.setup(password.value)
-    setToken(result.token)
-    setupState.value = await api.setupState()
-    status.value = await api.status()
-    activeTab.value = 'upstreams'
-    enterApp()
-  } catch (error) {
-    authError.value = error.message
-  } finally {
-    authBusy.value = false
   }
 }
 
@@ -141,17 +118,13 @@ async function submitLogin() {
   authError.value = ''
   authBusy.value = true
   try {
-    const result = await api.login(password.value)
+    const result = await api.login(username.value, password.value)
     setToken(result.token)
     status.value = await api.status()
     enterApp()
   } catch (error) {
     setToken('')
-    if (error.code === 'setup_required') {
-      gate.value = 'setup'
-      return
-    }
-    authError.value = error.status === 401 ? '口令不正确' : error.message
+    authError.value = error.status === 401 ? '账号或密码不正确' : error.message
   } finally {
     authBusy.value = false
   }
@@ -169,14 +142,19 @@ async function logout() {
   gate.value = 'login'
 }
 
-function onPasswordChanged() {
+async function onAccountChanged() {
   setToken('')
   status.value = null
   if (statusTimer) clearInterval(statusTimer)
-  authError.value = '口令已更新，请用新口令重新登录'
+  try {
+    boot.value = await api.bootstrap()
+  } catch {
+    // 拿不到也不影响登录页显示。
+  }
+  password.value = ''
+  authError.value = '账号已更新，请重新登录'
   gate.value = 'login'
 }
-
 const uptime = computed(() => {
   const seconds = status.value?.uptimeSeconds || 0
   const hours = Math.floor(seconds / 3600)
@@ -197,52 +175,24 @@ onUnmounted(() => statusTimer && clearInterval(statusTimer))
     </div>
   </div>
 
-  <div v-else-if="gate === 'setup'" class="gate">
-    <div class="panel">
-      <div class="logo">AL</div>
-      <h2>初始化 AetherLink</h2>
-      <p class="muted">
-        这是首次启动。设置一个管理口令，之后 Audiobookshelf / Emby 的地址与 API
-        密钥都在本页面里添加，不需要写进 docker compose。
-      </p>
-      <label class="field">
-        <span>管理口令（至少 {{ minLength }} 位）</span>
-        <input v-model="password" type="password" autocomplete="new-password" />
-      </label>
-      <label class="field">
-        <span>再输入一次</span>
-        <input v-model="passwordAgain" type="password" autocomplete="new-password" @keyup.enter="submitSetup" />
-      </label>
-      <div class="row">
-        <button class="primary" :disabled="authBusy" @click="submitSetup">
-          {{ authBusy ? '设置中…' : '设置口令并进入' }}
-        </button>
-        <span v-if="authError" class="error">{{ authError }}</span>
-      </div>
-      <p class="muted" style="font-size:12px;margin-bottom:0">
-        口令只以 PBKDF2 派生值的形式保存在 <code>{{ setupState?.configPath || '/config/config.yaml' }}</code>，明文不落盘。
-      </p>
-    </div>
-  </div>
-
   <div v-else-if="gate === 'login'" class="gate">
     <div class="panel">
       <div class="logo">AL</div>
-      <h2>AetherLink 以太链接</h2>
-      <p class="muted">输入管理口令。</p>
+      <h2>AetherLink</h2>
       <label class="field">
-        <span>管理口令</span>
+        <span>账号</span>
+        <input v-model="username" autocomplete="username" @keyup.enter="submitLogin" />
+      </label>
+      <label class="field">
+        <span>密码</span>
         <input v-model="password" type="password" autocomplete="current-password" @keyup.enter="submitLogin" />
       </label>
-      <div class="row">
-        <button class="primary" :disabled="authBusy" @click="submitLogin">
-          {{ authBusy ? '登录中…' : '登录' }}
-        </button>
-        <span v-if="authError" class="error">{{ authError }}</span>
-      </div>
-      <p class="muted" style="font-size:12px;margin-bottom:0">
-        忘记口令时，可临时给容器加上 <code>AETHERLINK_ADMIN_TOKEN</code> 环境变量作为应急令牌，
-        或直接清空 <code>/config/config.yaml</code> 里的 <code>auth</code> 段后重启。
+      <button class="primary block" :disabled="authBusy" @click="submitLogin">
+        {{ authBusy ? '登录中…' : '登录' }}
+      </button>
+      <p v-if="authError" class="error">{{ authError }}</p>
+      <p v-else-if="boot?.defaultCredentials" class="muted hint">
+        默认账号 {{ boot.defaultUsername }} / {{ boot.defaultPassword }}
       </p>
     </div>
   </div>
@@ -286,13 +236,16 @@ onUnmounted(() => statusTimer && clearInterval(statusTimer))
       <div v-if="status?.restartRequired" class="notice">
         监听地址已改为 {{ status.listen }}，但进程仍在 {{ status.bootListen }} 上，需要重启容器才会生效。
       </div>
+      <div v-if="status?.defaultCredentials" class="notice">
+        仍在使用默认账号 admin / password，请到设置页修改。
+      </div>
 
       <UpstreamsView v-if="activeTab === 'upstreams'" @changed="refreshStatus" />
       <DashboardView v-else-if="activeTab === 'dashboard'" :status="status" @refresh-status="refreshStatus" />
       <LibraryView v-else-if="activeTab === 'library'" />
       <StrmLabView v-else-if="activeTab === 'strm'" />
       <LogsView v-else-if="activeTab === 'logs'" />
-      <SettingsView v-else :status="status" @saved="refreshStatus" @password-changed="onPasswordChanged" />
+      <SettingsView v-else :status="status" @saved="refreshStatus" @account-changed="onAccountChanged" />
     </main>
   </div>
 </template>

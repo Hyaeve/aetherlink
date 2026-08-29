@@ -130,10 +130,15 @@ type Server struct {
 // Auth stores the admin password verifier. Only the derived key and its salt
 // are persisted; the password itself never touches disk.
 type Auth struct {
+	// Username is the admin account name shown on the login page.
+	Username     string `yaml:"username,omitempty" json:"username,omitempty"`
 	Algorithm    string `yaml:"algorithm,omitempty" json:"algorithm,omitempty"`
 	Iterations   int    `yaml:"iterations,omitempty" json:"-"`
 	Salt         string `yaml:"salt,omitempty" json:"-"`
 	PasswordHash string `yaml:"password_hash,omitempty" json:"-"`
+	// DefaultCredentials marks that the account still uses the built-in
+	// admin/password pair, so the UI can nag until it is changed.
+	DefaultCredentials bool `yaml:"default_credentials,omitempty" json:"-"`
 }
 
 // IsConfigured reports whether an admin password has been set.

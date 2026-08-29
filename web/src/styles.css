@@ -711,30 +711,49 @@ label.inline input[type='checkbox'] {
 }
 
 .gate .panel {
-  width: min(440px, 100%);
+  width: min(340px, 100%);
   margin: 0;
-  padding: 26px;
+  padding: 28px 26px 24px;
   box-shadow: var(--shadow-md);
+  text-align: center;
 }
 
 .gate .logo {
-  width: 44px;
-  height: 44px;
-  border-radius: 13px;
+  width: 46px;
+  height: 46px;
+  border-radius: 14px;
   background: linear-gradient(140deg, #a9bcc6, #b5c2b0);
   display: grid;
   place-items: center;
   color: #fbfaf8;
   font-weight: 600;
-  margin-bottom: 14px;
+  margin: 0 auto 12px;
 }
 
 .gate h2 {
-  margin: 0 0 8px;
-  font-size: 18px;
+  margin: 0 0 20px;
+  font-size: 17px;
+  letter-spacing: 0.02em;
+}
+
+/* 登录框里的标签左对齐，其余内容居中。 */
+.gate .field {
+  text-align: left;
+  margin-bottom: 14px;
 }
 
 .gate p {
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.6;
+  margin: 12px 0 0;
+}
+
+.gate .hint {
+  color: var(--muted);
+}
+
+button.block {
+  width: 100%;
+  justify-content: center;
+  margin-top: 4px;
 }

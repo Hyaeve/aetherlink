@@ -59,6 +59,22 @@ func main() {
 		logx.Infof("已在 %s 创建默认配置", *configPath)
 	}
 
+	// 没有账号时补上内置的 admin/password，省掉初始化向导：打开页面直接登录。
+	// 这个分支也覆盖了从旧版本升级、以及用户手工清空 auth 段的情况。
+	if !cfg.Auth.IsConfigured() {
+		defaults, deriveErr := auth.Default()
+		if deriveErr != nil {
+			logx.Errorf("生成默认账号失败: %v", deriveErr)
+			os.Exit(1)
+		}
+		cfg.Auth = defaults
+		if saveErr := cfg.Save(*configPath); saveErr != nil {
+			logx.Errorf("写入默认账号失败: %v", saveErr)
+			os.Exit(1)
+		}
+		logx.Warnf("已启用默认账号 %s / %s，请登录后在设置页里修改", auth.DefaultUsername, auth.DefaultPassword)
+	}
+
 	logx.SetLevel(logx.ParseLevel(cfg.Server.LogLevel))
 	logx.SetMaxEntries(cfg.Server.LogBuffer)
 
@@ -77,8 +93,8 @@ func main() {
 	sessions := auth.NewStore(auth.DefaultSessionTTL)
 	admin := adminapi.New(rt, sessions)
 
-	if !cfg.Auth.IsConfigured() {
-		logx.Warnf("尚未设置管理口令，请打开 http://<主机地址>:%s%s 完成初始化", portOf(cfg.Server.Listen), web.MountPath)
+	if cfg.Auth.DefaultCredentials {
+		logx.Warnf("管理界面 http://<主机地址>:%s/ 仍在使用默认账号，请尽快修改", portOf(cfg.Server.Listen))
 	}
 	if strings.TrimSpace(cfg.Server.AdminToken) != "" {
 		logx.Warnf("检测到应急令牌 AETHERLINK_ADMIN_TOKEN：它可以绕过口令登录，排障完成后请移除")
@@ -93,7 +109,8 @@ func main() {
 	})
 	// 其余路径都属于被反代的上游。交给 runtime 而不是某个具体 proxy 实例，
 	// 这样在网页上增删上游后无需重启即可生效。
-	mux.Handle("/", rt)
+	// 没有上游挂在根路径时，裸访问 / 直接送进管理界面，省得手敲 /aetherlink/。
+	mux.Handle("/", rootHandler(rt))
 
 	server := &http.Server{
 		Addr:    cfg.Server.Listen,
@@ -121,6 +138,19 @@ func main() {
 	if err := server.Shutdown(gracefulCtx); err != nil {
 		logx.Warnf("优雅关闭失败: %v", err)
 	}
+}
+
+// rootHandler 让 http://主机:端口/ 直接落到管理界面，不必记住 /aetherlink/ 后缀。
+// 有上游挂在根路径（prefix 为 /）时，根路径属于那个上游，不能抢：此时仍然只有
+// /aetherlink/ 是管理界面。
+func rootHandler(rt *runtime.Runtime) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/" && !rt.RootUpstreamMounted() {
+			http.Redirect(writer, request, web.MountPath, http.StatusFound)
+			return
+		}
+		rt.ServeHTTP(writer, request)
+	})
 }
 
 // defaultConfigPath 优先使用容器内的挂载点，本地开发时退回当前目录。

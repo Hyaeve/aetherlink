@@ -9,12 +9,15 @@ import (
 )
 
 func TestDeriveAndVerify(t *testing.T) {
-	stored, err := Derive("correct horse battery")
+	stored, err := Derive("kiro", "correct horse battery")
 	if err != nil {
 		t.Fatalf("Derive returned error: %v", err)
 	}
 	if !stored.IsConfigured() {
 		t.Fatal("derived auth should be configured")
+	}
+	if stored.Username != "kiro" {
+		t.Fatalf("username = %q", stored.Username)
 	}
 	if stored.Algorithm != Algorithm {
 		t.Fatalf("algorithm = %q", stored.Algorithm)
@@ -28,17 +31,33 @@ func TestDeriveAndVerify(t *testing.T) {
 }
 
 func TestDeriveRejectsShortPassword(t *testing.T) {
-	if _, err := Derive("short"); !errors.Is(err, ErrPasswordTooShort) {
+	if _, err := Derive("admin", "short"); !errors.Is(err, ErrPasswordTooShort) {
 		t.Fatalf("Derive error = %v, want ErrPasswordTooShort", err)
 	}
 }
 
-func TestDeriveUsesFreshSalt(t *testing.T) {
-	first, err := Derive("same password here")
+func TestDeriveRejectsEmptyUsername(t *testing.T) {
+	if _, err := Derive("   ", "long-enough-password"); !errors.Is(err, ErrUsernameEmpty) {
+		t.Fatalf("Derive error = %v, want ErrUsernameEmpty", err)
+	}
+}
+
+func TestDeriveTrimsUsername(t *testing.T) {
+	stored, err := Derive("  admin  ", "long-enough-password")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := Derive("same password here")
+	if stored.Username != "admin" {
+		t.Fatalf("username = %q, want trimmed", stored.Username)
+	}
+}
+
+func TestDeriveUsesFreshSalt(t *testing.T) {
+	first, err := Derive("admin", "same password here")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Derive("admin", "same password here")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,9 +66,58 @@ func TestDeriveUsesFreshSalt(t *testing.T) {
 	}
 }
 
+// 内置账号必须开箱可登录，否则用户第一次打开页面就进不去。
+func TestDefaultCredentialsLogIn(t *testing.T) {
+	stored, err := Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stored.DefaultCredentials {
+		t.Fatal("Default must mark the credentials as default so the UI can nag")
+	}
+	if err := VerifyLogin(stored, DefaultUsername, DefaultPassword); err != nil {
+		t.Fatalf("built-in admin/password should log in: %v", err)
+	}
+}
+
+func TestVerifyLoginChecksUsername(t *testing.T) {
+	stored, err := Derive("admin", "long-enough-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyLogin(stored, "admin", "long-enough-password"); err != nil {
+		t.Fatalf("correct credentials rejected: %v", err)
+	}
+	// 用户名不区分大小写，也容忍首尾空白：NAS 上手输很容易带上。
+	if err := VerifyLogin(stored, " ADMIN ", "long-enough-password"); err != nil {
+		t.Fatalf("username should be case- and space-insensitive: %v", err)
+	}
+	if err := VerifyLogin(stored, "someone-else", "long-enough-password"); !errors.Is(err, ErrInvalidPassword) {
+		t.Fatalf("wrong username error = %v, want ErrInvalidPassword", err)
+	}
+	if err := VerifyLogin(stored, "admin", "wrong-password"); !errors.Is(err, ErrInvalidPassword) {
+		t.Fatalf("wrong password error = %v, want ErrInvalidPassword", err)
+	}
+}
+
+// 旧版本的配置文件只有口令没有用户名，升级后必须还能用 admin 登录。
+func TestVerifyLoginTreatsMissingUsernameAsAdmin(t *testing.T) {
+	stored, err := Derive("admin", "long-enough-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.Username = ""
+	if err := VerifyLogin(stored, "admin", "long-enough-password"); err != nil {
+		t.Fatalf("legacy config without a username should accept admin: %v", err)
+	}
+}
+
 func TestVerifyOnUnconfiguredAuth(t *testing.T) {
 	if err := Verify(config.Auth{}, "whatever"); !errors.Is(err, ErrNotConfigured) {
 		t.Fatalf("Verify error = %v, want ErrNotConfigured", err)
+	}
+	if err := VerifyLogin(config.Auth{}, "admin", "whatever"); !errors.Is(err, ErrNotConfigured) {
+		t.Fatalf("VerifyLogin error = %v, want ErrNotConfigured", err)
 	}
 }
 

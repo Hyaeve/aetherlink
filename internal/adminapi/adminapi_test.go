@@ -17,7 +17,10 @@ import (
 	"github.com/aetherlink/aetherlink/internal/stats"
 )
 
-const testPassword = "aetherlink-test-pw"
+const (
+	testUsername = "admin"
+	testPassword = "aetherlink-test-pw"
+)
 
 type testEnv struct {
 	handler  http.Handler
@@ -28,17 +31,36 @@ type testEnv struct {
 	token    string
 }
 
-// newEnv builds an API over a real runtime backed by a temp config file, with an
-// admin password already set.
+// newEnv builds an API over a real runtime backed by a temp config file whose
+// admin account has already been changed away from the built-in one.
 func newEnv(t *testing.T) *testEnv {
 	t.Helper()
-	env := newBareEnv(t)
-	env.setup(t, testPassword)
+	env := newFreshEnv(t)
+	env.setAccount(t, testUsername, testPassword)
 	return env
 }
 
-// newBareEnv builds an uninitialised instance: no password, no upstreams. This
-// is what a freshly started container looks like.
+// newFreshEnv builds a just-started container: main.go seeds the built-in
+// admin/password account on first boot, so there is never an unauthenticated
+// window and no setup wizard.
+func newFreshEnv(t *testing.T) *testEnv {
+	t.Helper()
+	env := newBareEnv(t)
+	defaults, err := auth.Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.rt.Apply(func(draft *config.Config) error {
+		draft.Auth = defaults
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return env
+}
+
+// newBareEnv builds an instance with no account at all. Only the seeding logic
+// in main.go produces this state transiently; tests use it as a starting point.
 func newBareEnv(t *testing.T) *testEnv {
 	t.Helper()
 	root := t.TempDir()
@@ -80,18 +102,20 @@ func (e *testEnv) do(method, target, body, token string) *httptest.ResponseRecor
 	return recorder
 }
 
-func (e *testEnv) setup(t *testing.T, password string) {
+// setAccount 用内置账号登录后把账号改成给定的账号密码，等价于用户第一次进设置页。
+func (e *testEnv) setAccount(t *testing.T, username, password string) {
 	t.Helper()
-	recorder := e.do(http.MethodPost, BasePath+"/setup", `{"password":"`+password+`"}`, "")
+	token := e.login(t, auth.DefaultUsername, auth.DefaultPassword)
+	body := `{"currentPassword":"` + auth.DefaultPassword + `","username":"` + username + `","newPassword":"` + password + `"}`
+	recorder := e.do(http.MethodPost, BasePath+"/account", body, token)
 	if recorder.Code != http.StatusOK {
-		t.Fatalf("setup status = %d, body=%s", recorder.Code, recorder.Body.String())
+		t.Fatalf("account status = %d, body=%s", recorder.Code, recorder.Body.String())
 	}
-	e.token = decodeToken(t, recorder)
 }
 
-func (e *testEnv) login(t *testing.T, password string) string {
+func (e *testEnv) login(t *testing.T, username, password string) string {
 	t.Helper()
-	recorder := e.do(http.MethodPost, BasePath+"/login", `{"password":"`+password+`"}`, "")
+	recorder := e.do(http.MethodPost, BasePath+"/login", `{"username":"`+username+`","password":"`+password+`"}`, "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("login status = %d, body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -112,38 +136,65 @@ func decodeToken(t *testing.T, recorder *httptest.ResponseRecorder) string {
 	return response.Token
 }
 
-func TestHealthAndSetupStateNeedNoToken(t *testing.T) {
-	env := newBareEnv(t)
-	for _, target := range []string{BasePath + "/health", BasePath + "/setup/state"} {
+func TestHealthAndBootstrapNeedNoToken(t *testing.T) {
+	env := newFreshEnv(t)
+	for _, target := range []string{BasePath + "/health", BasePath + "/bootstrap"} {
 		if recorder := env.do(http.MethodGet, target, "", ""); recorder.Code != http.StatusOK {
 			t.Errorf("%s status = %d, want 200", target, recorder.Code)
 		}
 	}
-	recorder := env.do(http.MethodGet, BasePath+"/setup/state", "", "")
-	if !strings.Contains(recorder.Body.String(), `"configured":false`) {
-		t.Fatalf("a bare instance must report configured=false: %s", recorder.Body.String())
+	// 登录页要靠这个标记决定是否提示默认账号。
+	recorder := env.do(http.MethodGet, BasePath+"/bootstrap", "", "")
+	if !strings.Contains(recorder.Body.String(), `"defaultCredentials":true`) {
+		t.Fatalf("a fresh instance must report defaultCredentials=true: %s", recorder.Body.String())
 	}
 }
 
-// Before the password is set every protected route must say so explicitly, so
-// the UI can show the wizard instead of a login prompt.
-func TestProtectedRoutesAskForSetupFirst(t *testing.T) {
-	env := newBareEnv(t)
-	recorder := env.do(http.MethodGet, BasePath+"/config", "", "")
-	if recorder.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", recorder.Code)
+// 改过账号后 bootstrap 不该再回显内置凭据。
+func TestBootstrapHidesDefaultsOnceChanged(t *testing.T) {
+	env := newEnv(t)
+	body := env.do(http.MethodGet, BasePath+"/bootstrap", "", "").Body.String()
+	if strings.Contains(body, "defaultUsername") || strings.Contains(body, "defaultPassword") {
+		t.Fatalf("built-in credentials are still echoed after the account changed: %s", body)
 	}
-	if !strings.Contains(recorder.Body.String(), "setup_required") {
-		t.Fatalf("body = %s", recorder.Body.String())
+	if !strings.Contains(body, `"defaultCredentials":false`) {
+		t.Fatalf("body = %s", body)
 	}
 }
 
-func TestSetupPersistsPasswordAndCannotRun_Twice(t *testing.T) {
-	env := newBareEnv(t)
-	env.setup(t, testPassword)
+// bootstrap 不需要鉴权，因此绝不能泄露上游地址、密钥或配置文件路径。
+func TestBootstrapLeaksNothingSensitive(t *testing.T) {
+	env := newEnv(t)
+	token := env.login(t, testUsername, testPassword)
+	payload := `{"name":"abs","type":"audiobookshelf","baseUrl":"http://10.0.0.9:13378","apiKey":"super-secret-key","prefix":"/"}`
+	if recorder := env.do(http.MethodPost, BasePath+"/upstreams", payload, token); recorder.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	body := env.do(http.MethodGet, BasePath+"/bootstrap", "", "").Body.String()
+	for _, secret := range []string{"super-secret-key", "10.0.0.9", env.confPath, "password_hash"} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("bootstrap leaked %q: %s", secret, body)
+		}
+	}
+}
 
-	// The verifier must be on disk, not only in memory: a container restart has
-	// to keep the password.
+// 首次启动就有内置账号，因此没有「未初始化」状态：受保护路由一律返回 401。
+func TestFreshInstanceAcceptsBuiltInAccount(t *testing.T) {
+	env := newFreshEnv(t)
+	if recorder := env.do(http.MethodGet, BasePath+"/config", "", ""); recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", recorder.Code)
+	}
+	token := env.login(t, auth.DefaultUsername, auth.DefaultPassword)
+	if recorder := env.do(http.MethodGet, BasePath+"/config", "", token); recorder.Code != http.StatusOK {
+		t.Fatalf("built-in account could not read config: %d", recorder.Code)
+	}
+}
+
+func TestAccountUpdatePersistsAndDropsDefaultFlag(t *testing.T) {
+	env := newFreshEnv(t)
+	env.setAccount(t, "kiro", testPassword)
+
+	// 校验材料必须落盘，否则容器一重启账号就丢了。
 	raw, err := os.ReadFile(env.confPath)
 	if err != nil {
 		t.Fatal(err)
@@ -154,17 +205,34 @@ func TestSetupPersistsPasswordAndCannotRun_Twice(t *testing.T) {
 	if strings.Contains(string(raw), testPassword) {
 		t.Fatal("the plaintext password must never be written to disk")
 	}
-
-	recorder := env.do(http.MethodPost, BasePath+"/setup", `{"password":"another-password"}`, "")
-	if recorder.Code != http.StatusConflict {
-		t.Fatalf("second setup status = %d, want 409", recorder.Code)
+	if strings.Contains(string(raw), "default_credentials") {
+		t.Fatalf("the default-credentials flag should be cleared once changed: %s", raw)
 	}
+
+	// 旧的内置账号必须立刻失效。
+	if recorder := env.do(http.MethodPost, BasePath+"/login",
+		`{"username":"admin","password":"password"}`, ""); recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("built-in account still works after the change: %d", recorder.Code)
+	}
+	env.login(t, "kiro", testPassword)
 }
 
-func TestSetupRejectsShortPassword(t *testing.T) {
-	env := newBareEnv(t)
-	recorder := env.do(http.MethodPost, BasePath+"/setup", `{"password":"short"}`, "")
-	if recorder.Code != http.StatusBadRequest {
+// 只改用户名时新密码留空，当前密码应当继续可用。
+func TestAccountUpdateCanChangeUsernameOnly(t *testing.T) {
+	env := newEnv(t)
+	token := env.login(t, testUsername, testPassword)
+	body := `{"currentPassword":"` + testPassword + `","username":"renamed"}`
+	if recorder := env.do(http.MethodPost, BasePath+"/account", body, token); recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	env.login(t, "renamed", testPassword)
+}
+
+func TestAccountUpdateRejectsShortPassword(t *testing.T) {
+	env := newEnv(t)
+	token := env.login(t, testUsername, testPassword)
+	body := `{"currentPassword":"` + testPassword + `","username":"admin","newPassword":"short"}`
+	if recorder := env.do(http.MethodPost, BasePath+"/account", body, token); recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", recorder.Code)
 	}
 }
@@ -177,10 +245,16 @@ func TestLoginAndTokenEnforcement(t *testing.T) {
 	if recorder := env.do(http.MethodGet, BasePath+"/config", "", "not-a-token"); recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("bad token status = %d, want 401", recorder.Code)
 	}
-	if recorder := env.do(http.MethodPost, BasePath+"/login", `{"password":"wrong-password"}`, ""); recorder.Code != http.StatusUnauthorized {
+	if recorder := env.do(http.MethodPost, BasePath+"/login",
+		`{"username":"admin","password":"wrong-password"}`, ""); recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("wrong password status = %d, want 401", recorder.Code)
 	}
-	token := env.login(t, testPassword)
+	// 密码对但用户名不对同样要拒。
+	if recorder := env.do(http.MethodPost, BasePath+"/login",
+		`{"username":"nobody","password":"`+testPassword+`"}`, ""); recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong username status = %d, want 401", recorder.Code)
+	}
+	token := env.login(t, testUsername, testPassword)
 	if recorder := env.do(http.MethodGet, BasePath+"/config", "", token); recorder.Code != http.StatusOK {
 		t.Fatalf("authorised status = %d, want 200", recorder.Code)
 	}
@@ -188,7 +262,7 @@ func TestLoginAndTokenEnforcement(t *testing.T) {
 
 func TestLogoutRevokesToken(t *testing.T) {
 	env := newEnv(t)
-	token := env.login(t, testPassword)
+	token := env.login(t, testUsername, testPassword)
 	if recorder := env.do(http.MethodPost, BasePath+"/logout", "{}", token); recorder.Code != http.StatusOK {
 		t.Fatalf("logout status = %d", recorder.Code)
 	}
@@ -197,23 +271,25 @@ func TestLogoutRevokesToken(t *testing.T) {
 	}
 }
 
-func TestChangePasswordRevokesAllSessions(t *testing.T) {
+func TestAccountUpdateRevokesAllSessions(t *testing.T) {
 	env := newEnv(t)
-	token := env.login(t, testPassword)
-	recorder := env.do(http.MethodPost, BasePath+"/password", `{"currentPassword":"`+testPassword+`","newPassword":"brand-new-password"}`, token)
+	token := env.login(t, testUsername, testPassword)
+	body := `{"currentPassword":"` + testPassword + `","username":"admin","newPassword":"brand-new-password"}`
+	recorder := env.do(http.MethodPost, BasePath+"/account", body, token)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
 	}
 	if env.sessions.Count() != 0 {
 		t.Fatalf("sessions = %d, want 0", env.sessions.Count())
 	}
-	env.login(t, "brand-new-password")
+	env.login(t, "admin", "brand-new-password")
 }
 
-func TestChangePasswordRejectsWrongCurrent(t *testing.T) {
+func TestAccountUpdateRejectsWrongCurrent(t *testing.T) {
 	env := newEnv(t)
-	token := env.login(t, testPassword)
-	recorder := env.do(http.MethodPost, BasePath+"/password", `{"currentPassword":"nope-nope","newPassword":"brand-new-password"}`, token)
+	token := env.login(t, testUsername, testPassword)
+	body := `{"currentPassword":"nope-nope","username":"admin","newPassword":"brand-new-password"}`
+	recorder := env.do(http.MethodPost, BasePath+"/account", body, token)
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", recorder.Code)
 	}
@@ -241,7 +317,7 @@ func upstreamPayloadJSON(name, root string) string {
 
 func TestUpstreamCRUDPersistsAndHotReloads(t *testing.T) {
 	env := newEnv(t)
-	token := env.login(t, testPassword)
+	token := env.login(t, testUsername, testPassword)
 	root := filepath.ToSlash(filepath.Dir(env.strmPath))
 
 	recorder := env.do(http.MethodPost, BasePath+"/upstreams", upstreamPayloadJSON("abs", root), token)
@@ -286,7 +362,7 @@ func TestUpstreamCRUDPersistsAndHotReloads(t *testing.T) {
 
 func TestCreateUpstreamRejectsDuplicateAndInvalid(t *testing.T) {
 	env := newEnv(t)
-	token := env.login(t, testPassword)
+	token := env.login(t, testUsername, testPassword)
 	root := filepath.ToSlash(filepath.Dir(env.strmPath))
 
 	if recorder := env.do(http.MethodPost, BasePath+"/upstreams", upstreamPayloadJSON("abs", root), token); recorder.Code != http.StatusCreated {
@@ -307,7 +383,7 @@ func TestCreateUpstreamRejectsDuplicateAndInvalid(t *testing.T) {
 
 func TestConfigNeverLeaksApiKeys(t *testing.T) {
 	env := newEnv(t)
-	token := env.login(t, testPassword)
+	token := env.login(t, testUsername, testPassword)
 	root := filepath.ToSlash(filepath.Dir(env.strmPath))
 	env.do(http.MethodPost, BasePath+"/upstreams", upstreamPayloadJSON("abs", root), token)
 
@@ -329,7 +405,7 @@ func TestConfigNeverLeaksApiKeys(t *testing.T) {
 
 func TestPutSettingsAppliesAndPersists(t *testing.T) {
 	env := newEnv(t)
-	token := env.login(t, testPassword)
+	token := env.login(t, testUsername, testPassword)
 	payload := `{"logLevel":"debug","redirect":{"mode":"private","followUpstreamRedirects":true,"maxFollowHops":3,` +
 		`"forwardUserAgent":false,"fallbackUserAgent":"AetherLink/test","probeTimeout":"20s","streamTimeout":"0",` +
 		`"allowPublicTargets":false},"cache":{"ttl":"90s","maxSize":128}}`
@@ -360,7 +436,7 @@ func TestPutSettingsAppliesAndPersists(t *testing.T) {
 
 func TestPutSettingsRejectsBadValues(t *testing.T) {
 	env := newEnv(t)
-	token := env.login(t, testPassword)
+	token := env.login(t, testUsername, testPassword)
 	for name, payload := range map[string]string{
 		"bad duration": `{"redirect":{"mode":"always","probeTimeout":"soon"},"cache":{"ttl":"5m","maxSize":10}}`,
 		"bad mode":     `{"redirect":{"mode":"sometimes","probeTimeout":"15s"},"cache":{"ttl":"5m","maxSize":10}}`,
@@ -377,7 +453,7 @@ func TestPutSettingsRejectsBadValues(t *testing.T) {
 
 func TestParseStrmEndpointNormalizesPickCode(t *testing.T) {
 	env := newEnv(t)
-	token := env.login(t, testPassword)
+	token := env.login(t, testUsername, testPassword)
 	payload := `{"content":"http://10.0.0.31:19527/d/bi6jeznun2rvu88v6.m4a?/001.总序.m4a"}`
 	recorder := env.do(http.MethodPost, BasePath+"/strm/parse", payload, token)
 	if recorder.Code != http.StatusOK {
@@ -410,7 +486,7 @@ func TestParseStrmEndpointNormalizesPickCode(t *testing.T) {
 
 func TestParseStrmRejectsEmptyContent(t *testing.T) {
 	env := newEnv(t)
-	token := env.login(t, testPassword)
+	token := env.login(t, testUsername, testPassword)
 	if recorder := env.do(http.MethodPost, BasePath+"/strm/parse", `{"content":"  "}`, token); recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", recorder.Code)
 	}
@@ -418,7 +494,7 @@ func TestParseStrmRejectsEmptyContent(t *testing.T) {
 
 func TestUnknownUpstreamReturns404(t *testing.T) {
 	env := newEnv(t)
-	token := env.login(t, testPassword)
+	token := env.login(t, testUsername, testPassword)
 	if recorder := env.do(http.MethodGet, BasePath+"/upstreams/missing/ping", "", token); recorder.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", recorder.Code)
 	}
@@ -426,7 +502,7 @@ func TestUnknownUpstreamReturns404(t *testing.T) {
 
 func TestStatusReportsRuntimeState(t *testing.T) {
 	env := newEnv(t)
-	token := env.login(t, testPassword)
+	token := env.login(t, testUsername, testPassword)
 	recorder := env.do(http.MethodGet, BasePath+"/status", "", token)
 
 	var response statusResponse

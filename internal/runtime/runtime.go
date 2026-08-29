@@ -113,6 +113,17 @@ func (rt *Runtime) RestartRequired() bool {
 // BootListen 返回进程实际监听的地址。
 func (rt *Runtime) BootListen() string { return rt.bootListen }
 
+// RootUpstreamMounted 报告是否有上游挂在根路径上。挂在根上时裸访问 / 属于该
+// 上游（例如 Audiobookshelf 自己的网页），不能抢来跳转到管理界面。
+func (rt *Runtime) RootUpstreamMounted() bool {
+	for _, upstreamCfg := range rt.current.Load().cfg.Upstreams {
+		if upstreamCfg.IsEnabled() && upstreamCfg.Prefix == "/" {
+			return true
+		}
+	}
+	return false
+}
+
 // ProviderByName 在当前 stack 中查找上游。
 func (rt *Runtime) ProviderByName(name string) upstream.Provider {
 	return rt.current.Load().proxy.ProviderByName(name)

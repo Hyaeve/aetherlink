@@ -3,25 +3,29 @@ import { onMounted, ref } from 'vue'
 import { api } from '../api'
 
 defineProps({ status: { type: Object, default: null } })
-const emit = defineEmits(['saved', 'password-changed'])
+const emit = defineEmits(['saved', 'account-changed'])
 
 const settings = ref(null)
 const server = ref(null)
+const account = ref(null)
 const error = ref('')
 const saved = ref(false)
 const busy = ref(false)
 
+const username = ref('')
 const currentPassword = ref('')
 const newPassword = ref('')
 const newPasswordAgain = ref('')
-const passwordError = ref('')
-const passwordBusy = ref(false)
+const accountError = ref('')
+const accountBusy = ref(false)
 
 async function load() {
   try {
     const payload = await api.config()
     settings.value = payload.settings
     server.value = payload.server
+    account.value = payload.account
+    username.value = payload.account?.username || ''
     error.value = ''
   } catch (loadError) {
     error.value = loadError.message
@@ -44,23 +48,23 @@ async function save() {
   }
 }
 
-async function changePassword() {
-  passwordError.value = ''
-  if (newPassword.value !== newPasswordAgain.value) {
-    passwordError.value = '两次输入的新口令不一致'
+async function saveAccount() {
+  accountError.value = ''
+  if (newPassword.value && newPassword.value !== newPasswordAgain.value) {
+    accountError.value = '两次输入的新密码不一致'
     return
   }
-  passwordBusy.value = true
+  accountBusy.value = true
   try {
-    await api.changePassword(currentPassword.value, newPassword.value)
+    await api.updateAccount(currentPassword.value, username.value, newPassword.value)
     currentPassword.value = ''
     newPassword.value = ''
     newPasswordAgain.value = ''
-    emit('password-changed')
-  } catch (changeError) {
-    passwordError.value = changeError.message
+    emit('account-changed')
+  } catch (saveError) {
+    accountError.value = saveError.message
   } finally {
-    passwordBusy.value = false
+    accountBusy.value = false
   }
 }
 
@@ -149,27 +153,34 @@ onMounted(load)
     </div>
 
     <div class="panel">
-      <h2>修改管理口令</h2>
+      <h2>管理账号</h2>
+      <p v-if="account?.defaultCredentials" class="notice" style="margin-top:0">
+        仍在使用默认账号 admin / password，请尽快修改。
+      </p>
       <div class="grid cols-2">
         <label class="field">
-          <span>当前口令</span>
+          <span>账号</span>
+          <input v-model="username" autocomplete="username" />
+        </label>
+        <label class="field">
+          <span>当前密码</span>
           <input v-model="currentPassword" type="password" autocomplete="current-password" />
         </label>
         <label class="field">
-          <span>新口令</span>
+          <span>新密码（只改账号时留空）</span>
           <input v-model="newPassword" type="password" autocomplete="new-password" />
         </label>
         <label class="field">
-          <span>再输入一次新口令</span>
+          <span>再输入一次新密码</span>
           <input v-model="newPasswordAgain" type="password" autocomplete="new-password" />
         </label>
       </div>
       <div class="row">
-        <button :disabled="passwordBusy" @click="changePassword">
-          {{ passwordBusy ? '提交中…' : '修改口令' }}
+        <button :disabled="accountBusy" @click="saveAccount">
+          {{ accountBusy ? '提交中…' : '保存账号' }}
         </button>
         <span class="muted" style="font-size:12px">改完会注销所有登录会话，需要重新登录。</span>
-        <span v-if="passwordError" class="error">{{ passwordError }}</span>
+        <span v-if="accountError" class="error">{{ accountError }}</span>
       </div>
     </div>
 
@@ -188,6 +199,7 @@ onMounted(load)
       <div class="row" style="margin-top:12px">
         <span class="tag" v-if="status">v{{ status.version }}</span>
         <span class="tag" v-if="status">活跃会话 {{ status.sessions }}</span>
+        <span class="tag" v-if="account?.username">账号 {{ account.username }}</span>
         <span class="tag warn" v-if="server.breakGlassEnabled">应急令牌已启用，排障完成后请移除环境变量</span>
         <span class="tag bad" v-if="server.restartRequired">监听地址已改动，需重启容器</span>
       </div>

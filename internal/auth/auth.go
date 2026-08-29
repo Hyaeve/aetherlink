@@ -27,6 +27,13 @@ const (
 	DefaultIterations = 210000
 	// MinPasswordLength 是可接受的最短口令长度。
 	MinPasswordLength = 8
+	// MaxUsernameLength 只是防止把整篇文章塞进用户名。
+	MaxUsernameLength = 64
+
+	// DefaultUsername / DefaultPassword 是首次启动自动写入的账号，
+	// 省掉初始化向导：开箱就能登录，之后在设置页里改。
+	DefaultUsername = "admin"
+	DefaultPassword = "password"
 
 	saltBytes = 16
 	keyBytes  = 32
@@ -37,17 +44,31 @@ const DefaultSessionTTL = 12 * time.Hour
 
 var (
 	// ErrPasswordTooShort 表示口令长度不足。
-	ErrPasswordTooShort = fmt.Errorf("管理口令至少需要 %d 个字符", MinPasswordLength)
-	// ErrNotConfigured 表示实例尚未设置管理口令。
-	ErrNotConfigured = errors.New("尚未设置管理口令")
-	// ErrInvalidPassword 表示口令不正确。
-	ErrInvalidPassword = errors.New("口令不正确")
+	ErrPasswordTooShort = fmt.Errorf("密码至少需要 %d 个字符", MinPasswordLength)
+	// ErrUsernameEmpty 表示用户名为空。
+	ErrUsernameEmpty = errors.New("用户名不能为空")
+	// ErrUsernameTooLong 表示用户名过长。
+	ErrUsernameTooLong = fmt.Errorf("用户名不能超过 %d 个字符", MaxUsernameLength)
+	// ErrNotConfigured 表示实例尚未设置管理账号。
+	ErrNotConfigured = errors.New("尚未设置管理账号")
+	// ErrInvalidPassword 表示账号或密码不正确。
+	ErrInvalidPassword = errors.New("账号或密码不正确")
 	// ErrUnsupportedAlgorithm 表示配置文件里的算法本版本无法校验。
 	ErrUnsupportedAlgorithm = errors.New("配置中的口令算法不受支持")
 )
 
-// Derive 由明文口令生成可持久化的校验材料。
-func Derive(password string) (config.Auth, error) {
+// NormalizeUsername 去掉首尾空白。用户名不区分大小写，但按用户输入的原样保存。
+func NormalizeUsername(username string) string { return strings.TrimSpace(username) }
+
+// Derive 由明文账号密码生成可持久化的校验材料。
+func Derive(username, password string) (config.Auth, error) {
+	name := NormalizeUsername(username)
+	if name == "" {
+		return config.Auth{}, ErrUsernameEmpty
+	}
+	if len([]rune(name)) > MaxUsernameLength {
+		return config.Auth{}, ErrUsernameTooLong
+	}
 	if len([]rune(strings.TrimSpace(password))) < MinPasswordLength {
 		return config.Auth{}, ErrPasswordTooShort
 	}
@@ -60,11 +81,51 @@ func Derive(password string) (config.Auth, error) {
 		return config.Auth{}, err
 	}
 	return config.Auth{
+		Username:     name,
 		Algorithm:    Algorithm,
 		Iterations:   DefaultIterations,
 		Salt:         base64.RawStdEncoding.EncodeToString(salt),
 		PasswordHash: base64.RawStdEncoding.EncodeToString(key),
 	}, nil
+}
+
+// Default 生成内置账号 admin/password 的校验材料，并打上「仍是默认凭据」标记，
+// 供界面持续提醒用户尽快修改。
+func Default() (config.Auth, error) {
+	derived, err := Derive(DefaultUsername, DefaultPassword)
+	if err != nil {
+		return config.Auth{}, err
+	}
+	derived.DefaultCredentials = true
+	return derived, nil
+}
+
+// VerifyLogin 校验账号与密码。用户名不区分大小写；无论哪一项不对都返回同一个
+// 错误，避免暴露「用户名存在但密码错」这类信息。
+func VerifyLogin(stored config.Auth, username, password string) error {
+	if !stored.IsConfigured() {
+		return ErrNotConfigured
+	}
+	expected := strings.ToLower(NormalizeUsername(stored.Username))
+	if expected == "" {
+		// 早期版本只有口令没有用户名，按内置账号名兼容。
+		expected = DefaultUsername
+	}
+	if subtle.ConstantTimeCompare(
+		[]byte(strings.ToLower(NormalizeUsername(username))),
+		[]byte(expected),
+	) != 1 {
+		// 仍然走一次派生，让用户名错与密码错的耗时保持一致。
+		_ = Verify(stored, password)
+		return ErrInvalidPassword
+	}
+	if err := Verify(stored, password); err != nil {
+		if errors.Is(err, ErrInvalidPassword) {
+			return ErrInvalidPassword
+		}
+		return err
+	}
+	return nil
 }
 
 // Verify 用恒定时间比较校验口令。

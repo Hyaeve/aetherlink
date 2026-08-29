@@ -5,7 +5,7 @@
 | 包 | 职责 |
 | --- | --- |
 | `internal/config` | YAML 配置加载、默认值合并、校验与归一化（前缀、路径、去重），以及原子写回。文件缺失时自动创建默认配置；未知字段会报错，避免拼写错误静默失效。 |
-| `internal/auth` | 管理口令的 PBKDF2-SHA256 派生与恒定时间校验，以及内存会话令牌存储（只存令牌哈希）。 |
+| `internal/auth` | 管理账号（用户名 + 口令）的 PBKDF2-SHA256 派生与恒定时间校验、内置默认账号的生成，以及内存会话令牌存储（只存令牌哈希）。 |
 | `internal/runtime` | 配置与运行期组件的解耦层：`atomic.Pointer` 持有一组彼此匹配的 provider / resolver / proxy 快照，管理接口改配置后整体替换，播放请求读路径无锁。 |
 | `internal/urlx` | STRM 原始内容的 URL 归一化与分类。保留已有 `%XX` 转义，识别 115 pick code / openlist 形态，判断私有网段。 |
 | `internal/pathmap` | 上游媒体路径 → 容器路径的前缀重写（最长前缀优先），以及本地目标的根目录白名单校验。 |
@@ -14,7 +14,7 @@
 | `internal/resolver` | 解析流水线：查上游路径 → 路径映射 → 读指针 →（可选）走完跳转链。带 TTL+LRU 缓存与并发去重。 |
 | `internal/proxy` | 反向代理与拦截决策：302、中继转发、本地直读、透传四条出口。 |
 | `internal/stats` | 内存计数与最近事件环形缓冲，供概览页使用。 |
-| `internal/adminapi` | `/aetherlink/api` 管理接口：初始化向导、口令登录、设置与上游 CRUD、书库浏览与 STRM 调试。 |
+| `internal/adminapi` | `/aetherlink/api` 管理接口：登录页自举、账号登录、账号修改、设置与上游 CRUD、书库浏览与 STRM 调试。 |
 | `internal/web` | `go:embed` 承载编译后的 Vue SPA，未构建前端时回退到占位页。 |
 
 ## 前端结构
@@ -23,12 +23,20 @@
 
 | 文件 | 作用 |
 | --- | --- |
-| `web/src/App.vue` | 左侧图标栏 + 主区布局，以及 loading / setup / login / app 四态的首屏闸门。 |
+| `web/src/App.vue` | 左侧图标栏 + 主区布局，以及 loading / login / app 三态的首屏闸门。 |
 | `web/src/styles.css` | 莫兰迪低饱和浅色主题的全部样式，配色集中在 `:root` 的 CSS 变量里。 |
 | `web/src/palette.js` | 上游名称哈希到固定的莫兰迪渐变，保证同名上游的卡片配色恒定。 |
 | `web/src/components/UpstreamsView.vue` | 卡片网格：一个上游一张方卡，左键开编辑弹窗，右键出上下文菜单。 |
 | `web/src/components/ContextMenu.vue` | 通用右键菜单，含视口边缘回折与点击外部关闭。 |
 | `web/src/components/UpstreamForm.vue` | 上游详细编辑弹窗，按「基本 / 路径 / 安全」分组。 |
+## 管理账号与入口
+
+- **恒有一个账号**：`cmd/aetherlink/main.go` 在加载配置后检查 `Auth.IsConfigured()`，为空就写入 `auth.Default()`（`admin` / `password`，同时置 `default_credentials: true`）并立刻落盘。首次启动、旧版升级、手工清空 `auth:` 段这三种情形因此都不再有「无账号」状态，管理 API 未登录一律 401，不存在需要免鉴权写入的初始化通道。
+- **默认凭据只回显一次**：免鉴权的 `GET /aetherlink/api/bootstrap` 只返回版本、密码长度下限与 `defaultCredentials`；仅当该标记为真才附带 `defaultUsername` / `defaultPassword` 供登录框预填。改过账号后这两个字段消失，登录页不再泄露任何信息。
+- **账号修改**：`POST /aetherlink/api/account` 接收当前密码 + 新用户名 + 新密码（新密码留空表示只改用户名），成功后清掉 `default_credentials` 并 `RevokeAll()` 注销全部会话，前端随即回到登录页。
+- **用户名比较宽松，密码严格**：`auth.VerifyLogin` 对用户名去空白且不区分大小写；用户名不匹配时仍走一次 PBKDF2 派生，使耗时与密码错误一致，不暴露「用户名是否存在」。老配置里没有 `username` 时按 `admin` 兼容。
+- **根路径直达**：`rootHandler` 让 `GET /` 302 到 `/aetherlink/`，用户不必手敲后缀；但若有 enabled 且 `prefix: "/"` 的上游（`runtime.RootUpstreamMounted()`），根路径归上游，管理界面仍在 `/aetherlink/`。
+
 ## 请求判定顺序
 
 1. 按 `prefix` 最长匹配选出上游；`/` 作为兜底。
@@ -43,7 +51,7 @@
 网页上的每次保存都走 `runtime.Apply`，顺序固定：
 
 1. 深拷贝当前生效配置得到草稿（`Config.Clone`）。
-2. 在草稿上执行修改闭包（改设置 / 增删改上游 / 设置口令）。
+2. 在草稿上执行修改闭包（改设置 / 增删改上游 / 改管理账号）。
 3. `Validate()` 归一化并校验草稿。
 4. 用草稿构建一整套新的 provider、resolver 与 proxy。
 5. 原子写入 `config.yaml`（临时文件 + 0600 + rename）。
