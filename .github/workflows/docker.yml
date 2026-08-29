@@ -62,8 +62,10 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: 冒烟测试镜像
+        env:
+          # 直接取 metadata 算好的第一个标签：github.repository 含大写，docker 拒绝这种引用。
+          IMAGE: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
         run: |
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$(echo "${{ steps.meta.outputs.version }}")"
           docker run -d --name aetherlink-smoke -p 5151:5151 "$IMAGE"
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:5151/aetherlink/api/health >/dev/null; then
