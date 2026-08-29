@@ -143,22 +143,18 @@ func TestHealthAndBootstrapNeedNoToken(t *testing.T) {
 			t.Errorf("%s status = %d, want 200", target, recorder.Code)
 		}
 	}
-	// 登录页要靠这个标记决定是否提示默认账号。
-	recorder := env.do(http.MethodGet, BasePath+"/bootstrap", "", "")
-	if !strings.Contains(recorder.Body.String(), `"defaultCredentials":true`) {
-		t.Fatalf("a fresh instance must report defaultCredentials=true: %s", recorder.Body.String())
-	}
 }
 
-// 改过账号后 bootstrap 不该再回显内置凭据。
-func TestBootstrapHidesDefaultsOnceChanged(t *testing.T) {
-	env := newEnv(t)
-	body := env.do(http.MethodGet, BasePath+"/bootstrap", "", "").Body.String()
-	if strings.Contains(body, "defaultUsername") || strings.Contains(body, "defaultPassword") {
-		t.Fatalf("built-in credentials are still echoed after the account changed: %s", body)
-	}
-	if !strings.Contains(body, `"defaultCredentials":false`) {
-		t.Fatalf("body = %s", body)
+// bootstrap 免鉴权，所以既不能回显内置凭据，也不能透露还在用默认账号——
+// 否则等于告诉扫端口的人「这里 admin/password 就能进」。
+func TestBootstrapNeverMentionsCredentials(t *testing.T) {
+	for name, env := range map[string]*testEnv{"fresh": newFreshEnv(t), "changed": newEnv(t)} {
+		body := env.do(http.MethodGet, BasePath+"/bootstrap", "", "").Body.String()
+		for _, leak := range []string{"defaultUsername", "defaultPassword", "defaultCredentials", "username", auth.DefaultPassword} {
+			if strings.Contains(body, leak) {
+				t.Fatalf("%s: bootstrap leaked %q: %s", name, leak, body)
+			}
+		}
 	}
 }
 

@@ -748,9 +748,6 @@ label.inline input[type='checkbox'] {
   margin: 12px 0 0;
 }
 
-.gate .hint {
-  color: var(--muted);
-}
 
 button.block {
   width: 100%;

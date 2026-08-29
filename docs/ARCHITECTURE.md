@@ -32,7 +32,7 @@
 ## 管理账号与入口
 
 - **恒有一个账号**：`cmd/aetherlink/main.go` 在加载配置后检查 `Auth.IsConfigured()`，为空就写入 `auth.Default()`（`admin` / `password`，同时置 `default_credentials: true`）并立刻落盘。首次启动、旧版升级、手工清空 `auth:` 段这三种情形因此都不再有「无账号」状态，管理 API 未登录一律 401，不存在需要免鉴权写入的初始化通道。
-- **默认凭据只回显一次**：免鉴权的 `GET /aetherlink/api/bootstrap` 只返回版本、密码长度下限与 `defaultCredentials`；仅当该标记为真才附带 `defaultUsername` / `defaultPassword` 供登录框预填。改过账号后这两个字段消失，登录页不再泄露任何信息。
+- **登录页零信息**：免鉴权的 `GET /aetherlink/api/bootstrap` 只返回版本号与密码长度下限，用来确认后端可达。它不回显账号名与凭据，也不回报 `defaultCredentials`——否则扫到端口的人等于被告知「这里 admin/password 就能进」。「仍在用默认账号」的提醒只在登录之后由 `/status` 与 `/config` 提供。
 - **账号修改**：`POST /aetherlink/api/account` 接收当前密码 + 新用户名 + 新密码（新密码留空表示只改用户名），成功后清掉 `default_credentials` 并 `RevokeAll()` 注销全部会话，前端随即回到登录页。
 - **用户名比较宽松，密码严格**：`auth.VerifyLogin` 对用户名去空白且不区分大小写；用户名不匹配时仍走一次 PBKDF2 派生，使耗时与密码错误一致，不暴露「用户名是否存在」。老配置里没有 `username` 时按 `admin` 兼容。
 - **根路径直达**：`rootHandler` 让 `GET /` 302 到 `/aetherlink/`，用户不必手敲后缀；但若有 enabled 且 `prefix: "/"` 的上游（`runtime.RootUpstreamMounted()`），根路径归上游，管理界面仍在 `/aetherlink/`。

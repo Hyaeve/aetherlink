@@ -48,7 +48,6 @@ const tabs = [
 // gate 决定首屏：loading / login / app。没有初始化向导——首次启动就带内置账号。
 const gate = ref('loading')
 const activeTab = ref('upstreams')
-const boot = ref(null)
 
 const username = ref('')
 const password = ref('')
@@ -63,14 +62,13 @@ const activeLabel = computed(() => tabs.find((tab) => tab.id === activeTab.value
 
 async function bootstrap() {
   try {
-    boot.value = await api.bootstrap()
+    // 只是探一下后端在不在，拿不到就把原因直接显示在登录页上。
+    await api.bootstrap()
   } catch (error) {
-    // 连 /bootstrap 都拿不到，说明后端还没起来或被别的东西挡住了。
     authError.value = error.message
   }
   if (!getToken()) {
     gate.value = 'login'
-    prefillDefaults()
     return
   }
   // 有旧令牌就先试一次，能用就直接进主界面。
@@ -80,15 +78,6 @@ async function bootstrap() {
   } catch {
     setToken('')
     gate.value = 'login'
-    prefillDefaults()
-  }
-}
-
-// 仍是内置账号时把输入框填好，第一次进来点一下登录就行。
-function prefillDefaults() {
-  if (boot.value?.defaultCredentials) {
-    username.value = boot.value.defaultUsername || 'admin'
-    password.value = boot.value.defaultPassword || 'password'
   }
 }
 
@@ -146,11 +135,6 @@ async function onAccountChanged() {
   setToken('')
   status.value = null
   if (statusTimer) clearInterval(statusTimer)
-  try {
-    boot.value = await api.bootstrap()
-  } catch {
-    // 拿不到也不影响登录页显示。
-  }
   password.value = ''
   authError.value = '账号已更新，请重新登录'
   gate.value = 'login'
@@ -191,9 +175,6 @@ onUnmounted(() => statusTimer && clearInterval(statusTimer))
         {{ authBusy ? '登录中…' : '登录' }}
       </button>
       <p v-if="authError" class="error">{{ authError }}</p>
-      <p v-else-if="boot?.defaultCredentials" class="muted hint">
-        默认账号 {{ boot.defaultUsername }} / {{ boot.defaultPassword }}
-      </p>
     </div>
   </div>
 

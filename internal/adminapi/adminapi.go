@@ -127,22 +127,14 @@ func (a *API) handleHealth(writer http.ResponseWriter, request *http.Request) {
 	writeJSON(writer, http.StatusOK, map[string]any{"status": "ok", "version": Version})
 }
 
-// handleBootstrap 给登录页提供最少的自举信息：版本号、是否仍是默认凭据。
-// 不需要鉴权，因此绝不能在这里泄露上游地址、密钥或配置文件路径。
+// handleBootstrap 只用于确认后端可达，因此只回版本号与密码长度下限。
+// 这个接口免鉴权，所以既不回显账号名与凭据，也不透露是否仍在用默认账号——
+// 那些信息只在登录之后通过 /status 与 /config 提供。
 func (a *API) handleBootstrap(writer http.ResponseWriter, request *http.Request) {
-	cfg := a.rt.Config()
-	payload := map[string]any{
-		"version":            Version,
-		"defaultCredentials": cfg.Auth.DefaultCredentials,
-		"minPasswordLength":  auth.MinPasswordLength,
-	}
-	if cfg.Auth.DefaultCredentials {
-		// 仅在还没改过账号时回显内置凭据，用来预填登录框。
-		// 改过之后就不再提，免得给暴力破解者多一条线索。
-		payload["defaultUsername"] = auth.DefaultUsername
-		payload["defaultPassword"] = auth.DefaultPassword
-	}
-	writeJSON(writer, http.StatusOK, payload)
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"version":           Version,
+		"minPasswordLength": auth.MinPasswordLength,
+	})
 }
 
 type loginPayload struct {
