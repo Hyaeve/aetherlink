@@ -1,0 +1,136 @@
+// Command aetherlink 启动 AetherLink 反向代理：它挡在 Audiobookshelf / Emby
+// 前面，识别播放请求背后的 .strm 指针，并用 302 把播放器直接指向真实媒体地址。
+//
+// 除监听地址以外的所有配置都在网页上维护并写回 /config/config.yaml，
+// 因此 docker compose 只需要挂载一个 /config 卷。
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/aetherlink/aetherlink/internal/adminapi"
+	"github.com/aetherlink/aetherlink/internal/auth"
+	"github.com/aetherlink/aetherlink/internal/config"
+	"github.com/aetherlink/aetherlink/internal/logx"
+	"github.com/aetherlink/aetherlink/internal/runtime"
+	"github.com/aetherlink/aetherlink/internal/stats"
+	"github.com/aetherlink/aetherlink/internal/web"
+)
+
+// version 在构建时用 -ldflags "-X main.version=..." 覆盖。
+var version = "dev"
+
+func main() {
+	configPath := flag.String("config", defaultConfigPath(), "AetherLink 配置文件路径")
+	printVersion := flag.Bool("version", false, "打印版本号后退出")
+	flag.Parse()
+
+	if *printVersion {
+		fmt.Println("aetherlink", version)
+		return
+	}
+
+	adminapi.Version = version
+
+	// 配置文件不存在时自动创建：新装实例不需要人工准备任何文件，
+	// 直接打开网页设置管理口令即可。
+	cfg, created, err := config.LoadOrCreate(*configPath)
+	if err != nil {
+		logx.Errorf("加载配置失败: %v", err)
+		os.Exit(1)
+	}
+	if created {
+		logx.Infof("已在 %s 创建默认配置", *configPath)
+	}
+
+	logx.SetLevel(logx.ParseLevel(cfg.Server.LogLevel))
+	logx.SetMaxEntries(cfg.Server.LogBuffer)
+
+	collector := stats.New(500)
+	rt, err := runtime.New(cfg, collector)
+	if err != nil {
+		logx.Errorf("初始化运行时失败: %v", err)
+		os.Exit(1)
+	}
+	for _, upstreamCfg := range cfg.Upstreams {
+		if upstreamCfg.IsEnabled() {
+			logx.Infof("上游 %s (%s) 挂载于 %s -> %s", upstreamCfg.Name, upstreamCfg.Type, upstreamCfg.Prefix, upstreamCfg.BaseURL)
+		}
+	}
+
+	sessions := auth.NewStore(auth.DefaultSessionTTL)
+	admin := adminapi.New(rt, sessions)
+
+	if !cfg.Auth.IsConfigured() {
+		logx.Warnf("尚未设置管理口令，请打开 http://<主机地址>:%s%s 完成初始化", portOf(cfg.Server.Listen), web.MountPath)
+	}
+	if strings.TrimSpace(cfg.Server.AdminToken) != "" {
+		logx.Warnf("检测到应急令牌 AETHERLINK_ADMIN_TOKEN：它可以绕过口令登录，排障完成后请移除")
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle(adminapi.BasePath+"/", admin.Handler())
+	mux.Handle(web.MountPath, web.Handler())
+	// 裸的 /aetherlink 重定向到界面根路径，省得用户手敲末尾斜杠。
+	mux.HandleFunc("/aetherlink", func(writer http.ResponseWriter, request *http.Request) {
+		http.Redirect(writer, request, web.MountPath, http.StatusMovedPermanently)
+	})
+	// 其余路径都属于被反代的上游。交给 runtime 而不是某个具体 proxy 实例，
+	// 这样在网页上增删上游后无需重启即可生效。
+	mux.Handle("/", rt)
+
+	server := &http.Server{
+		Addr:    cfg.Server.Listen,
+		Handler: mux,
+		// 有意不设读写超时：媒体流是长连接，中途被切断会导致播放中断。
+		ReadHeaderTimeout: 20 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		logx.Infof("AetherLink %s 正在监听 %s（管理界面 %s）", version, cfg.Server.Listen, web.MountPath)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logx.Errorf("HTTP 服务出错: %v", err)
+			stop()
+		}
+	}()
+
+	<-shutdownCtx.Done()
+	logx.Infof("正在关闭")
+	gracefulCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := server.Shutdown(gracefulCtx); err != nil {
+		logx.Warnf("优雅关闭失败: %v", err)
+	}
+}
+
+// defaultConfigPath 优先使用容器内的挂载点，本地开发时退回当前目录。
+func defaultConfigPath() string {
+	if value := strings.TrimSpace(os.Getenv("AETHERLINK_CONFIG")); value != "" {
+		return value
+	}
+	if _, err := os.Stat("/config"); err == nil {
+		return "/config/config.yaml"
+	}
+	return "config.yaml"
+}
+
+// portOf 从监听地址里取出端口，仅用于日志里给出可点击的地址提示。
+func portOf(listen string) string {
+	if index := strings.LastIndex(listen, ":"); index >= 0 {
+		return listen[index+1:]
+	}
+	return listen
+}

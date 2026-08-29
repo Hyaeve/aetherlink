@@ -1,0 +1,68 @@
+# AetherLink 以太链接 配置示例
+#
+# 正常情况下你不需要手写这个文件：容器首次启动会在 /config/config.yaml
+# 自动生成一份默认配置，之后管理口令、上游地址与 API 密钥、302 策略都在
+# 网页（http://宿主机:15151/aetherlink/）上填写，并由 AetherLink 写回本文件。
+#
+# 这里列出全部字段，只为说明磁盘上会存些什么、以及排障时可以手工改什么。
+# 手工改完需要重启容器才会读取。
+
+server:
+  # 反代与管理界面共用同一个端口。容器内固定 5151，对外端口在 compose 的
+  # ports 里映射；改这里不会改变已经监听的套接字，必须重启容器。
+  listen: ":5151"
+  log_level: info
+  log_buffer: 500
+  # 应急令牌：可绕过口令登录，仅在忘记口令时通过环境变量
+  # AETHERLINK_ADMIN_TOKEN 临时注入，平时应保持缺省（不写这一行）。
+  # admin_token: ""
+
+# 管理口令的校验材料，由网页上的「初始化」或「修改口令」写入。
+# 只保存 PBKDF2-SHA256 的派生值与随机盐，明文口令不落盘。
+# 忘记口令时删掉整个 auth 段并重启容器，即可重新走一次初始化向导。
+auth: {}
+
+redirect:
+  # always：所有 STRM 目标都回 302（推荐，最省带宽）
+  # private：仅内网目标回 302，公网目标由 AetherLink 中继
+  # never：全部中继转发，不使用 302
+  mode: always
+  # 播放前先把 302 跳转链走完，把最终直链交给播放器。
+  # 115 pick code 这类会二次跳转的后端建议开启；会给首次播放增加一次预检请求。
+  follow_upstream_redirects: false
+  max_follow_hops: 5
+  # 转发播放器自身的 User-Agent。部分网盘直链与 UA 绑定，关闭后统一使用 fallback。
+  forward_user_agent: true
+  fallback_user_agent: AetherLink
+  probe_timeout: 15s
+  # 中继模式下单次传输上限，0 表示不限制（长音频建议保持 0）。
+  stream_timeout: 0s
+  allow_public_targets: true
+
+cache:
+  # 解析结果缓存时间。播放器 seek 时会重复请求同一轨道，缓存可显著减少上游 API 调用。
+  ttl: 5m
+  max_size: 4096
+
+# 新装实例这里是空的，上游一律在网页「上游服务」页添加。
+upstreams: []
+
+# 网页保存后的样子供参考：
+# upstreams:
+#   - name: audiobookshelf
+#     type: audiobookshelf
+#     base_url: http://10.0.0.31:13378
+#     # Audiobookshelf 后台「设置 → 用户 → API Token」，等价于该用户的账号权限。
+#     # 需要拦截 /public/session/:id/track/:index 播放时，密钥必须属于管理员用户。
+#     api_key: "Audiobookshelf 的 API Key"
+#     enabled: true
+#     # 该上游在 AetherLink 上的挂载前缀，"/" 表示独占根路径。
+#     prefix: "/"
+#     # .strm 指向本地文件时，允许读取的容器目录白名单。
+#     strm_roots:
+#       - /NetDisk
+#     # 上游看到的媒体路径 → AetherLink 容器内路径。
+#     # 两侧容器路径同名时不需要填。
+#     path_mappings:
+#       - from: /audiobooks
+#         to: /NetDisk/115-Strm/Set/Read

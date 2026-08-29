@@ -1,0 +1,8 @@
+/aetherlink
+/aetherlink.exe
+/dist/
+/config.yaml
+/config/
+web/node_modules/
+internal/web/dist/*
+!internal/web/dist/.gitkeep

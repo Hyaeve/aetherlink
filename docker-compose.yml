@@ -1,0 +1,12 @@
+services:
+  aetherlink:
+    image: ghcr.io/hyaeve/aetherlink:latest
+    container_name: AetherLink
+    network_mode: bridge
+    ports:
+      - 15151:5151
+    volumes:
+      - ./config:/config
+    environment:
+      - TZ=Asia/Shanghai
+    restart: always

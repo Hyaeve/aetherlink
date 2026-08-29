@@ -1,0 +1,7 @@
+.git
+.gitignore
+.github
+web/node_modules
+internal/web/dist/assets
+docs
+*.md
