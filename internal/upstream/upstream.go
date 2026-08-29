@@ -79,6 +79,35 @@ type File struct {
 	IsStrm   bool    `json:"isStrm"`
 }
 
+// MediaTarget 是上游对「这个播放请求背后是什么」的回答。
+//
+// 两种媒体服务器给出的答案形态不同，必须区分开：
+//   - Audiobookshelf 只报告 .strm 指针文件在它那边的路径，指针内容要由
+//     AetherLink 自己去文件系统里读，因此必须挂载媒体目录。
+//   - Emby 在扫库阶段就把 .strm 读掉了，MediaSources[].Path 直接是指针里的
+//     那条 http 直链（Protocol 为 Http）。这种情况下 AetherLink 不需要看到
+//     任何文件，拿到 URL 就能 302。
+type MediaTarget struct {
+	// Path 是上游侧的文件系统路径，可能是一个 .strm 指针。
+	Path string
+	// URL 在上游已经把指针解析成直链时给出，此时 Path 只用于日志。
+	URL string
+	// Container 是上游报告的容器格式（Emby 对 strm 会给 "strm"），
+	// 用来在路径看不出扩展名时仍能判断这是不是指针媒体。
+	Container string
+}
+
+// IsDirectURL 报告上游是否已经给出了可直接 302 的地址。
+func (t MediaTarget) IsDirectURL() bool { return strings.TrimSpace(t.URL) != "" }
+
+// Describe 给日志用：优先显示直链，其次显示上游路径。
+func (t MediaTarget) Describe() string {
+	if t.IsDirectURL() {
+		return t.URL
+	}
+	return t.Path
+}
+
 // Provider is implemented by each supported media server dialect.
 type Provider interface {
 	Name() string
@@ -93,8 +122,10 @@ type Provider interface {
 	// Match reports whether the request should be intercepted for STRM
 	// resolution rather than proxied verbatim.
 	Match(request *http.Request) (MediaRef, bool)
-	// MediaPath resolves the upstream-side path of the referenced media.
-	MediaPath(ctx context.Context, ref MediaRef) (string, error)
+	// MediaTarget resolves what the referenced media actually is: either an
+	// upstream-side path (Audiobookshelf) or an already resolved direct URL
+	// (Emby, which reads .strm files itself at scan time).
+	MediaTarget(ctx context.Context, ref MediaRef) (MediaTarget, error)
 
 	Ping(ctx context.Context) (string, error)
 	Libraries(ctx context.Context) ([]Library, error)

@@ -9,6 +9,7 @@ package pathmap
 
 import (
 	"fmt"
+	"os"
 	"path"
 	"sort"
 	"strings"
@@ -126,4 +127,86 @@ func (m *Mapper) Check(upstreamPath string) (string, error) {
 		return "", fmt.Errorf("path %q is outside the allowed strm roots %v", translated, m.roots)
 	}
 	return translated, nil
+}
+
+// conventionalRoots are the container mount points STRM setups use by
+// convention. They are only probed when the translated path does not exist and
+// no roots were configured, so a user who mounted the library at the obvious
+// place does not have to write a path mapping by hand.
+var conventionalRoots = []string{"/NetDisk", "/audiobooks", "/media", "/strm", "/data"}
+
+// Locate returns the readable container path for an upstream media path.
+//
+// The happy path is an identical mount on both sides, which Translate already
+// handles. When that file is not present, the upstream path is re-anchored under
+// each candidate root by dropping leading segments one at a time: an upstream
+// path of /audiobooks/Set/Read/Book/001.strm will also be found at
+// /NetDisk/Book/001.strm. Only stat calls are used — no directory walking — so
+// the fallback stays cheap enough to run on a cache miss.
+//
+// found reports whether an existing file was located. When it is false the
+// caller gets the translated path back so error messages still name the path the
+// user most likely meant.
+func (m *Mapper) Locate(upstreamPath string) (resolved string, found bool, err error) {
+	translated := m.Translate(upstreamPath)
+	if translated == "" {
+		return "", false, fmt.Errorf("empty media path")
+	}
+	if strings.Contains(translated, "..") {
+		return "", false, fmt.Errorf("path %q contains a parent traversal segment", translated)
+	}
+	// 只有落在白名单内的路径才会被 stat/读取，这一条永不放宽。
+	if m.IsWithinRoots(translated) && isReadableFile(translated) {
+		return translated, true, nil
+	}
+
+	normalized := Normalize(upstreamPath)
+	segments := strings.Split(strings.TrimPrefix(normalized, "/"), "/")
+	for _, root := range m.candidateRoots() {
+		// 从最长的后缀开始，先命中的就是最具体的匹配。
+		for start := 0; start < len(segments); start++ {
+			candidate := path.Join(root, path.Join(segments[start:]...))
+			if !m.IsWithinRoots(candidate) {
+				continue
+			}
+			if isReadableFile(candidate) {
+				return candidate, true, nil
+			}
+		}
+	}
+	// 找不到不是配置错误：调用方会退回透传，让上游自己去读这个文件。
+	return translated, false, nil
+}
+
+// candidateRoots lists where a pointer file may live inside this container:
+// the configured roots first, the rewrite targets next, and the conventional
+// mount points only when nothing was configured at all.
+func (m *Mapper) candidateRoots() []string {
+	roots := make([]string, 0, len(m.roots)+len(m.rules)+len(conventionalRoots))
+	seen := map[string]bool{}
+	add := func(candidate string) {
+		normalized := Normalize(candidate)
+		if normalized == "" || seen[normalized] {
+			return
+		}
+		seen[normalized] = true
+		roots = append(roots, normalized)
+	}
+	for _, root := range m.roots {
+		add(root)
+	}
+	for _, rule := range m.rules {
+		add(rule.To)
+	}
+	if len(m.roots) == 0 {
+		for _, root := range conventionalRoots {
+			add(root)
+		}
+	}
+	return roots
+}
+
+func isReadableFile(candidate string) bool {
+	info, err := os.Stat(candidate)
+	return err == nil && info.Mode().IsRegular()
 }

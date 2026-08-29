@@ -8,10 +8,10 @@
 | `internal/auth` | 管理账号（用户名 + 口令）的 PBKDF2-SHA256 派生与恒定时间校验、内置默认账号的生成，以及内存会话令牌存储（只存令牌哈希）。 |
 | `internal/runtime` | 配置与运行期组件的解耦层：`atomic.Pointer` 持有一组彼此匹配的 provider / resolver / proxy 快照，管理接口改配置后整体替换，播放请求读路径无锁。同时管理每个上游的反代端口监听器，支持热增删。 |
 | `internal/urlx` | STRM 原始内容的 URL 归一化与分类。保留已有 `%XX` 转义，识别 115 pick code / openlist 形态，判断私有网段。 |
-| `internal/pathmap` | 上游媒体路径 → 容器路径的前缀重写（最长前缀优先），以及本地目标的根目录白名单校验。 |
+| `internal/pathmap` | 上游媒体路径 → 容器路径的前缀重写（最长前缀优先）、本地目标的根目录白名单校验，以及 `Locate`：翻译后的路径不存在时，把上游路径逐段剥前缀，在配置根目录、映射目标与常见挂载点下 stat 定位指针，两侧挂载点不同名也不必手写映射。 |
 | `internal/strm` | 读取 `.strm` 指针（跳过注释行、限制读取长度），区分远程 URL 与容器本地文件，推导显示文件名。 |
-| `internal/upstream` | Audiobookshelf 与 Emby 的 API 客户端：识别需要拦截的媒体请求、查询媒体真实路径、书库浏览。 |
-| `internal/resolver` | 解析流水线：查上游路径 → 路径映射 → 读指针 →（可选）走完跳转链。带 TTL+LRU 缓存与并发去重。 |
+| `internal/upstream` | Audiobookshelf 与 Emby 的 API 客户端：识别需要拦截的媒体请求、回答「这个媒体是什么」（`MediaTarget`：ABS 给指针路径，Emby 给已解析的直链）、书库浏览。Emby 侧在 `/Items` 不返回 `MediaSources` 时回退查 `PlaybackInfo`。 |
+| `internal/resolver` | 解析流水线：问上游 → 直链直接用 / 定位并读指针 →（可选）走完跳转链。带 TTL+LRU 缓存与并发去重。读不到指针时返回 `ErrPointerUnavailable`，由调用方退回透传。 |
 | `internal/proxy` | 反向代理与拦截决策：302、中继转发、本地直读、透传四条出口。一个 `Server` 只服务一个上游，因此不需要路径匹配。 |
 | `internal/stats` | 内存计数与最近事件环形缓冲，供日志与排障使用。 |
 | `internal/adminapi` | `/aetherlink/api` 管理接口：登录页自举、账号登录、账号修改、设置与上游 CRUD、连通性测试与日志。 |
@@ -24,8 +24,8 @@
 | 文件 | 作用 |
 | --- | --- |
 | `web/src/App.vue` | 左侧图标栏 + 主区布局（图标栏可展开成图标 + 文字，状态存 localStorage），以及 loading / login / app 三态的首屏闸门。只有反代上游 / 日志 / 设置三个页面。 |
-| `web/src/styles.css` | 莫兰迪低饱和浅色主题的全部样式，配色集中在 `:root` 的 CSS 变量里。 |
-| `web/src/palette.js` | 上游名称哈希到固定的莫兰迪渐变，保证同名上游的卡片配色恒定。 |
+| `web/src/styles.css` | 莫奈低饱和浅色主题的全部样式，配色集中在 `:root` 的 CSS 变量里。动态部分是 `body::before` 的多点径向渐变漂移与卡片的 `background-position` 位移，两者都在 `prefers-reduced-motion` 下静止。 |
+| `web/src/palette.js` | 上游名称哈希到固定的莫奈三段渐变与动画相位，保证同名上游的卡片配色恒定，同时让卡片之间的流动不同步。 |
 | `web/src/components/UpstreamsView.vue` | 卡片网格：一个上游一张方卡，左键开编辑弹窗，右键出上下文菜单。 |
 | `web/src/components/ContextMenu.vue` | 通用右键菜单，含视口边缘回折与点击外部关闭。 |
 | `web/src/components/UpstreamForm.vue` | 上游详细编辑弹窗，按「基本 / 密钥 / 路径」分组；密钥说明随服务端类型在 Audiobookshelf 与 Emby 之间切换。 |
@@ -43,9 +43,12 @@
 
 1. 请求落在哪个反代端口上，就是哪个上游（`runtime.handlerFor`，一端口一上游，路径不参与选择）。
 2. 交给该上游的 `Match` 判断是否为媒体字节接口，不是则直接反代。
-3. 上游没有 API 密钥 → 记为 `passthrough` 并反代（无法查询路径）。
-4. 解析失败且原因是「不是 `.strm`」→ 记为 `passthrough` 并反代。
-5. 本地目标 → `http.ServeContent` 直读（自动支持 Range/HEAD）。
+3. 上游没有 API 密钥 → 记为 `passthrough` 并反代（无法查询媒体信息）。
+4. 问上游 `MediaTarget`，按回答分三条路：
+   - **已是直链**（Emby：`Protocol: Http` 或 `Path` 以 `http(s)://` 开头）→ 归一化后直接进入第 6 步，不读任何文件。
+   - **是指针文件**（路径以 `.strm` 结尾，或 Emby 报的 `Container` 是 `strm`）→ `pathmap.Locate` 定位到容器内路径再读取。定位不到或读不到（`ErrPointerUnavailable`）→ 记为 `passthrough` 并反代，同时把原因写进日志与事件。
+   - **普通文件**（`ErrNotStrm`）→ 记为 `passthrough` 并反代。
+5. 指针指向容器本地文件 → `http.ServeContent` 直读（自动支持 Range/HEAD）。
 6. 远程目标 → 按 `redirect.mode` 决定 302 还是中继。
 
 ## 配置变更流程
@@ -64,6 +67,9 @@
 
 ## 关键设计取舍
 
+- **Emby 与 ABS 的 strm 形态根本不同**：Emby 扫库时就把指针读掉了，`MediaSources[].Path` 直接是直链，AetherLink 完全不需要挂载媒体目录；Audiobookshelf 保留指针原样、播放时自己代理，AetherLink 必须能读到那个 `.strm` 才能 302。两条链路在 `resolver.resolveUncached` 里分开处理，`upstream.MediaTarget` 就是为了让这个区别显式化而存在的。
+- **指针读不到就透传，不报错**：上游自己能读到那个文件，让它继续服务比让播放失败好得多。原因记进日志与事件，用户能查到「为什么没有 302」，而不是听到一段静音。
+- **自动定位而非要求手写映射**：`pathmap.Locate` 把上游路径逐段剥前缀，在配置根目录、映射目标与常见挂载点下 stat。白名单校验从不放宽——白名单外的候选连 stat 都不做。凡能自动化的就不要求用户填表。
 - **不缓存指针内容按 mtime**：文件系统 mtime 精度不足，同一 tick 内两次写入无法区分。缓存键是媒体引用（上游 + 条目 + 文件），TTL 到期后重新读取指针，路径白名单校验永远在缓存之外无条件执行。
 - **并发去重**：播放器 seek 时会并发发起多个 Range 请求，`resolver` 用 inflight map 让同一轨道只打一次上游 API。
 - **不设 HTTP 读写超时**：媒体流是长连接，只设 `ReadHeaderTimeout` 与 `IdleTimeout`，取消由请求上下文驱动。
@@ -84,7 +90,8 @@
 
 | 关注点 | Audiobookshelf 内部实现 | AetherLink |
 | --- | --- | --- |
-| 指针解析 | `server/utils/strmUtils.js` 的 `resolveStrmTarget` | `internal/strm` + `internal/urlx` |
+| 指针解析 | `server/utils/strmUtils.js` 的 `resolveStrmTarget` | `internal/strm`（读文件）+ `internal/strm.ParseURL`（上游已给直链）+ `internal/urlx` |
+| 指针定位 | 指针路径就在本机，直接 `fs.readFile` | `internal/pathmap.Locate`：跨容器，挂载点可能不同名 |
 | 字节投递 | `proxyStrm` 服务端流式转发 | 默认 302，必要时才中继 |
 | 根目录限制 | 库目录 + 固定 `/NetDisk` | 界面配置的 `strm_roots` |
 | 私网放行 | STRM 链路绕过 SSRF 过滤 | `redirect.mode: private` / `allow_public_targets` |

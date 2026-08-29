@@ -76,6 +76,23 @@ func Read(strmPath string, mapper *pathmap.Mapper) (*Target, error) {
 	return Parse(string(raw), strmPath, mapper)
 }
 
+// ParseURL builds a remote Target from a URL that an upstream已经替我们解析好了
+// （Emby 会把 .strm 的内容作为 MediaSource.Path 返回）。它走的是同一套归一化
+// 逻辑，所以 115 pick code 与 openlist 的中文、空格、%26 都能得到一致处理。
+func ParseURL(rawURL string) (*Target, error) {
+	normalized, err := urlx.Normalize(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	return &Target{
+		Type:     TargetRemote,
+		URL:      normalized,
+		Raw:      urlx.Clean(rawURL),
+		Kind:     urlx.Classify(normalized),
+		Filename: remoteFilename(normalized, ""),
+	}, nil
+}
+
 // Parse turns pointer contents into a Target. strmPath is only used to resolve
 // relative local targets and may be empty for remote-only parsing.
 func Parse(contents, strmPath string, mapper *pathmap.Mapper) (*Target, error) {

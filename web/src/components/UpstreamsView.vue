@@ -1,7 +1,7 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { api } from '../api'
-import { gradientFor } from '../palette'
+import { cardStyleFor } from '../palette'
 import ContextMenu from './ContextMenu.vue'
 import UpstreamForm from './UpstreamForm.vue'
 
@@ -146,7 +146,7 @@ onMounted(load)
         :key="upstream.name"
         class="card"
         :class="{ dimmed: !upstream.enabled }"
-        :style="{ background: gradientFor(upstream.name) }"
+        :style="cardStyleFor(upstream.name)"
         @click="openEditor(upstream)"
         @contextmenu.prevent="openMenu($event, upstream)"
       >

@@ -740,6 +740,16 @@ func (a *API) handleResolve(writer http.ResponseWriter, request *http.Request) {
 			writeJSON(writer, http.StatusOK, map[string]any{"isStrm": false, "message": err.Error()})
 			return
 		}
+		if errors.Is(err, resolver.ErrPointerUnavailable) {
+			// 指针确实是 strm，只是本容器读不到；播放时会退回透传，所以这里
+			// 也不算失败，而是告诉用户缺挂载。
+			writeJSON(writer, http.StatusOK, map[string]any{
+				"isStrm":       true,
+				"willRedirect": false,
+				"message":      "指针是 strm，但本容器读不到这个文件；把上游的媒体目录也挂进 AetherLink 后即可 302，当前会退回透传。原因：" + err.Error(),
+			})
+			return
+		}
 		writeError(writer, http.StatusBadGateway, err.Error())
 		return
 	}

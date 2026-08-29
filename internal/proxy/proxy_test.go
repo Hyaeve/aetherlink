@@ -326,7 +326,9 @@ func TestLocalStrmTargetIsServedFromDisk(t *testing.T) {
 	}
 }
 
-func TestStrmOutsideAllowedRootsIsRejected(t *testing.T) {
+// 指针文件落在白名单之外时绝不读取：AetherLink 不 302，而是安全地退回透传，
+// 让上游自己去服务这个文件，同时把原因记进事件里。
+func TestStrmOutsideAllowedRootsFallsBackToUpstream(t *testing.T) {
 	root, strmPath, regularPath := writeStrm(t, "http://10.0.0.31:19527/d/abc.m4a")
 	fake := newFakeABS(t, strmPath, regularPath)
 	// Point the allow-list at an unrelated directory so the pointer is out of scope.
@@ -335,11 +337,232 @@ func TestStrmOutsideAllowedRootsIsRejected(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/items/book-1/file/ino-strm", nil))
 
-	if recorder.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d, want 502", recorder.Code)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want the upstream pass-through to succeed", recorder.Code)
 	}
-	if snapshot := collector.Snapshot(10); snapshot.Errors != 1 {
-		t.Fatalf("error count = %d, want 1", snapshot.Errors)
+	snapshot := collector.Snapshot(10)
+	if snapshot.Redirects != 0 {
+		t.Fatalf("redirect count = %d, want 0 for an out-of-scope pointer", snapshot.Redirects)
+	}
+	if snapshot.Passthroughs != 1 {
+		t.Fatalf("passthrough count = %d, want 1", snapshot.Passthroughs)
+	}
+	if snapshot.RecentEvents[0].Error == "" {
+		t.Fatal("the pass-through event should record why the pointer was skipped")
+	}
+}
+
+// newFakeEmby stands in for an Emby server that has already resolved a .strm
+// pointer at scan time: the media source keeps the .strm path but reports the
+// pointer URL with Protocol "Http".
+func newFakeEmby(t *testing.T, sources []map[string]any) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/Items", func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Query().Get("api_key") != "test-api-key" {
+			writer.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		writeJSON(t, writer, map[string]any{
+			"Items": []map[string]any{{
+				"Id":           "movie-1",
+				"Name":         "白色巨塔",
+				"Type":         "Episode",
+				"Path":         "/media/tv/白色巨塔 (2003)/S01E01.strm",
+				"MediaSources": sources,
+			}},
+			"TotalRecordCount": 1,
+		})
+	})
+	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
+		writer.Write([]byte("emby-ui:" + request.URL.Path))
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server
+}
+
+// newFakeEmbyWithoutItemSources stands in for the Emby builds that ignore
+// Fields=MediaSources on /Items and only report sources through PlaybackInfo.
+func newFakeEmbyWithoutItemSources(t *testing.T, sources []map[string]any) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/Items", func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Query().Get("api_key") != "test-api-key" {
+			writer.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		writeJSON(t, writer, map[string]any{
+			"Items": []map[string]any{{
+				"Id":   "movie-1",
+				"Name": "白色巨塔",
+				"Type": "Episode",
+				"Path": "/media/tv/白色巨塔 (2003)/S01E01.strm",
+			}},
+			"TotalRecordCount": 1,
+		})
+	})
+	mux.HandleFunc("/Items/movie-1/PlaybackInfo", func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Query().Get("api_key") != "test-api-key" {
+			writer.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		writeJSON(t, writer, map[string]any{"MediaSources": sources})
+	})
+	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
+		writer.Write([]byte("emby-ui:" + request.URL.Path))
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server
+}
+
+func newEmbyTestServer(t *testing.T, embyURL string, redirectCfg config.Redirect) (*Server, *stats.Collector) {
+	t.Helper()
+	provider, err := upstream.New(config.Upstream{
+		Name:       "emby",
+		Type:       config.UpstreamEmby,
+		BaseURL:    embyURL,
+		APIKey:     "test-api-key",
+		ListenPort: 8096,
+	})
+	if err != nil {
+		t.Fatalf("build emby provider: %v", err)
+	}
+	collector := stats.New(50)
+	mediaResolver := resolver.New(config.Cache{TTL: time.Minute, MaxSize: 32}, redirectCfg)
+	return New(provider, mediaResolver, collector, redirectCfg), collector
+}
+
+// Emby 的 strm 走的是 API 直链，不需要挂载任何媒体目录，这条链路是 Emby 能
+// 302 的唯一原因，因此必须有测试锁住。
+func TestEmbyHTTPMediaSourceRedirectsWithoutMountedMedia(t *testing.T) {
+	emby := newFakeEmby(t, []map[string]any{{
+		"Id":        "source-1",
+		"Path":      "http://10.0.0.31:25244/d/移动云盘/白色巨塔 (2003)/S01E01.再读.mkv",
+		"Protocol":  "Http",
+		"Container": "strm",
+	}})
+	server, collector := newEmbyTestServer(t, emby.URL, defaultRedirect())
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/Videos/movie-1/stream.mkv?MediaSourceId=source-1", nil)
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302; body = %q", recorder.Code, recorder.Body.String())
+	}
+	location := recorder.Header().Get("Location")
+	// 中文与空格必须被百分号编码，否则播放器拿到的是非法 URL。
+	if !strings.HasPrefix(location, "http://10.0.0.31:25244/d/%E7%A7%BB%E5%8A%A8%E4%BA%91%E7%9B%98/") {
+		t.Fatalf("Location = %q, want a percent-encoded openlist URL", location)
+	}
+	if strings.Contains(location, " ") {
+		t.Fatalf("Location still contains a raw space: %q", location)
+	}
+	snapshot := collector.Snapshot(10)
+	if snapshot.Redirects != 1 {
+		t.Fatalf("redirect count = %d, want 1", snapshot.Redirects)
+	}
+	if snapshot.ByKind["openlist"] != 1 {
+		t.Fatalf("kind counts = %v, want one openlist entry", snapshot.ByKind)
+	}
+}
+
+// Emby 上普通影片的 MediaSource 是本地文件路径，必须原样透传给 Emby 自己播。
+func TestEmbyLocalMediaSourceIsProxied(t *testing.T) {
+	emby := newFakeEmby(t, []map[string]any{{
+		"Id":        "source-1",
+		"Path":      "/media/movies/普通影片.mkv",
+		"Protocol":  "File",
+		"Container": "mkv",
+	}})
+	server, collector := newEmbyTestServer(t, emby.URL, defaultRedirect())
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/Videos/movie-1/stream.mkv?MediaSourceId=source-1", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 from the upstream", recorder.Code)
+	}
+	if !strings.HasPrefix(recorder.Body.String(), "emby-ui:") {
+		t.Fatalf("body = %q, want the upstream response", recorder.Body.String())
+	}
+	if snapshot := collector.Snapshot(10); snapshot.Passthroughs != 1 {
+		t.Fatalf("passthrough count = %d, want 1", snapshot.Passthroughs)
+	}
+}
+
+// Emby 的 pick code 直链同样要能 302，且查询串里的显示文件名不能破坏 URL。
+func TestEmbyPickCodeSourceRedirects(t *testing.T) {
+	emby := newFakeEmby(t, []map[string]any{{
+		"Id":       "source-1",
+		"Path":     "http://10.0.0.31:19527/d/bi6jeznun2rvu88v6.m4a?/001.总序.m4a",
+		"Protocol": "Http",
+	}})
+	server, collector := newEmbyTestServer(t, emby.URL, defaultRedirect())
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/emby/Items/movie-1/Download?MediaSourceId=source-1", nil))
+
+	if recorder.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302; body = %q", recorder.Code, recorder.Body.String())
+	}
+	if location := recorder.Header().Get("Location"); !strings.HasPrefix(location, "http://10.0.0.31:19527/d/bi6jeznun2rvu88v6.m4a?") {
+		t.Fatalf("Location = %q", location)
+	}
+	if snapshot := collector.Snapshot(10); snapshot.ByKind["pickcode115"] != 1 {
+		t.Fatalf("kind counts = %v, want one pickcode115 entry", snapshot.ByKind)
+	}
+}
+
+// 有些 Emby 版本在 /Items 上忽略 Fields=MediaSources，只有 PlaybackInfo 才给
+// 媒体源。少了这个回退，AetherLink 就看不到直链，Emby 侧会静默退化成纯透传
+// ——也就是用户看到的「反代成功了但不 302」。
+func TestEmbyMediaSourceFromPlaybackInfoRedirects(t *testing.T) {
+	emby := newFakeEmbyWithoutItemSources(t, []map[string]any{{
+		"Id":        "source-1",
+		"Path":      "http://10.0.0.31:19527/d/bi6jeznun2rvu88v6.m4a?/001.总序.m4a",
+		"Protocol":  "Http",
+		"Container": "strm",
+	}})
+	server, collector := newEmbyTestServer(t, emby.URL, defaultRedirect())
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/Videos/movie-1/stream.m4a", nil))
+
+	if recorder.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302; body = %q", recorder.Code, recorder.Body.String())
+	}
+	if snapshot := collector.Snapshot(10); snapshot.ByKind["pickcode115"] != 1 {
+		t.Fatalf("kind counts = %v, want one pickcode115 entry", snapshot.ByKind)
+	}
+}
+
+// 指针文件没挂进容器时不能让播放失败：退回透传，让上游自己代理。
+func TestUnreadableStrmPointerFallsBackToUpstream(t *testing.T) {
+	root := t.TempDir()
+	// 上游报告的指针路径在本容器里根本不存在。
+	missing := pathmap.Normalize(filepath.Join(root, "not-mounted", "001.strm"))
+	regular := pathmap.Normalize(filepath.Join(root, "002.m4a"))
+	if err := os.WriteFile(filepath.FromSlash(regular), []byte("local-audio"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fake := newFakeABS(t, missing, regular)
+	server, collector := newTestServer(t, fake.server.URL, root, defaultRedirect())
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/items/book-1/file/ino-strm", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want the upstream pass-through to succeed", recorder.Code)
+	}
+	snapshot := collector.Snapshot(10)
+	if snapshot.Passthroughs != 1 || snapshot.Errors != 0 {
+		t.Fatalf("passthrough = %d, errors = %d; want 1 and 0", snapshot.Passthroughs, snapshot.Errors)
+	}
+	if snapshot.RecentEvents[0].Error == "" {
+		t.Fatal("the pass-through event should record why the pointer was unreadable")
 	}
 }
 

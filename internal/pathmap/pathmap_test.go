@@ -1,6 +1,10 @@
 package pathmap
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestTranslateLongestPrefixWins(t *testing.T) {
 	mapper := New([]Rule{
@@ -37,6 +41,67 @@ func TestCheckEnforcesRoots(t *testing.T) {
 	// A root prefix match must respect path boundaries.
 	if _, err := mapper.Check("/NetDiskEvil/a.strm"); err == nil {
 		t.Fatal("Check should not treat /NetDiskEvil as inside /NetDisk")
+	}
+}
+
+// 两侧挂载点不同名是最常见的部署形态：上游看到 /audiobooks/...，AetherLink
+// 只挂了 /NetDisk/...。Locate 必须自己找到文件，不能强迫用户手写映射。
+func TestLocateFindsFileUnderADifferentMountPoint(t *testing.T) {
+	root := t.TempDir()
+	bookDir := filepath.Join(root, "Book")
+	if err := os.MkdirAll(bookDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pointer := filepath.Join(bookDir, "001.strm")
+	if err := os.WriteFile(pointer, []byte("http://10.0.0.31:19527/d/a.m4a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mapper := New(nil, []string{Normalize(root)})
+	resolved, found, err := mapper.Locate("/audiobooks/Set/Read/Book/001.strm")
+	if err != nil {
+		t.Fatalf("Locate returned error: %v", err)
+	}
+	if !found {
+		t.Fatalf("Locate should have found the pointer under the configured root, got %q", resolved)
+	}
+	if resolved != Normalize(pointer) {
+		t.Fatalf("resolved = %q, want %q", resolved, Normalize(pointer))
+	}
+}
+
+func TestLocatePrefersAnExactMountMatch(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "Book")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exact := filepath.Join(nested, "001.strm")
+	if err := os.WriteFile(exact, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mapper := New([]Rule{{From: "/audiobooks", To: Normalize(root)}}, []string{Normalize(root)})
+	resolved, found, err := mapper.Locate("/audiobooks/Book/001.strm")
+	if err != nil || !found {
+		t.Fatalf("Locate = %q, found = %v, err = %v", resolved, found, err)
+	}
+	if resolved != Normalize(exact) {
+		t.Fatalf("resolved = %q, want the mapped path %q", resolved, Normalize(exact))
+	}
+}
+
+func TestLocateReportsNotFoundWithoutError(t *testing.T) {
+	root := t.TempDir()
+	mapper := New(nil, []string{Normalize(root)})
+	resolved, found, err := mapper.Locate(Normalize(filepath.Join(root, "missing", "001.strm")))
+	if err != nil {
+		t.Fatalf("a missing file is not a configuration error: %v", err)
+	}
+	if found {
+		t.Fatal("found should be false for a missing pointer")
+	}
+	if resolved == "" {
+		t.Fatal("the translated path should still be returned for error messages")
 	}
 }
 

@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/aetherlink/aetherlink/internal/logx"
 )
 
 // embyProvider speaks the Emby (and Jellyfin-compatible) HTTP API using an
@@ -81,7 +83,20 @@ func ticksToSeconds(ticks int64) float64 {
 	return float64(ticks) / 10_000_000
 }
 
+// embyPlaybackInfo is the /Items/:id/PlaybackInfo response. It is the only Emby
+// endpoint that is guaranteed to return MediaSources.
+type embyPlaybackInfo struct {
+	MediaSources []embyMediaSource `json:"MediaSources"`
+}
+
 // fetchItem loads a single item including media source paths.
+//
+// /Items?Ids= is asked first because one call gives both the item metadata and
+// its sources. Several Emby builds ignore Fields=MediaSources on that route,
+// though, and an item without sources is exactly the case where AetherLink
+// cannot tell a strm apart from a real file — so PlaybackInfo is used as a
+// fallback. Without it Emby playback silently degrades to a pass-through, which
+// is what "反代成功了但不 302" looks like from the outside.
 func (p *embyProvider) fetchItem(ctx context.Context, itemID string) (embyItem, error) {
 	query := url.Values{}
 	query.Set("Ids", itemID)
@@ -93,31 +108,91 @@ func (p *embyProvider) fetchItem(ctx context.Context, itemID string) (embyItem, 
 	if len(response.Items) == 0 {
 		return embyItem{}, fmt.Errorf("emby item %q not found", itemID)
 	}
-	return response.Items[0], nil
+	item := response.Items[0]
+	if len(item.MediaSources) == 0 {
+		if sources, err := p.fetchPlaybackSources(ctx, itemID); err != nil {
+			logx.Debugf("[emby] item %s PlaybackInfo 取不到媒体源: %v", itemID, err)
+		} else {
+			item.MediaSources = sources
+		}
+	}
+	return item, nil
 }
 
-// MediaPath resolves the upstream path of the requested media source.
-func (p *embyProvider) MediaPath(ctx context.Context, ref MediaRef) (string, error) {
+// fetchPlaybackSources asks PlaybackInfo for the media sources of one item.
+func (p *embyProvider) fetchPlaybackSources(ctx context.Context, itemID string) ([]embyMediaSource, error) {
+	var info embyPlaybackInfo
+	if err := p.client.getJSON(ctx, "/Items/"+url.PathEscape(itemID)+"/PlaybackInfo", nil, &info); err != nil {
+		return nil, err
+	}
+	if len(info.MediaSources) == 0 {
+		return nil, fmt.Errorf("emby item %q has no media sources", itemID)
+	}
+	return info.MediaSources, nil
+}
+
+// MediaTarget resolves what the requested Emby media source really is.
+//
+// Emby resolves .strm pointers itself while scanning: the library item keeps the
+// .strm path, but its MediaSource carries the URL from inside the pointer with
+// Protocol "Http" and Container "strm". That is the whole reason Emby 302 works
+// without mounting any media directory — the direct URL comes straight from the
+// API. Only when Emby reports a plain filesystem path do we fall back to reading
+// a pointer file ourselves.
+func (p *embyProvider) MediaTarget(ctx context.Context, ref MediaRef) (MediaTarget, error) {
 	item, err := p.fetchItem(ctx, ref.ItemID)
 	if err != nil {
-		return "", err
+		return MediaTarget{}, err
 	}
-	if ref.MediaSourceID != "" {
+	source, ok := selectMediaSource(item, ref.MediaSourceID)
+	if !ok {
+		if item.Path == "" {
+			return MediaTarget{}, fmt.Errorf("emby item %q has no media source path", ref.ItemID)
+		}
+		return embyTarget(embyMediaSource{Path: item.Path}), nil
+	}
+	target := embyTarget(source)
+	if target.Path == "" && target.URL == "" {
+		// Some Emby builds omit Path on the media source but keep it on the item.
+		return embyTarget(embyMediaSource{Path: item.Path, Container: source.Container, Protocol: source.Protocol}), nil
+	}
+	return target, nil
+}
+
+// selectMediaSource prefers the media source the player asked for and otherwise
+// falls back to the first source that carries a location.
+func selectMediaSource(item embyItem, mediaSourceID string) (embyMediaSource, bool) {
+	if mediaSourceID != "" {
 		for _, source := range item.MediaSources {
-			if source.ID == ref.MediaSourceID && source.Path != "" {
-				return source.Path, nil
+			if source.ID == mediaSourceID {
+				return source, true
 			}
 		}
 	}
 	for _, source := range item.MediaSources {
 		if source.Path != "" {
-			return source.Path, nil
+			return source, true
 		}
 	}
-	if item.Path != "" {
-		return item.Path, nil
+	return embyMediaSource{}, false
+}
+
+// embyTarget classifies one media source into a direct URL or a filesystem path.
+func embyTarget(source embyMediaSource) MediaTarget {
+	container := strings.ToLower(strings.TrimSpace(source.Container))
+	location := strings.TrimSpace(source.Path)
+	// Protocol Http is Emby's own marker for "this source is a remote URL",
+	// which is exactly what a resolved .strm looks like. The prefix check covers
+	// builds that leave Protocol empty.
+	if strings.EqualFold(source.Protocol, "Http") || isHTTPURL(location) {
+		return MediaTarget{URL: location, Path: location, Container: container}
 	}
-	return "", fmt.Errorf("emby item %q has no media source path", ref.ItemID)
+	return MediaTarget{Path: location, Container: container}
+}
+
+func isHTTPURL(candidate string) bool {
+	lowered := strings.ToLower(candidate)
+	return strings.HasPrefix(lowered, "http://") || strings.HasPrefix(lowered, "https://")
 }
 
 type embySystemInfo struct {

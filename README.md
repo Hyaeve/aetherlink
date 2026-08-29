@@ -13,11 +13,13 @@
 ```
 播放器 ──▶ AetherLink:5152 ──▶ (非媒体请求) ──▶ Audiobookshelf:13378
                     │
-                    ├─ 命中媒体接口 ──▶ 用 API 密钥问上游「这个文件在哪」
+                    ├─ 命中媒体接口 ──▶ 用 API 密钥问上游「这个媒体是什么」
                     │                  ↓
-                    │              路径映射 → 读取 .strm → 归一化 URL
-                    │                  ↓
-                    └───────────── 302 Location: http://10.0.0.31:19527/d/xxx.m4a
+                    │        ┌─ 上游直接给出直链（Emby）────────┐
+                    │        ├─ 上游只给指针路径（ABS）→ 定位并读取 .strm ─┤
+                    │        └─ 普通文件 ──▶ 原样透传给上游       │
+                    │                                    ↓ 归一化 URL
+                    └──────────────────── 302 Location: http://10.0.0.31:19527/d/xxx.m4a
 ```
 
 **一个上游一个端口。** 每个上游在 AetherLink 上独占一个反代端口，路径与上游完全一致——
@@ -28,7 +30,8 @@
 - **只拦截字节投递接口**，其余请求（Web UI、封面、元数据、进度同步、HLS 转码）原样反代，客户端行为不变。
   - Audiobookshelf：`/api/items/:id/file/:ino`、`/api/items/:id/file/:ino/download`、`/public/session/:id/track/:index`
   - Emby：`/Videos|Audio/:id/stream(.ext)`、`/Items/:id/Download`
-- **非 `.strm` 文件自动透传**给上游，不影响普通有声书和普通影片。
+- **两种 strm 形态都认**：Emby 在扫库时就把指针读成了 `MediaSources[].Path` + `Protocol: Http`，AetherLink 拿到直链即可 302，不需要挂任何媒体目录；Audiobookshelf 只报告指针文件路径，AetherLink 自己定位并读取那个 `.strm`。Emby 上少数只在 `PlaybackInfo` 里给媒体源的版本也会被自动回退查询。
+- **非 `.strm` 文件自动透传**给上游，不影响普通有声书和普通影片。读不到指针时同样退回透传，播放不会因为少挂一个目录而失败。
 - **URL 归一化**是关键：STRM 生成器写进去的往往不是合法 URL。AetherLink 会补齐百分号编码，同时保留已编码序列，因此下面三种主流形态都能直接 302：
   - 115 pick code：`http://10.0.0.31:19527/d/bi6jeznun2rvu88v6.m4a?/001.总序.m4a`（查询串里的显示文件名会被识别为 `filename`）
   - openlist 中文路径带空格：`http://10.0.0.31:25244/d/移动云盘/.../白色巨塔 (2003) S01E01.再读.mkv`
@@ -60,14 +63,23 @@ volumes:
   - ./config:/config
 ```
 
-默认只需要这一个卷。`.strm` 里写的是 `http://...` 直链时（115 pick code、openlist 都是这种），AetherLink 只需要读到 `.strm` 文件本体——而文件路径是通过上游 API 拿到的，因此**只有当 AetherLink 与上游不在同一台机器上、或 `.strm` 指向的是容器内本地文件路径**时，才需要额外挂载媒体目录，例如：
+要不要额外挂媒体目录，**取决于上游是哪一种**。两种媒体服务器处理 `.strm` 的方式根本不同：
+
+| 上游 | 谁读 `.strm` | AetherLink 需要挂媒体目录吗 |
+| --- | --- | --- |
+| **Emby** | Emby 自己，在扫库阶段就读掉了。库里项目仍是 `.strm` 路径，但它的 `MediaSources[].Path` 直接是指针里的那条直链（`Protocol: Http`）。 | **不需要**。直链由 Emby 的 API 给出，AetherLink 一个文件都不用看就能 302。 |
+| **Audiobookshelf** | Audiobookshelf 保留指针原样，播放时自己去读、自己代理。它的 API 只报告指针文件的路径。 | **需要**。AetherLink 得亲自读到那个 `.strm` 才知道要跳到哪里。 |
+
+所以只反代 Emby 时，`./config:/config` 一个卷就够了。要给 Audiobookshelf 做 302，就得把它的媒体目录也挂进 AetherLink：
 
 ```yaml
   - /vol1/1000/NetDisk/115-Strm/Set/Read:/audiobooks:ro
   - /vol1/1000/NetDisk:/NetDisk:ro
 ```
 
-挂载时让**容器内路径与上游保持同名**，这样可以省掉路径映射。确实无法同名时（例如上游是 `/audiobooks`，AetherLink 只挂了 `/NetDisk/115-Strm`），在「反代上游」里右键卡片 → 详细编辑，在表单里补一条路径映射做前缀重写。
+**挂载点不必和上游同名。** AetherLink 会自己定位指针：先按路径映射翻译，找不到就把上游路径逐段剥掉前缀，在你配的根目录、映射目标以及 `/NetDisk`、`/audiobooks`、`/media`、`/strm`、`/data` 这些常见挂载点下逐个查。上游报的是 `/audiobooks/Set/Read/Book/001.strm`、你只挂了 `/NetDisk/...`，一样能找到。定位始终受「STRM 允许根目录」白名单约束，白名单外的路径连 stat 都不做。真正需要手写路径映射的只剩那些完全对不上的目录结构。
+
+**读不到指针不会让播放失败。** AetherLink 会退回纯透传，让 Audiobookshelf 自己代理这一轨——播放照常，只是没有 302。日志里会写明原因（「读不到 strm 指针，本次退回透传」），把媒体目录挂进来即可恢复 302。
 
 容器以非 root 用户（uid 10001）运行，被挂载的目录需对该用户可读。
 
@@ -100,6 +112,8 @@ docker inspect -f "{{.State.ExitCode}} {{.State.Error}}" AetherLink
 | `listen tcp :5151: bind: address already in use` | 管理端口被占，通常是某个上游的反代端口和它撞了。管理端口固定 5151，把上游端口改成别的。 |
 | `端口 xxxx 无法监听（可能已被其他程序占用）` | 该反代端口在容器内已被占用（多半是两个上游撞了端口，或与管理端口 5151 冲突）。在界面上改成别的端口保存即可，原有上游不受影响。 |
 | 播放端连不上反代端口 | 端口没在 compose 的 `ports` 里映射出去。加一条 `- 5152:5152` 再 `docker compose up -d`。 |
+| `读不到 strm 指针，本次退回透传` | Audiobookshelf 的媒体目录没挂进 AetherLink，只能透传（能播但没有 302）。按「挂载说明」把媒体目录挂进来即可。Emby 不会出现这条。 |
+| 能播但日志里全是 `passthrough`，没有 302 | 上游把这一轨报告成了普通文件。Emby 侧检查项目是不是真的 `.strm` 库（AetherLink 认 `Protocol: Http` 或 `Container: strm`）；Audiobookshelf 侧确认媒体目录已挂载。 |
 | 没有任何日志、`ExitCode` 是 127 或 `exec format error` | 镜像架构不对。本项目只发 `linux/amd64`，ARM 设备（树莓派、某些 NAS）跑不了。 |
 
 ### 配置目录的属主
@@ -128,7 +142,7 @@ mkdir -p config && sudo chown -R 1000:1000 config
 | 日志 | 内存环形缓冲的运行日志，按级别过滤。 |
 | 设置 | 302 跳转策略、缓存、日志级别、修改管理账号。 |
 
-界面是莫兰迪低饱和浅色主题，左侧一列图标做页面切换，点顶部的按钮可把侧栏展开成图标 + 文字（状态记在浏览器本地，刷新后保持）。
+界面是莫奈低饱和浅色主题：取色自睡莲与干草堆的晨蓝、水草绿、藕紫与淡金，页面底层有一层极缓慢漂移的水色光斑，卡片渐变也随之流动（周期几十秒，系统开启「减少动态效果」时自动静止）。左侧一列图标做页面切换，点顶部的按钮可把侧栏展开成图标 + 文字（状态记在浏览器本地，刷新后保持）。
 
 ### 配置项说明
 

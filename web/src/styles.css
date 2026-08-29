@@ -1,35 +1,48 @@
-/* AetherLink 界面样式：莫兰迪低饱和浅色主题。
-   配色刻意压低饱和度，长时间盯着调路径映射不刺眼；强调色只用在
-   「当前选中」和「成功/失败」这类必须被看见的地方。 */
+/* AetherLink 界面样式：莫奈低饱和动态浅色主题。
+   取色来自莫奈的睡莲与干草堆——晨蓝、水草绿、藕紫、淡金。饱和度压得很低，
+   长时间盯着调路径映射不刺眼；强调色只用在「当前选中」和「成功/失败」这类
+   必须被看见的地方。
+   「动态」体现在两处：页面底层是一层极缓慢漂移的多点径向渐变，卡片渐变也会
+   随之流动。两者都在 prefers-reduced-motion 下停住，只留静态配色。 */
 :root {
   color-scheme: light;
 
-  --bg: #f1efec;
-  --surface: #fbfaf8;
-  --surface-2: #f2efeb;
-  --surface-3: #e9e5e0;
-  --border: #e3ded7;
-  --border-strong: #d2cac1;
+  --bg: #eef0f2;
+  --surface: #fbfbfa;
+  --surface-2: #f1f2f2;
+  --surface-3: #e7e9ea;
+  --border: #e1e4e6;
+  --border-strong: #cdd2d6;
 
-  --text: #45474a;
-  --text-soft: #6b6d71;
-  --muted: #97928b;
+  --text: #414750;
+  --text-soft: #666d77;
+  --muted: #909aa3;
 
-  --accent: #8b9d8f;
-  --accent-deep: #75887a;
-  --accent-wash: #e7ece5;
-  --danger: #b5837e;
-  --danger-wash: #f2e5e3;
-  --warn: #b99f76;
-  --warn-wash: #f3ece0;
-  --info: #8ea4b3;
+  --accent: #8ba3b8;
+  --accent-deep: #6f8aa2;
+  --accent-wash: #e6ecf1;
+  --danger: #b9868c;
+  --danger-wash: #f3e7e8;
+  --warn: #b8a074;
+  --warn-wash: #f4eddf;
+  --info: #93a9bd;
 
-  --shadow-sm: 0 1px 2px rgba(69, 71, 74, 0.05);
-  --shadow-md: 0 6px 18px rgba(69, 71, 74, 0.08);
-  --shadow-lg: 0 18px 44px rgba(69, 71, 74, 0.16);
+  /* 莫奈底色：晨蓝、水草绿、藕紫、淡金，用于页面背景与品牌渐变。 */
+  --monet-blue: #a8bed4;
+  --monet-water: #aec6bd;
+  --monet-lilac: #c4b6ce;
+  --monet-gold: #d6c9a6;
+
+  --shadow-sm: 0 1px 2px rgba(65, 71, 80, 0.05);
+  --shadow-md: 0 6px 18px rgba(65, 71, 80, 0.08);
+  --shadow-lg: 0 18px 44px rgba(65, 71, 80, 0.16);
 
   --radius: 14px;
   --radius-lg: 20px;
+
+  /* 卡片与背景共用的漂移周期。palette.js 里的 TIDE_SECONDS 要与之一致。 */
+  --card-tide-duration: 26s;
+  --page-tide-duration: 64s;
 
   font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
 }
@@ -44,6 +57,38 @@ body {
   color: var(--text);
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
+}
+
+/* 背景水面：四团低饱和光斑缓慢漂移。放在 ::before 而不是 body 自身，
+   这样滚动内容不会跟着一起变换合成层。 */
+body::before {
+  content: '';
+  position: fixed;
+  inset: -20vmax;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    radial-gradient(38vmax 30vmax at 12% 18%, rgba(168, 190, 212, 0.5), transparent 68%),
+    radial-gradient(34vmax 28vmax at 86% 12%, rgba(196, 182, 206, 0.42), transparent 66%),
+    radial-gradient(42vmax 32vmax at 78% 88%, rgba(174, 198, 189, 0.44), transparent 70%),
+    radial-gradient(30vmax 26vmax at 22% 82%, rgba(214, 201, 166, 0.36), transparent 66%);
+  animation: page-tide var(--page-tide-duration) ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+@keyframes page-tide {
+  from {
+    transform: translate3d(-2.5vmax, -1.5vmax, 0) scale(1);
+  }
+  to {
+    transform: translate3d(2.5vmax, 2vmax, 0) scale(1.06);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body::before {
+    animation: none;
+  }
 }
 
 /* ---------- 基础控件 ---------- */
@@ -73,12 +118,12 @@ button:disabled {
 button.primary {
   background: var(--accent);
   border-color: var(--accent-deep);
-  color: #fbfaf8;
+  color: #fbfbfa;
 }
 
 button.primary:hover:not(:disabled) {
   background: var(--accent-deep);
-  color: #fbfaf8;
+  color: #fbfbfa;
 }
 
 button.ghost {
@@ -112,7 +157,7 @@ textarea {
 
 input::placeholder,
 textarea::placeholder {
-  color: #b3aea7;
+  color: #a9b0b7;
 }
 
 input:focus,
@@ -153,7 +198,8 @@ code {
 .rail {
   width: 68px;
   flex: 0 0 68px;
-  background: var(--surface);
+  background: rgba(251, 251, 250, 0.78);
+  backdrop-filter: blur(12px);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -180,10 +226,12 @@ code {
   height: 40px;
   flex: 0 0 40px;
   border-radius: 12px;
-  background: linear-gradient(140deg, #a9bcc6, #b5c2b0);
+  background-image: linear-gradient(140deg, var(--monet-blue), var(--monet-lilac) 55%, var(--monet-water));
+  background-size: 200% 200%;
+  animation: card-tide var(--card-tide-duration) ease-in-out infinite alternate;
   display: grid;
   place-items: center;
-  color: #fbfaf8;
+  color: #fbfbfa;
   font-weight: 600;
   font-size: 15px;
   box-shadow: var(--shadow-sm);
@@ -323,8 +371,11 @@ code {
 
 /* ---------- 面板与网格 ---------- */
 
+/* 面板留一点透明度，底层那层缓慢漂移的水色会透上来一点点，
+   界面就不会是一块死白的板子。 */
 .panel {
-  background: var(--surface);
+  background: rgba(251, 251, 250, 0.82);
+  backdrop-filter: blur(10px);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 18px;
@@ -352,7 +403,8 @@ code {
 }
 
 .metric {
-  background: var(--surface);
+  background: rgba(251, 251, 250, 0.82);
+  backdrop-filter: blur(10px);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 15px;
@@ -378,6 +430,9 @@ code {
   gap: 16px;
 }
 
+/* 卡片渐变来自 palette.js（按名称哈希固定），这里只负责让它流动：
+   渐变画布放大到 220%，再缓慢移动 background-position，就得到水面一样的
+   慢速色彩位移。动画相位也由名称哈希决定，卡片之间不会整齐地一起动。 */
 .card {
   position: relative;
   aspect-ratio: 1 / 1;
@@ -385,12 +440,33 @@ code {
   padding: 18px;
   display: flex;
   flex-direction: column;
-  color: #fbfaf8;
+  color: #fbfbfa;
   cursor: pointer;
   overflow: hidden;
   border: none;
   box-shadow: var(--shadow-md);
+  background-size: 220% 220%;
+  background-position: 0% 50%;
+  animation: card-tide var(--card-tide-duration) ease-in-out infinite alternate;
   transition: transform 0.16s ease, box-shadow 0.16s ease;
+}
+
+/* 卡片上再叠一层柔光，颜色流动时高光位置也跟着变，避免看起来只是平移。 */
+.card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(120% 90% at 22% 8%, rgba(255, 255, 255, 0.3), transparent 62%);
+}
+
+@keyframes card-tide {
+  from {
+    background-position: 0% 50%;
+  }
+  to {
+    background-position: 100% 50%;
+  }
 }
 
 .card:hover {
@@ -400,6 +476,22 @@ code {
 
 .card.dimmed {
   filter: grayscale(0.55) opacity(0.75);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card,
+  .rail .brand,
+  .gate .logo {
+    animation: none;
+  }
+}
+
+/* 卡片内容要压在柔光层之上，否则文字会被那层白雾洗淡。 */
+.card .card-icon,
+.card .card-body,
+.card .card-hint {
+  position: relative;
+  z-index: 1;
 }
 
 .card .card-icon {
@@ -421,7 +513,7 @@ code {
   font-size: 19px;
   font-weight: 600;
   line-height: 1.25;
-  text-shadow: 0 1px 2px rgba(69, 71, 74, 0.18);
+  text-shadow: 0 1px 2px rgba(65, 71, 80, 0.22);
 }
 
 .card .card-meta {
@@ -441,8 +533,8 @@ code {
 
 /* 卡片内的胶囊标签自带半透明底，避免在渐变上看不清。 */
 .card .chip {
-  background: rgba(251, 250, 248, 0.85);
-  color: #4a4c4f;
+  background: rgba(251, 251, 250, 0.88);
+  color: #414750;
   border-radius: 999px;
   padding: 3px 10px;
   font-size: 11.5px;
@@ -451,13 +543,13 @@ code {
 }
 
 .card .chip.bad {
-  background: rgba(181, 131, 126, 0.92);
-  color: #fbfaf8;
+  background: rgba(185, 134, 140, 0.94);
+  color: #fbfbfa;
 }
 
 .card .chip.warn {
-  background: rgba(185, 159, 118, 0.92);
-  color: #fbfaf8;
+  background: rgba(184, 160, 116, 0.94);
+  color: #fbfbfa;
 }
 
 .card .card-hint {
@@ -551,7 +643,7 @@ code {
   position: fixed;
   inset: 0;
   z-index: 50;
-  background: rgba(69, 71, 74, 0.28);
+  background: rgba(65, 71, 80, 0.3);
   backdrop-filter: blur(2px);
   display: grid;
   place-items: center;
@@ -671,19 +763,19 @@ tr.clickable:hover td {
 
 .tag.ok {
   color: var(--accent-deep);
-  border-color: #bccbbf;
+  border-color: #bfd0dc;
   background: var(--accent-wash);
 }
 
 .tag.warn {
-  color: #937c56;
-  border-color: #ddcbaf;
+  color: #8d7850;
+  border-color: #dccdae;
   background: var(--warn-wash);
 }
 
 .tag.bad {
-  color: #96625d;
-  border-color: #ddbfbb;
+  color: #96666c;
+  border-color: #dcc0c4;
   background: var(--danger-wash);
 }
 
@@ -699,14 +791,14 @@ tr.clickable:hover td {
 }
 
 .error {
-  color: #96625d;
+  color: #96666c;
   font-size: 13px;
 }
 
 .notice {
   background: var(--warn-wash);
-  border: 1px solid #e2d3b8;
-  color: #7f6a49;
+  border: 1px solid #e1d4bb;
+  color: #7d6a4b;
   border-radius: var(--radius);
   padding: 12px 15px;
   font-size: 13px;
@@ -763,6 +855,7 @@ label.inline input[type='checkbox'] {
 
 .gate .panel {
   width: min(340px, 100%);
+  background: rgba(251, 251, 250, 0.9);
   margin: 0;
   padding: 28px 26px 24px;
   box-shadow: var(--shadow-md);
@@ -773,10 +866,12 @@ label.inline input[type='checkbox'] {
   width: 46px;
   height: 46px;
   border-radius: 14px;
-  background: linear-gradient(140deg, #a9bcc6, #b5c2b0);
+  background-image: linear-gradient(140deg, var(--monet-blue), var(--monet-lilac) 40%, var(--monet-water) 72%, var(--monet-gold));
+  background-size: 200% 200%;
+  animation: card-tide var(--card-tide-duration) ease-in-out infinite alternate;
   display: grid;
   place-items: center;
-  color: #fbfaf8;
+  color: #fbfbfa;
   font-weight: 600;
   margin: 0 auto 12px;
 }

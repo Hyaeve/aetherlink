@@ -150,6 +150,17 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 			s.proxy.ServeHTTP(writer, request)
 			return
 		}
+		if errors.Is(err, resolver.ErrPointerUnavailable) {
+			// 指针确实是 strm，但这个容器读不到它（媒体目录没挂进来）。
+			// 上游自己能读，退回透传让播放继续，同时把原因记进日志与事件，
+			// 避免用户只看到「能播但没有 302」而查不出为什么。
+			event.Outcome = stats.OutcomePassthrough
+			event.Error = err.Error()
+			s.stats.Record(event)
+			logx.Warnf("[proxy] %s 读不到 strm 指针，本次退回透传（挂载媒体目录后即可 302）: %v", s.provider.Name(), err)
+			s.proxy.ServeHTTP(writer, request)
+			return
+		}
 		event.Outcome = stats.OutcomeError
 		event.Error = err.Error()
 		event.StatusCode = http.StatusBadGateway

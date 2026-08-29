@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -24,12 +25,22 @@ import (
 // request should be proxied to the upstream untouched.
 var ErrNotStrm = errors.New("media is not a strm pointer")
 
+// ErrPointerUnavailable signals that the media *is* a .strm pointer but
+// AetherLink could not read it, almost always because the media directory is
+// not mounted into this container. The upstream can still serve the file itself,
+// so callers fall back to plain proxying instead of failing the playback.
+var ErrPointerUnavailable = errors.New("strm pointer file is not readable inside the AetherLink container")
+
 // Resolution is the outcome of resolving one media reference.
 type Resolution struct {
 	// UpstreamPath is the path reported by the upstream media server.
 	UpstreamPath string `json:"upstreamPath"`
-	// ContainerPath is UpstreamPath after path mapping.
-	ContainerPath string `json:"containerPath"`
+	// ContainerPath is UpstreamPath after path mapping. It is empty when the
+	// upstream handed us a direct URL and no pointer file was read.
+	ContainerPath string `json:"containerPath,omitempty"`
+	// FromUpstreamAPI records that the target came from the upstream API rather
+	// than from a pointer file on disk (this is how Emby reports strm sources).
+	FromUpstreamAPI bool `json:"fromUpstreamApi,omitempty"`
 	// Target is the parsed .strm pointer.
 	Target *strm.Target `json:"target"`
 	// FinalURL is the URL handed to the client. It equals Target.URL unless
@@ -132,39 +143,63 @@ func (r *Resolver) Resolve(ctx context.Context, provider upstream.Provider, ref 
 }
 
 func (r *Resolver) resolveUncached(ctx context.Context, provider upstream.Provider, ref upstream.MediaRef, userAgent string) (*Resolution, error) {
-	upstreamPath, err := provider.MediaPath(ctx, ref)
+	mediaTarget, err := provider.MediaTarget(ctx, ref)
 	if err != nil {
 		return nil, err
-	}
-	if !strm.IsStrmPath(upstreamPath) {
-		return nil, fmt.Errorf("%w: %s", ErrNotStrm, upstreamPath)
-	}
-
-	mapper := provider.Mapper()
-	containerPath, err := mapper.Check(upstreamPath)
-	if err != nil {
-		return nil, err
-	}
-
-	target, err := strm.Read(containerPath, mapper)
-	if err != nil {
-		return nil, fmt.Errorf("read strm %s: %w", containerPath, err)
 	}
 
 	resolution := &Resolution{
-		UpstreamPath:  upstreamPath,
-		ContainerPath: containerPath,
-		Target:        target,
-		ResolvedAt:    time.Now(),
+		UpstreamPath: mediaTarget.Path,
+		ResolvedAt:   time.Now(),
 	}
-	if target.Type == strm.TargetRemote {
-		resolution.FinalURL = target.URL
+
+	switch {
+	case mediaTarget.IsDirectURL():
+		// 上游（Emby）已经把 .strm 读掉了，直接给出了指针里的直链。
+		// 这条路径不需要看到任何文件，因此也不需要挂载媒体目录。
+		target, err := strm.ParseURL(mediaTarget.URL)
+		if err != nil {
+			return nil, fmt.Errorf("上游给出的直链无法解析 %q: %w", mediaTarget.URL, err)
+		}
+		resolution.FromUpstreamAPI = true
+		resolution.Target = target
+
+	case isStrmMedia(mediaTarget):
+		// 上游（Audiobookshelf）只报告指针文件的位置，内容要自己读。
+		// Locate 会先按路径映射找，找不到再尝试常见挂载点，这样两侧挂载点
+		// 不同名时也不必手写映射。
+		mapper := provider.Mapper()
+		containerPath, found, err := mapper.Locate(mediaTarget.Path)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, fmt.Errorf("%w: 上游路径 %s 在本容器里对应不到 %s", ErrPointerUnavailable, mediaTarget.Path, containerPath)
+		}
+		target, err := strm.Read(containerPath, mapper)
+		if err != nil {
+			// 指针文件读不到，几乎总是「媒体目录没挂进来」。这不该让播放
+			// 直接失败：上游自己能读到这个文件，退回透传即可。
+			if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) {
+				return nil, fmt.Errorf("%w: %s: %v", ErrPointerUnavailable, containerPath, err)
+			}
+			return nil, fmt.Errorf("read strm %s: %w", containerPath, err)
+		}
+		resolution.ContainerPath = containerPath
+		resolution.Target = target
+
+	default:
+		return nil, fmt.Errorf("%w: %s", ErrNotStrm, mediaTarget.Describe())
+	}
+
+	if resolution.Target.Type == strm.TargetRemote {
+		resolution.FinalURL = resolution.Target.URL
 		if r.config.FollowUpstreamRedirects {
-			finalURL, hops, err := r.followRedirects(ctx, target.URL, userAgent)
+			finalURL, hops, err := r.followRedirects(ctx, resolution.Target.URL, userAgent)
 			if err != nil {
 				// A failed pre-flight is not fatal: hand the original URL to the
 				// client and let the player negotiate directly.
-				logx.Warnf("[resolver] follow redirects failed for %s: %v", target.URL, err)
+				logx.Warnf("[resolver] follow redirects failed for %s: %v", resolution.Target.URL, err)
 			} else {
 				resolution.FinalURL = finalURL
 				resolution.Hops = hops
@@ -172,6 +207,12 @@ func (r *Resolver) resolveUncached(ctx context.Context, provider upstream.Provid
 		}
 	}
 	return resolution, nil
+}
+
+// isStrmMedia 判断上游报告的这个媒体是不是 .strm 指针。
+// 优先看扩展名；Emby 有些库会把扩展名藏在 Container 字段里。
+func isStrmMedia(target upstream.MediaTarget) bool {
+	return strm.IsStrmPath(target.Path) || strings.EqualFold(target.Container, "strm")
 }
 
 // followRedirects walks the redirect chain with HEAD (falling back to a ranged

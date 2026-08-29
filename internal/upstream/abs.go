@@ -89,16 +89,28 @@ func (i absLibraryItem) title() string {
 	return path.Base(i.RelPath)
 }
 
-// MediaPath resolves the upstream filesystem path for an intercepted request.
-func (p *absProvider) MediaPath(ctx context.Context, ref MediaRef) (string, error) {
+// MediaTarget resolves the upstream filesystem path for an intercepted request.
+//
+// Audiobookshelf keeps .strm files as-is and proxies them at playback time, so
+// its API only ever reports the pointer path. Reading the pointer therefore
+// requires AetherLink to see the same media directory.
+func (p *absProvider) MediaTarget(ctx context.Context, ref MediaRef) (MediaTarget, error) {
+	var (
+		mediaPath string
+		err       error
+	)
 	switch ref.Kind {
 	case RefLibraryFile:
-		return p.libraryFilePath(ctx, ref.ItemID, ref.FileID)
+		mediaPath, err = p.libraryFilePath(ctx, ref.ItemID, ref.FileID)
 	case RefSessionTrack:
-		return p.sessionTrackPath(ctx, ref.SessionID, ref.TrackIndex)
+		mediaPath, err = p.sessionTrackPath(ctx, ref.SessionID, ref.TrackIndex)
 	default:
-		return "", fmt.Errorf("unsupported audiobookshelf media ref %q", ref.Kind)
+		return MediaTarget{}, fmt.Errorf("unsupported audiobookshelf media ref %q", ref.Kind)
 	}
+	if err != nil {
+		return MediaTarget{}, err
+	}
+	return MediaTarget{Path: mediaPath, Container: strings.TrimPrefix(strings.ToLower(path.Ext(mediaPath)), ".")}, nil
 }
 
 func (p *absProvider) libraryFilePath(ctx context.Context, itemID, fileID string) (string, error) {
