@@ -66,16 +66,46 @@ jobs:
           # 直接取 metadata 算好的第一个标签：github.repository 含大写，docker 拒绝这种引用。
           IMAGE: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
         run: |
-          docker run -d --name aetherlink-smoke -p 5151:5151 "$IMAGE"
+          # 用 root 属主的绑定挂载起容器，复现最常见的部署形态：
+          # 入口脚本必须自己把 /config 的属主改对，否则容器会反复重启。
+          sudo mkdir -p /tmp/al-config
+          sudo chown 0:0 /tmp/al-config
+          docker run -d --name aetherlink-smoke -p 5151:5151 -v /tmp/al-config:/config "$IMAGE"
+
+          ok=0
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:5151/aetherlink/api/health >/dev/null; then
-              echo "健康检查通过"
-              docker rm -f aetherlink-smoke
-              exit 0
+              ok=1
+              break
             fi
             sleep 2
           done
-          echo "健康检查超时，容器日志："
-          docker logs aetherlink-smoke
+
+          if [ "$ok" != "1" ]; then
+            echo "健康检查超时，容器日志："
+            docker logs aetherlink-smoke
+            docker rm -f aetherlink-smoke
+            exit 1
+          fi
+          echo "健康检查通过"
+
+          # 配置文件必须真的落在挂载卷里，否则说明写入被静默跳过了。
+          if ! sudo test -f /tmp/al-config/config.yaml; then
+            echo "错误：/config/config.yaml 未生成，容器日志："
+            docker logs aetherlink-smoke
+            docker rm -f aetherlink-smoke
+            exit 1
+          fi
+          echo "配置文件已写入挂载卷："
+          sudo ls -l /tmp/al-config
+
+          # 确认主进程确实降权了：docker exec 用的是镜像的 USER（root），
+          # 所以要看 PID 1 的真实属主，而不是 exec 进去的身份。
+          main_uid=$(docker exec aetherlink-smoke stat -c %u /proc/1)
+          echo "PID 1 的 uid：$main_uid"
+          if [ "$main_uid" = "0" ]; then
+            echo "错误：主进程仍以 root 运行"
+            docker rm -f aetherlink-smoke
+            exit 1
+          fi
           docker rm -f aetherlink-smoke
-          exit 1

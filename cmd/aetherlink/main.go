@@ -46,6 +46,13 @@ func main() {
 	cfg, created, err := config.LoadOrCreate(*configPath)
 	if err != nil {
 		logx.Errorf("加载配置失败: %v", err)
+		// 权限问题是绑定挂载最常见的坑：宿主的 ./config 属于 root，
+		// 容器里的非 root 进程写不进去。直接把处置办法打出来，
+		// 避免用户只看到一个反复重启的容器。
+		if errors.Is(err, os.ErrPermission) {
+			logx.Errorf("当前用户 uid=%d gid=%d 对配置目录没有写权限", os.Getuid(), os.Getgid())
+			logx.Errorf("请在宿主上执行：chown -R %d:%d ./config，或去掉 compose 里的 user: 让入口脚本自动修正属主", os.Getuid(), os.Getgid())
+		}
 		os.Exit(1)
 	}
 	if created {

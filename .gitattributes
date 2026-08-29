@@ -1,4 +1,6 @@
-# 仓库内一律以 LF 存储，避免 Windows 检出后把工作流脚本变成 CRLF。
+# 仓库内一律以 LF 存储，避免 Windows 检出后把工作流与入口脚本变成 CRLF。
 * text=auto eol=lf
+*.sh text eol=lf
+Dockerfile text eol=lf
 *.png binary
 *.ico binary

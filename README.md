@@ -43,7 +43,7 @@ docker compose up -d
 2. 进入「反代上游」，点虚线的「添加上游」卡片，填写 Audiobookshelf 地址与 API 密钥（Audiobookshelf 后台 设置 → 用户 → 该用户的 API Token）。保存前可以点「试连」当场确认密钥是否可用。
 3. 播放端把 Audiobookshelf 地址换成 `http://宿主机:15151` 即可。
 
-配置文件不存在时容器会自动创建，不需要事先准备任何文件。`deploy/config.example.yaml` 只是字段说明。
+配置文件不存在时容器会自动创建，不需要事先准备任何文件（入口脚本以 root 启动，会先把 `/config` 的属主改成服务用户 10001，再降权运行主进程）。`deploy/config.example.yaml` 只是字段说明。
 
 ### 挂载说明
 
@@ -74,6 +74,40 @@ cd .. && go run ./cmd/aetherlink -config ./config.yaml
 
 前端热更新：`cd web && npm run dev`（Vite 会把 `/aetherlink/api` 代理到 `127.0.0.1:5151`）。
 
+## 容器起不来怎么排查
+
+先看日志，`restart: always` 会把启动失败伪装成「一直重启」：
+
+```bash
+docker logs AetherLink
+docker inspect -f "{{.State.ExitCode}} {{.State.Error}}" AetherLink
+```
+
+| 日志里的现象 | 原因与处置 |
+| --- | --- |
+| `加载配置失败: ... permission denied` | 宿主的 `./config` 属主是 root，容器内非 root 进程写不进去。正常情况下入口脚本会自动 `chown`；如果你在 compose 里加了 `user:`，脚本无权改属主，需要自己在宿主执行 `chown -R 10001:10001 ./config`。 |
+| `解析 /config/config.yaml 失败` | 手改过配置文件且 YAML 写坏了，或写了程序不认识的字段（配置是严格解析的）。改回去，或直接删掉该文件让程序重建。 |
+| `redirect.mode "xxx" 必须是 always、private 或 never` | 手改配置或环境变量 `AETHERLINK_REDIRECT_MODE` 填了非法值。 |
+| `listen tcp :5151: bind: address already in use` | 容器内端口被占，通常是自己改了 `server.listen`。容器内固定用 5151，对外端口改 compose 的 `ports`。 |
+| 没有任何日志、`ExitCode` 是 127 或 `exec format error` | 镜像架构不对。本项目只发 `linux/amd64`，ARM 设备（树莓派、某些 NAS）跑不了。 |
+
+需要以指定用户运行时，自己把目录属主准备好再加 `user:`：
+
+```bash
+mkdir -p config && sudo chown -R 1000:1000 config
+```
+
+```yaml
+    user: "1000:1000"
+```
+
+也可以保持 root 入口，用 `PUID` / `PGID` 让入口脚本把 `/config` 改成你要的属主：
+
+```yaml
+    environment:
+      - PUID=1000
+      - PGID=1000
+```
 ## 管理界面
 
 | 页面 | 作用 |
