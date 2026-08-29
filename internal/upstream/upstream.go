@@ -83,7 +83,8 @@ type File struct {
 type Provider interface {
 	Name() string
 	Type() config.UpstreamType
-	Prefix() string
+	// ListenPort is the AetherLink container port this upstream is served on.
+	ListenPort() int
 	BaseURL() *url.URL
 	Mapper() *pathmap.Mapper
 	Transport() http.RoundTripper
@@ -125,7 +126,7 @@ func New(cfg config.Upstream) (Provider, error) {
 	shared := providerBase{
 		name:   cfg.Name,
 		kind:   cfg.Type,
-		prefix: cfg.Prefix,
+		port:   cfg.ListenPort,
 		base:   base,
 		mapper: pathmap.New(rules, cfg.StrmRoots),
 		client: client,
@@ -168,7 +169,7 @@ func newTransport(insecure bool) *http.Transport {
 type providerBase struct {
 	name   string
 	kind   config.UpstreamType
-	prefix string
+	port   int
 	base   *url.URL
 	mapper *pathmap.Mapper
 	client *apiClient
@@ -176,7 +177,7 @@ type providerBase struct {
 
 func (b *providerBase) Name() string                 { return b.name }
 func (b *providerBase) Type() config.UpstreamType    { return b.kind }
-func (b *providerBase) Prefix() string               { return b.prefix }
+func (b *providerBase) ListenPort() int              { return b.port }
 func (b *providerBase) BaseURL() *url.URL            { return b.base }
 func (b *providerBase) Mapper() *pathmap.Mapper      { return b.mapper }
 func (b *providerBase) Transport() http.RoundTripper { return b.client.http.Transport }

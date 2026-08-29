@@ -148,6 +148,8 @@ code {
   min-height: 100vh;
 }
 
+/* 侧栏默认只有图标，点顶部按钮展开成图标 + 文字。
+   宽度用 transition 过渡，展开态由 .shell.rail-open 控制。 */
 .rail {
   width: 68px;
   flex: 0 0 68px;
@@ -157,15 +159,26 @@ code {
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  padding: 18px 0;
+  padding: 18px 13px;
   position: sticky;
   top: 0;
   height: 100vh;
+  overflow: hidden;
+  transition: width 0.18s ease, flex-basis 0.18s ease;
+}
+
+.rail-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin-bottom: 8px;
 }
 
 .rail .brand {
   width: 40px;
   height: 40px;
+  flex: 0 0 40px;
   border-radius: 12px;
   background: linear-gradient(140deg, #a9bcc6, #b5c2b0);
   display: grid;
@@ -173,8 +186,14 @@ code {
   color: #fbfaf8;
   font-weight: 600;
   font-size: 15px;
-  margin-bottom: 12px;
   box-shadow: var(--shadow-sm);
+}
+
+.rail .rail-name {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  display: none;
 }
 
 .rail button {
@@ -187,6 +206,37 @@ code {
   background: transparent;
   color: var(--muted);
   border-radius: 12px;
+}
+
+.rail .rail-label {
+  display: none;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.rail .rail-toggle {
+  margin-bottom: 4px;
+}
+
+/* 展开态：加宽，按钮变成图标 + 左对齐文字。 */
+.shell.rail-open .rail {
+  width: 182px;
+  flex-basis: 182px;
+  align-items: stretch;
+}
+
+.shell.rail-open .rail .rail-name,
+.shell.rail-open .rail .rail-label {
+  display: inline;
+}
+
+.shell.rail-open .rail button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 11px;
+  padding: 0 11px;
 }
 
 .rail button:hover:not(:disabled) {
@@ -208,6 +258,7 @@ code {
 .rail svg {
   width: 19px;
   height: 19px;
+  flex: 0 0 19px;
   stroke: currentColor;
   stroke-width: 1.6;
   fill: none;

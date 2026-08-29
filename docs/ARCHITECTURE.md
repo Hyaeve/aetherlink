@@ -4,17 +4,17 @@
 
 | 包 | 职责 |
 | --- | --- |
-| `internal/config` | YAML 配置加载、默认值合并、校验与归一化（前缀、路径、去重），以及原子写回。文件缺失时自动创建默认配置；未知字段会报错，避免拼写错误静默失效。 |
+| `internal/config` | YAML 配置加载、默认值合并、校验与归一化（反代端口、路径、去重），以及原子写回。空闲端口推荐（`SuggestPort`）也在这里。文件缺失时自动创建默认配置；未知字段会报错，避免拼写错误静默失效。 |
 | `internal/auth` | 管理账号（用户名 + 口令）的 PBKDF2-SHA256 派生与恒定时间校验、内置默认账号的生成，以及内存会话令牌存储（只存令牌哈希）。 |
-| `internal/runtime` | 配置与运行期组件的解耦层：`atomic.Pointer` 持有一组彼此匹配的 provider / resolver / proxy 快照，管理接口改配置后整体替换，播放请求读路径无锁。 |
+| `internal/runtime` | 配置与运行期组件的解耦层：`atomic.Pointer` 持有一组彼此匹配的 provider / resolver / proxy 快照，管理接口改配置后整体替换，播放请求读路径无锁。同时管理每个上游的反代端口监听器，支持热增删。 |
 | `internal/urlx` | STRM 原始内容的 URL 归一化与分类。保留已有 `%XX` 转义，识别 115 pick code / openlist 形态，判断私有网段。 |
 | `internal/pathmap` | 上游媒体路径 → 容器路径的前缀重写（最长前缀优先），以及本地目标的根目录白名单校验。 |
 | `internal/strm` | 读取 `.strm` 指针（跳过注释行、限制读取长度），区分远程 URL 与容器本地文件，推导显示文件名。 |
 | `internal/upstream` | Audiobookshelf 与 Emby 的 API 客户端：识别需要拦截的媒体请求、查询媒体真实路径、书库浏览。 |
 | `internal/resolver` | 解析流水线：查上游路径 → 路径映射 → 读指针 →（可选）走完跳转链。带 TTL+LRU 缓存与并发去重。 |
-| `internal/proxy` | 反向代理与拦截决策：302、中继转发、本地直读、透传四条出口。 |
-| `internal/stats` | 内存计数与最近事件环形缓冲，供概览页使用。 |
-| `internal/adminapi` | `/aetherlink/api` 管理接口：登录页自举、账号登录、账号修改、设置与上游 CRUD、书库浏览与 STRM 调试。 |
+| `internal/proxy` | 反向代理与拦截决策：302、中继转发、本地直读、透传四条出口。一个 `Server` 只服务一个上游，因此不需要路径匹配。 |
+| `internal/stats` | 内存计数与最近事件环形缓冲，供日志与排障使用。 |
+| `internal/adminapi` | `/aetherlink/api` 管理接口：登录页自举、账号登录、账号修改、设置与上游 CRUD、连通性测试与日志。 |
 | `internal/web` | `go:embed` 承载编译后的 Vue SPA，未构建前端时回退到占位页。 |
 
 ## 前端结构
@@ -23,23 +23,25 @@
 
 | 文件 | 作用 |
 | --- | --- |
-| `web/src/App.vue` | 左侧图标栏 + 主区布局，以及 loading / login / app 三态的首屏闸门。 |
+| `web/src/App.vue` | 左侧图标栏 + 主区布局（图标栏可展开成图标 + 文字，状态存 localStorage），以及 loading / login / app 三态的首屏闸门。只有反代上游 / 日志 / 设置三个页面。 |
 | `web/src/styles.css` | 莫兰迪低饱和浅色主题的全部样式，配色集中在 `:root` 的 CSS 变量里。 |
 | `web/src/palette.js` | 上游名称哈希到固定的莫兰迪渐变，保证同名上游的卡片配色恒定。 |
 | `web/src/components/UpstreamsView.vue` | 卡片网格：一个上游一张方卡，左键开编辑弹窗，右键出上下文菜单。 |
 | `web/src/components/ContextMenu.vue` | 通用右键菜单，含视口边缘回折与点击外部关闭。 |
-| `web/src/components/UpstreamForm.vue` | 上游详细编辑弹窗，按「基本 / 路径 / 安全」分组。 |
+| `web/src/components/UpstreamForm.vue` | 上游详细编辑弹窗，按「基本 / 密钥 / 路径」分组；密钥说明随服务端类型在 Audiobookshelf 与 Emby 之间切换。 |
+| `web/src/components/LogsView.vue` | 运行日志，按级别过滤。 |
+| `web/src/components/SettingsView.vue` | 302 策略、缓存与日志、管理账号、运行信息。 |
 ## 管理账号与入口
 
 - **恒有一个账号**：`cmd/aetherlink/main.go` 在加载配置后检查 `Auth.IsConfigured()`，为空就写入 `auth.Default()`（`admin` / `password`，同时置 `default_credentials: true`）并立刻落盘。首次启动、旧版升级、手工清空 `auth:` 段这三种情形因此都不再有「无账号」状态，管理 API 未登录一律 401，不存在需要免鉴权写入的初始化通道。
 - **登录页零信息**：免鉴权的 `GET /aetherlink/api/bootstrap` 只返回版本号与密码长度下限，用来确认后端可达。它不回显账号名与凭据，也不回报 `defaultCredentials`——否则扫到端口的人等于被告知「这里 admin/password 就能进」。「仍在用默认账号」的提醒只在登录之后由 `/status` 与 `/config` 提供。
 - **账号修改**：`POST /aetherlink/api/account` 接收当前密码 + 新用户名 + 新密码（新密码留空表示只改用户名），成功后清掉 `default_credentials` 并 `RevokeAll()` 注销全部会话，前端随即回到登录页。
 - **用户名比较宽松，密码严格**：`auth.VerifyLogin` 对用户名去空白且不区分大小写；用户名不匹配时仍走一次 PBKDF2 派生，使耗时与密码错误一致，不暴露「用户名是否存在」。老配置里没有 `username` 时按 `admin` 兼容。
-- **根路径直达**：`rootHandler` 让 `GET /` 302 到 `/aetherlink/`，用户不必手敲后缀；但若有 enabled 且 `prefix: "/"` 的上游（`runtime.RootUpstreamMounted()`），根路径归上游，管理界面仍在 `/aetherlink/`。
+- **根路径直达**：`adminRootHandler` 让 `GET /` 302 到 `/aetherlink/`，用户不必手敲后缀。管理端口不做反代，其余路径一律 404——端口填错时宁可立刻报错，也不要静默转发出一个难查的问题。
 
 ## 请求判定顺序
 
-1. 按 `prefix` 最长匹配选出上游；`/` 作为兜底。
+1. 请求落在哪个反代端口上，就是哪个上游（`runtime.handlerFor`，一端口一上游，路径不参与选择）。
 2. 交给该上游的 `Match` 判断是否为媒体字节接口，不是则直接反代。
 3. 上游没有 API 密钥 → 记为 `passthrough` 并反代（无法查询路径）。
 4. 解析失败且原因是「不是 `.strm`」→ 记为 `passthrough` 并反代。
@@ -52,10 +54,11 @@
 
 1. 深拷贝当前生效配置得到草稿（`Config.Clone`）。
 2. 在草稿上执行修改闭包（改设置 / 增删改上游 / 改管理账号）。
-3. `Validate()` 归一化并校验草稿。
+3. `Validate()` 归一化并校验草稿（含反代端口的范围、重复与管理端口冲突）。
 4. 用草稿构建一整套新的 provider、resolver 与 proxy。
-5. 原子写入 `config.yaml`（临时文件 + 0600 + rename）。
-6. 全部成功后才 `atomic.Store` 切换。
+5. 先把草稿里新增的反代端口绑定下来（`acquirePorts`），端口被占就整体失败。
+6. 原子写入 `config.yaml`（临时文件 + 0600 + rename），失败则释放刚拿到的端口。
+7. 全部成功后才 `atomic.Store` 切换，并关掉不再需要的旧端口。
 
 任何一步失败都直接返回错误，运行中的服务与磁盘上的文件都保持原样——所以一个写错的上游地址不会把正在播放的库弄下线。落盘放在切换之前，是为了让 `/config` 不可写这种问题立刻暴露，而不是给用户一个「重启后就消失的已保存」。
 
@@ -69,8 +72,10 @@
 - **可选布尔用指针**：`forward_user_agent` 与 `allow_public_targets` 默认为真，若用普通 `bool`，一份省略该键的手写配置会被静默当成 `false`。用 `*bool` 才能区分「没写」与「写了 false」。
 - **配置即唯一真相**：不做「环境变量优先于文件」的双轨制。除了少数排障用的启动期覆盖，配置只有一个来源，网页所见即磁盘所存。
 - **会话只在内存**：令牌不写配置文件，重启即失效。自托管面板用这个取舍换来「配置文件被复制走也拿不到登录态」。
-- **统计跨重载保留**：`stats.Collector` 由 runtime 持有并在重建时复用，改一次配置不会把概览页的计数清零。
-- **监听地址不热改**：套接字无法在不中断连接的前提下重绑，`RestartRequired()` 把这个事实如实报给界面，而不是假装生效。
+- **统计跨重载保留**：`stats.Collector` 由 runtime 持有并在重建时复用，改一次配置不会把计数清零。
+- **端口而非路径前缀**：反代入口用独立端口而不是 `/前缀`。播放端只要把地址里的端口换掉，路径、客户端配置一律不动；代价是每个上游都要在 compose 里映射一个端口，这个代价换来的是「同一份客户端配置只改一个数字」。
+- **端口热增删**：`handlerFor(port)` 每次请求都从当前快照里取代理，所以增删上游只需要增删监听器，不必重启容器；`serving == false` 时 `acquirePorts` 空转，单元测试因此不会去抢真实端口。
+- **管理端口不热改**：套接字无法在不中断连接的前提下重绑，`RestartRequired()` 把这个事实如实报给界面，而不是假装生效。
 
 ## 与 Audiobookshelf 侧的对应关系
 

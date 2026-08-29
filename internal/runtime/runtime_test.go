@@ -1,10 +1,15 @@
 package runtime
 
 import (
+	"context"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/aetherlink/aetherlink/internal/config"
 	"github.com/aetherlink/aetherlink/internal/stats"
@@ -25,7 +30,51 @@ func newRuntime(t *testing.T) (*Runtime, string) {
 }
 
 func absUpstream(name, baseURL string) config.Upstream {
-	return config.Upstream{Name: name, Type: config.UpstreamAudiobookshelf, BaseURL: baseURL, APIKey: "key"}
+	return config.Upstream{
+		Name:       name,
+		Type:       config.UpstreamAudiobookshelf,
+		BaseURL:    baseURL,
+		APIKey:     "key",
+		ListenPort: 13378,
+	}
+}
+
+// newFakeUpstream 起一个最小的「媒体服务器」，只用来确认请求被原样反代过去。
+func newFakeUpstream(t *testing.T) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Write([]byte("upstream:" + request.URL.Path))
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
+}
+
+// get 通过 AetherLink 的反代端口发一次请求，读回响应体。
+func get(t *testing.T, port int, path string) string {
+	t.Helper()
+	client := &http.Client{Timeout: 5 * time.Second}
+	response, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d%s", port, path))
+	if err != nil {
+		t.Fatalf("请求反代端口 %d 失败: %v", port, err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
+}
+
+// freePort 借一个空闲端口号后立刻放手，用来让测试绑定真实端口而不撞车。
+func freePort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	listener.Close()
+	return port
 }
 
 func TestApplyMountsUpstreamWithoutRestart(t *testing.T) {
@@ -141,54 +190,110 @@ func TestRestartRequiredTracksListenChange(t *testing.T) {
 	}
 }
 
-func TestServeHTTPWithoutUpstreamsIs404(t *testing.T) {
+// 上游各占一个端口，因此新增上游必须当场开始监听，删除必须把端口放掉——
+// 这是「原地址端口反代到另一个端口」的核心行为。
+func TestApplyOpensAndClosesUpstreamPorts(t *testing.T) {
+	backend := newFakeUpstream(t)
 	rt, _ := newRuntime(t)
-	recorder := httptest.NewRecorder()
-	rt.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/items/x/file/1", nil))
-	if recorder.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", recorder.Code)
+	if err := rt.Start(); err != nil {
+		t.Fatal(err)
 	}
-}
+	defer rt.Shutdown(context.Background())
 
-// RootUpstreamMounted 决定裸访问 / 是跳管理界面还是交给上游，因此要覆盖三态：
-// 没有上游、上游挂在子路径、上游挂在根路径。
-func TestRootUpstreamMounted(t *testing.T) {
-	rt, _ := newRuntime(t)
-	if rt.RootUpstreamMounted() {
-		t.Fatal("a fresh runtime has no upstream on /")
+	port := freePort(t)
+	if err := rt.Apply(func(draft *config.Config) error {
+		up := absUpstream("abs", backend)
+		up.ListenPort = port
+		draft.Upstreams = []config.Upstream{up}
+		return nil
+	}); err != nil {
+		t.Fatalf("Apply returned error: %v", err)
+	}
+	if !rt.PortActive(port) {
+		t.Fatalf("port %d should be listening right after the upstream was added", port)
+	}
+	if body := get(t, port, "/library"); body != "upstream:/library" {
+		t.Fatalf("body = %q, want the request proxied verbatim", body)
 	}
 
 	if err := rt.Apply(func(draft *config.Config) error {
-		up := absUpstream("abs", "http://127.0.0.1:13378")
-		up.Prefix = "/read"
+		draft.Upstreams = nil
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if rt.PortActive(port) {
+		t.Fatalf("port %d should have been released when the upstream was removed", port)
+	}
+}
+
+// 停用上游等于关掉它的端口，但配置里要留着，方便随后再启用。
+func TestDisablingUpstreamClosesItsPort(t *testing.T) {
+	backend := newFakeUpstream(t)
+	rt, _ := newRuntime(t)
+	if err := rt.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Shutdown(context.Background())
+
+	port := freePort(t)
+	if err := rt.Apply(func(draft *config.Config) error {
+		up := absUpstream("abs", backend)
+		up.ListenPort = port
 		draft.Upstreams = []config.Upstream{up}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if rt.RootUpstreamMounted() {
-		t.Fatal("an upstream mounted on /read must not claim /")
-	}
-
-	if err := rt.Apply(func(draft *config.Config) error {
-		draft.Upstreams = []config.Upstream{absUpstream("abs", "http://127.0.0.1:13378")}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if !rt.RootUpstreamMounted() {
-		t.Fatal("an upstream with the default prefix owns /")
-	}
-
-	// 停用的上游不再服务，根路径应当归还给管理界面。
 	if err := rt.Apply(func(draft *config.Config) error {
 		draft.Upstreams[0].Enabled = config.Bool(false)
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if rt.RootUpstreamMounted() {
-		t.Fatal("a disabled upstream must not keep claiming /")
+	if rt.PortActive(port) {
+		t.Fatal("a disabled upstream must not keep its port bound")
+	}
+	if rt.Config().UpstreamByName("abs") == nil {
+		t.Fatal("a disabled upstream must still be stored in the config")
+	}
+}
+
+// 端口被别的程序占着时，Apply 必须整体失败：既不落盘，也不动正在服务的上游。
+func TestApplyRejectsPortAlreadyInUse(t *testing.T) {
+	backend := newFakeUpstream(t)
+	rt, path := newRuntime(t)
+	if err := rt.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Shutdown(context.Background())
+
+	// 占用整个网卡（":0"）而不是只占 127.0.0.1：Windows 允许 0.0.0.0 与
+	// 127.0.0.1 同端口共存，只有同样绑定全部地址才能稳定复现冲突。
+	squatter, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer squatter.Close()
+	taken := squatter.Addr().(*net.TCPAddr).Port
+
+	if err := rt.Apply(func(draft *config.Config) error {
+		up := absUpstream("abs", backend)
+		up.ListenPort = taken
+		draft.Upstreams = []config.Upstream{up}
+		return nil
+	}); err == nil {
+		t.Fatal("Apply should fail when the port is already in use")
+	}
+	if rt.Config().UpstreamByName("abs") != nil {
+		t.Fatal("a failed Apply added the upstream anyway")
+	}
+	reloaded, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Upstreams) != 0 {
+		t.Fatal("a failed Apply wrote the upstream to disk")
 	}
 }
 

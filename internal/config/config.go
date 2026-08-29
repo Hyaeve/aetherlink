@@ -48,14 +48,19 @@ type PathMapping struct {
 }
 
 // Upstream is a single reverse proxied media server.
+//
+// Each upstream gets its own listening port instead of a path prefix: players
+// keep talking to the same URL shape they already know, only the port changes
+// from the media server's own port to the AetherLink one.
 type Upstream struct {
-	Name     string       `yaml:"name" json:"name"`
-	Type     UpstreamType `yaml:"type" json:"type"`
-	BaseURL  string       `yaml:"base_url" json:"baseUrl"`
-	APIKey   string       `yaml:"api_key" json:"-"`
-	Enabled  *bool        `yaml:"enabled,omitempty" json:"enabled"`
-	Prefix   string       `yaml:"prefix" json:"prefix"`
-	Insecure bool         `yaml:"insecure_skip_verify" json:"insecureSkipVerify"`
+	Name    string       `yaml:"name" json:"name"`
+	Type    UpstreamType `yaml:"type" json:"type"`
+	BaseURL string       `yaml:"base_url" json:"baseUrl"`
+	APIKey  string       `yaml:"api_key" json:"-"`
+	Enabled *bool        `yaml:"enabled,omitempty" json:"enabled"`
+	// ListenPort is the container port AetherLink serves this upstream on.
+	ListenPort int  `yaml:"listen_port" json:"listenPort"`
+	Insecure   bool `yaml:"insecure_skip_verify" json:"insecureSkipVerify"`
 
 	// StrmRoots limits which container directories .strm pointers may resolve
 	// local targets into.
@@ -67,6 +72,9 @@ type Upstream struct {
 // IsEnabled reports whether the upstream should be served. Omitting the field
 // means enabled.
 func (u Upstream) IsEnabled() bool { return u.Enabled == nil || *u.Enabled }
+
+// ListenAddr is the address the upstream's own reverse proxy listens on.
+func (u Upstream) ListenAddr() string { return fmt.Sprintf(":%d", u.ListenPort) }
 
 // Clone returns a deep copy so callers cannot mutate shared slices.
 func (u Upstream) Clone() Upstream {
@@ -361,8 +369,9 @@ func (c *Config) Validate() error {
 		c.Cache.MaxSize = 4096
 	}
 
+	adminPort := PortOf(c.Server.Listen)
 	seenNames := map[string]bool{}
-	seenPrefix := map[string]bool{}
+	seenPorts := map[int]string{}
 	for i := range c.Upstreams {
 		upstream := &c.Upstreams[i]
 		if err := upstream.normalize(); err != nil {
@@ -372,12 +381,29 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("上游名称 %q 重复", upstream.Name)
 		}
 		seenNames[upstream.Name] = true
-		if seenPrefix[upstream.Prefix] {
-			return fmt.Errorf("上游挂载前缀 %q 重复", upstream.Prefix)
+		if owner, taken := seenPorts[upstream.ListenPort]; taken {
+			return fmt.Errorf("上游 %s 的反代端口 %d 已被 %s 占用", upstream.Name, upstream.ListenPort, owner)
 		}
-		seenPrefix[upstream.Prefix] = true
+		// 管理界面自己占着一个端口，上游不能抢，否则界面会被反代吞掉。
+		if adminPort > 0 && upstream.ListenPort == adminPort {
+			return fmt.Errorf("上游 %s 的反代端口 %d 与管理界面端口冲突，请换一个", upstream.Name, upstream.ListenPort)
+		}
+		seenPorts[upstream.ListenPort] = upstream.Name
 	}
 	return nil
+}
+
+// PortOf 从 ":5151" 或 "0.0.0.0:5151" 这类监听地址里取出端口号，取不到返回 0。
+func PortOf(listen string) int {
+	index := strings.LastIndex(listen, ":")
+	if index < 0 {
+		return 0
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(listen[index+1:]))
+	if err != nil {
+		return 0
+	}
+	return port
 }
 
 // normalize validates and canonicalizes a single upstream entry.
@@ -407,7 +433,12 @@ func (u *Upstream) normalize() error {
 	}
 
 	u.APIKey = strings.TrimSpace(u.APIKey)
-	u.Prefix = normalizePrefix(u.Prefix)
+	if u.ListenPort == 0 {
+		return fmt.Errorf("上游 %s 缺少反代端口", u.Name)
+	}
+	if u.ListenPort < 1 || u.ListenPort > 65535 {
+		return fmt.Errorf("上游 %s 的反代端口 %d 不在 1-65535 之间", u.Name, u.ListenPort)
+	}
 
 	mappings := make([]PathMapping, 0, len(u.PathMappings))
 	for _, mapping := range u.PathMappings {
@@ -435,17 +466,6 @@ func (u *Upstream) normalize() error {
 	}
 	u.StrmRoots = roots
 	return nil
-}
-
-func normalizePrefix(prefix string) string {
-	prefix = strings.TrimSpace(prefix)
-	if prefix == "" || prefix == "/" {
-		return "/"
-	}
-	if !strings.HasPrefix(prefix, "/") {
-		prefix = "/" + prefix
-	}
-	return strings.TrimRight(prefix, "/")
 }
 
 func normalizeMappingPath(path string) string {
@@ -500,6 +520,36 @@ func (c *Config) Save(path string) error {
 		return err
 	}
 	return os.Rename(temporaryPath, path)
+}
+
+// UpstreamByPort returns the upstream serving the given container port, or nil.
+func (c *Config) UpstreamByPort(port int) *Upstream {
+	for i := range c.Upstreams {
+		if c.Upstreams[i].ListenPort == port {
+			return &c.Upstreams[i]
+		}
+	}
+	return nil
+}
+
+// SuggestPort returns a free container port for a new upstream. It walks up from
+// the admin port so the numbers stay recognisable, and skips anything already
+// taken by the admin listener or another upstream.
+func (c *Config) SuggestPort() int {
+	candidate := PortOf(c.Server.Listen)
+	if candidate <= 0 {
+		candidate = 5151
+	}
+	for offset := 1; offset <= 200; offset++ {
+		port := candidate + offset
+		if port > 65535 {
+			break
+		}
+		if c.UpstreamByPort(port) == nil {
+			return port
+		}
+	}
+	return 0
 }
 
 // UpstreamByName returns the named upstream, or nil.

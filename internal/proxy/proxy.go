@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"path"
-	"sort"
 	"strings"
 	"time"
 
@@ -37,15 +36,13 @@ var hopHeaders = []string{
 	"Upgrade",
 }
 
-// Route binds one upstream provider to its reverse proxy.
-type Route struct {
-	Provider upstream.Provider
-	proxy    *httputil.ReverseProxy
-}
-
-// Server routes incoming requests to the matching upstream.
+// Server reverse proxies exactly one upstream media server on its own port.
+//
+// Each upstream owns a port rather than a path prefix, so a player only swaps
+// the port number: every path the media server understands arrives unchanged.
 type Server struct {
-	routes   []*Route
+	provider upstream.Provider
+	proxy    *httputil.ReverseProxy
 	resolver *resolver.Resolver
 	stats    *stats.Collector
 	redirect config.Redirect
@@ -54,9 +51,11 @@ type Server struct {
 	streamClient *http.Client
 }
 
-// New builds a proxy server for the configured providers.
-func New(providers []upstream.Provider, mediaResolver *resolver.Resolver, collector *stats.Collector, redirectCfg config.Redirect) *Server {
+// New builds the proxy serving one upstream.
+func New(provider upstream.Provider, mediaResolver *resolver.Resolver, collector *stats.Collector, redirectCfg config.Redirect) *Server {
 	server := &Server{
+		provider: provider,
+		proxy:    newReverseProxy(provider),
 		resolver: mediaResolver,
 		stats:    collector,
 		redirect: redirectCfg,
@@ -74,23 +73,15 @@ func New(providers []upstream.Provider, mediaResolver *resolver.Resolver, collec
 			},
 		},
 	}
-
-	for _, provider := range providers {
-		route := &Route{Provider: provider}
-		route.proxy = newReverseProxy(provider)
-		server.routes = append(server.routes, route)
-	}
-	// Longest prefix first so "/" can be a catch-all upstream.
-	sort.SliceStable(server.routes, func(i, j int) bool {
-		return len(server.routes[i].Provider.Prefix()) > len(server.routes[j].Provider.Prefix())
-	})
 	return server
 }
+
+// Provider exposes the upstream this proxy serves.
+func (s *Server) Provider() upstream.Provider { return s.provider }
 
 // newReverseProxy builds the pass-through proxy for non-media requests.
 func newReverseProxy(provider upstream.Provider) *httputil.ReverseProxy {
 	target := provider.BaseURL()
-	prefix := provider.Prefix()
 
 	return &httputil.ReverseProxy{
 		Transport: provider.Transport(),
@@ -98,7 +89,7 @@ func newReverseProxy(provider upstream.Provider) *httputil.ReverseProxy {
 			request.Out.URL.Scheme = target.Scheme
 			request.Out.URL.Host = target.Host
 			request.Out.Host = target.Host
-			request.Out.URL.Path = joinPath(target.Path, stripPrefix(request.In.URL.Path, prefix))
+			request.Out.URL.Path = joinPath(target.Path, request.In.URL.Path)
 			request.SetXForwarded()
 		},
 		ErrorHandler: func(writer http.ResponseWriter, request *http.Request, err error) {
@@ -114,28 +105,22 @@ func newReverseProxy(provider upstream.Provider) *httputil.ReverseProxy {
 	}
 }
 
-// ServeHTTP routes a request to its upstream, intercepting media deliveries.
+// ServeHTTP proxies a request to the upstream, intercepting media deliveries.
 func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
-	route := s.match(request.URL.Path)
-	if route == nil {
-		http.NotFound(writer, request)
-		return
-	}
-
-	ref, isMedia := route.Provider.Match(trimmedRequest(request, route.Provider.Prefix()))
+	ref, isMedia := s.provider.Match(request)
 	if !isMedia {
-		route.proxy.ServeHTTP(writer, request)
+		s.proxy.ServeHTTP(writer, request)
 		return
 	}
-	s.serveMedia(writer, request, route, ref)
+	s.serveMedia(writer, request, ref)
 }
 
 // serveMedia resolves a media request and answers with a redirect, a relayed
 // stream, a local file, or a plain upstream pass-through.
-func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, route *Route, ref upstream.MediaRef) {
+func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, ref upstream.MediaRef) {
 	started := time.Now()
 	event := stats.Event{
-		Upstream:  route.Provider.Name(),
+		Upstream:  s.provider.Name(),
 		Path:      request.URL.Path,
 		ItemID:    ref.ItemID,
 		FileID:    ref.FileID,
@@ -143,18 +128,18 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 		UserAgent: request.UserAgent(),
 	}
 
-	if !route.Provider.HasCredentials() {
+	if !s.provider.HasCredentials() {
 		// Without an API key AetherLink cannot ask the upstream where the media
 		// lives, so behave like a plain reverse proxy.
 		event.Outcome = stats.OutcomePassthrough
 		event.Error = upstream.ErrNoAPIKey.Error()
 		event.Duration = time.Since(started)
 		s.stats.Record(event)
-		route.proxy.ServeHTTP(writer, request)
+		s.proxy.ServeHTTP(writer, request)
 		return
 	}
 
-	resolution, cacheHit, err := s.resolver.Resolve(request.Context(), route.Provider, ref, request.UserAgent())
+	resolution, cacheHit, err := s.resolver.Resolve(request.Context(), s.provider, ref, request.UserAgent())
 	event.CacheHit = cacheHit
 	if err != nil {
 		event.Duration = time.Since(started)
@@ -162,14 +147,14 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 			// Regular media file: let the upstream serve it.
 			event.Outcome = stats.OutcomePassthrough
 			s.stats.Record(event)
-			route.proxy.ServeHTTP(writer, request)
+			s.proxy.ServeHTTP(writer, request)
 			return
 		}
 		event.Outcome = stats.OutcomeError
 		event.Error = err.Error()
 		event.StatusCode = http.StatusBadGateway
 		s.stats.Record(event)
-		logx.Errorf("[proxy] resolve failed for %s %s: %v", route.Provider.Name(), request.URL.Path, err)
+		logx.Errorf("[proxy] resolve failed for %s %s: %v", s.provider.Name(), request.URL.Path, err)
 		http.Error(writer, "AetherLink could not resolve the strm target", http.StatusBadGateway)
 		return
 	}
@@ -288,60 +273,6 @@ func (s *Server) serveLocalFile(writer http.ResponseWriter, request *http.Reques
 	}
 	// http.ServeContent handles Range, If-Modified-Since and HEAD for us.
 	http.ServeContent(writer, request, path.Base(localPath), info.ModTime(), file)
-}
-
-// match finds the upstream owning a request path.
-func (s *Server) match(requestPath string) *Route {
-	for _, route := range s.routes {
-		prefix := route.Provider.Prefix()
-		if prefix == "/" {
-			return route
-		}
-		if requestPath == prefix || strings.HasPrefix(requestPath, prefix+"/") {
-			return route
-		}
-	}
-	return nil
-}
-
-// Routes exposes the configured routes for the admin API.
-func (s *Server) Routes() []*Route { return s.routes }
-
-// ProviderByName returns the provider with the given name.
-func (s *Server) ProviderByName(name string) upstream.Provider {
-	for _, route := range s.routes {
-		if route.Provider.Name() == name {
-			return route.Provider
-		}
-	}
-	return nil
-}
-
-// trimmedRequest returns a shallow copy of request whose URL path has the
-// upstream prefix removed, so providers can match on upstream-native paths.
-func trimmedRequest(request *http.Request, prefix string) *http.Request {
-	if prefix == "/" || prefix == "" {
-		return request
-	}
-	clone := request.Clone(request.Context())
-	trimmedURL := *request.URL
-	trimmedURL.Path = stripPrefix(request.URL.Path, prefix)
-	clone.URL = &trimmedURL
-	return clone
-}
-
-func stripPrefix(requestPath, prefix string) string {
-	if prefix == "" || prefix == "/" {
-		return requestPath
-	}
-	trimmed := strings.TrimPrefix(requestPath, prefix)
-	if trimmed == "" {
-		return "/"
-	}
-	if !strings.HasPrefix(trimmed, "/") {
-		return "/" + trimmed
-	}
-	return trimmed
 }
 
 func joinPath(basePath, requestPath string) string {

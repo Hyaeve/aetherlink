@@ -79,19 +79,19 @@ func writeJSON(t *testing.T, writer http.ResponseWriter, payload any) {
 func newTestServer(t *testing.T, absURL, strmRoot string, redirectCfg config.Redirect) (*Server, *stats.Collector) {
 	t.Helper()
 	provider, err := upstream.New(config.Upstream{
-		Name:      "abs",
-		Type:      config.UpstreamAudiobookshelf,
-		BaseURL:   absURL,
-		APIKey:    "test-api-key",
-		Prefix:    "/",
-		StrmRoots: []string{pathmap.Normalize(strmRoot)},
+		Name:       "abs",
+		Type:       config.UpstreamAudiobookshelf,
+		BaseURL:    absURL,
+		APIKey:     "test-api-key",
+		ListenPort: 13378,
+		StrmRoots:  []string{pathmap.Normalize(strmRoot)},
 	})
 	if err != nil {
 		t.Fatalf("build provider: %v", err)
 	}
 	collector := stats.New(50)
 	mediaResolver := resolver.New(config.Cache{TTL: time.Minute, MaxSize: 32}, redirectCfg)
-	return New([]upstream.Provider{provider}, mediaResolver, collector, redirectCfg), collector
+	return New(provider, mediaResolver, collector, redirectCfg), collector
 }
 
 func defaultRedirect() config.Redirect {

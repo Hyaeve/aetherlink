@@ -1,34 +1,17 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api, getToken, setToken } from './api'
-import DashboardView from './components/DashboardView.vue'
 import UpstreamsView from './components/UpstreamsView.vue'
-import LibraryView from './components/LibraryView.vue'
-import StrmLabView from './components/StrmLabView.vue'
 import LogsView from './components/LogsView.vue'
 import SettingsView from './components/SettingsView.vue'
 
-// 左侧图标栏。icon 是 SVG path 集合，避免引入图标库多一份依赖。
+// 左侧图标栏只保留三项：反代卡片、日志、设置。
+// icon 是 SVG path 集合，避免为了几个图标引入整套图标库。
 const tabs = [
   {
     id: 'upstreams',
     label: '反代上游',
     paths: ['M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z']
-  },
-  {
-    id: 'dashboard',
-    label: '概览',
-    paths: ['M4 4h7v7H4z', 'M13 4h7v4h-7z', 'M13 10h7v10h-7z', 'M4 13h7v7H4z']
-  },
-  {
-    id: 'library',
-    label: '书库浏览',
-    paths: ['M5 5h5v14H5z', 'M12 5h3v14h-3z', 'M17 6l3 12']
-  },
-  {
-    id: 'strm',
-    label: 'STRM 实验室',
-    paths: ['M10 4v5l-5 8a2 2 0 0 0 1.7 3h10.6A2 2 0 0 0 19 17l-5-8V4z', 'M9 4h6']
   },
   {
     id: 'logs',
@@ -45,9 +28,13 @@ const tabs = [
   }
 ]
 
+const RAIL_KEY = 'aetherlink.rail'
+
 // gate 决定首屏：loading / login / app。没有初始化向导——首次启动就带内置账号。
 const gate = ref('loading')
 const activeTab = ref('upstreams')
+// 侧栏展开状态记在 localStorage，刷新后保持上次的选择。
+const railOpen = ref(localStorage.getItem(RAIL_KEY) === 'open')
 
 const username = ref('')
 const password = ref('')
@@ -59,6 +46,8 @@ const statusError = ref('')
 let statusTimer = null
 
 const activeLabel = computed(() => tabs.find((tab) => tab.id === activeTab.value)?.label || '')
+
+watch(railOpen, (open) => localStorage.setItem(RAIL_KEY, open ? 'open' : 'closed'))
 
 async function bootstrap() {
   try {
@@ -178,9 +167,28 @@ onUnmounted(() => statusTimer && clearInterval(statusTimer))
     </div>
   </div>
 
-  <div v-else class="shell">
+  <div v-else class="shell" :class="{ 'rail-open': railOpen }">
     <nav class="rail">
-      <div class="brand">AL</div>
+      <div class="rail-top">
+        <div class="brand">AL</div>
+        <span class="rail-name">AetherLink</span>
+      </div>
+
+      <button
+        class="rail-toggle"
+        :title="railOpen ? '收起侧栏' : '展开侧栏'"
+        :aria-label="railOpen ? '收起侧栏' : '展开侧栏'"
+        :aria-expanded="railOpen"
+        @click="railOpen = !railOpen"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 6h16" />
+          <path d="M4 12h16" />
+          <path d="M4 18h16" />
+        </svg>
+        <span class="rail-label">收起侧栏</span>
+      </button>
+
       <button
         v-for="tab in tabs"
         :key="tab.id"
@@ -193,7 +201,9 @@ onUnmounted(() => statusTimer && clearInterval(statusTimer))
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path v-for="(path, index) in tab.paths" :key="index" :d="path" />
         </svg>
+        <span class="rail-label">{{ tab.label }}</span>
       </button>
+
       <div class="spacer"></div>
       <button title="退出登录" aria-label="退出登录" @click="logout">
         <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -201,6 +211,7 @@ onUnmounted(() => statusTimer && clearInterval(statusTimer))
           <path d="M17 8l4 4-4 4" />
           <path d="M21 12h-8" />
         </svg>
+        <span class="rail-label">退出登录</span>
       </button>
     </nav>
 
@@ -208,23 +219,20 @@ onUnmounted(() => statusTimer && clearInterval(statusTimer))
       <div class="page-head">
         <h1>{{ activeLabel }}</h1>
         <span class="sub" v-if="status">
-          v{{ status.version }} · 监听 {{ status.listen }} · 302 模式 {{ status.redirectMode }} ·
+          v{{ status.version }} · 管理端口 {{ status.adminPort }} · 302 模式 {{ status.redirectMode }} ·
           上游 {{ status.enabledUpstreamCount }}/{{ status.upstreamCount }} · 运行 {{ uptime }}
         </span>
       </div>
 
       <p v-if="statusError" class="error" style="margin-top:0">{{ statusError }}</p>
       <div v-if="status?.restartRequired" class="notice">
-        监听地址已改为 {{ status.listen }}，但进程仍在 {{ status.bootListen }} 上，需要重启容器才会生效。
+        管理监听地址已改为 {{ status.listen }}，但进程仍在 {{ status.bootListen }} 上，需要重启容器才会生效。
       </div>
       <div v-if="status?.defaultCredentials" class="notice">
         仍在使用默认账号 admin / password，请到设置页修改。
       </div>
 
       <UpstreamsView v-if="activeTab === 'upstreams'" @changed="refreshStatus" />
-      <DashboardView v-else-if="activeTab === 'dashboard'" :status="status" @refresh-status="refreshStatus" />
-      <LibraryView v-else-if="activeTab === 'library'" />
-      <StrmLabView v-else-if="activeTab === 'strm'" />
       <LogsView v-else-if="activeTab === 'logs'" />
       <SettingsView v-else :status="status" @saved="refreshStatus" @account-changed="onAccountChanged" />
     </main>

@@ -5,6 +5,8 @@ services:
     network_mode: bridge
     ports:
       - 15151:5151
+      # 每加一个反代上游，就在这里补一条它的反代端口（管理页会提示下一个空闲端口）
+      - 5152:5152
     volumes:
       - ./config:/config
     environment:

@@ -69,13 +69,5 @@ export const api = {
   testUpstream: (payload) => request('/upstreams/test', { method: 'POST', ...jsonBody(payload) }),
 
   ping: (name) => request(`/upstreams/${encodeURIComponent(name)}/ping`),
-  libraries: (name) => request(`/upstreams/${encodeURIComponent(name)}/libraries`),
-  items: (name, params) => request(`/upstreams/${encodeURIComponent(name)}/items?${new URLSearchParams(params)}`),
-  itemFiles: (name, itemId) =>
-    request(`/upstreams/${encodeURIComponent(name)}/items/${encodeURIComponent(itemId)}`),
-  resolve: (name, params) => request(`/upstreams/${encodeURIComponent(name)}/resolve?${new URLSearchParams(params)}`),
-  parseStrm: (payload) => request('/strm/parse', { method: 'POST', ...jsonBody(payload) }),
-  stats: (events = 50) => request(`/stats?events=${events}`),
-  logs: (limit = 200) => request(`/logs?limit=${limit}`),
-  purgeCache: () => request('/cache/purge', { method: 'POST' })
+  logs: (limit = 200) => request(`/logs?limit=${limit}`)
 }

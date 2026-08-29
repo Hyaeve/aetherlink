@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -162,7 +163,7 @@ func TestBootstrapNeverMentionsCredentials(t *testing.T) {
 func TestBootstrapLeaksNothingSensitive(t *testing.T) {
 	env := newEnv(t)
 	token := env.login(t, testUsername, testPassword)
-	payload := `{"name":"abs","type":"audiobookshelf","baseUrl":"http://10.0.0.9:13378","apiKey":"super-secret-key","prefix":"/"}`
+	payload := `{"name":"abs","type":"audiobookshelf","baseUrl":"http://10.0.0.9:13378","apiKey":"super-secret-key","listenPort":13378}`
 	if recorder := env.do(http.MethodPost, BasePath+"/upstreams", payload, token); recorder.Code != http.StatusCreated {
 		t.Fatalf("create status = %d, body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -306,9 +307,9 @@ func TestBreakGlassTokenIsAccepted(t *testing.T) {
 	}
 }
 
-func upstreamPayloadJSON(name, root string) string {
+func upstreamPayloadJSON(name, root string, port int) string {
 	return `{"name":"` + name + `","type":"audiobookshelf","baseUrl":"http://127.0.0.1:1","apiKey":"jwt-key",` +
-		`"prefix":"/","strmRoots":["` + root + `"],"pathMappings":[{"from":"/audiobooks","to":"` + root + `"}]}`
+		`"listenPort":` + strconv.Itoa(port) + `,"strmRoots":["` + root + `"],"pathMappings":[{"from":"/audiobooks","to":"` + root + `"}]}`
 }
 
 func TestUpstreamCRUDPersistsAndHotReloads(t *testing.T) {
@@ -316,7 +317,7 @@ func TestUpstreamCRUDPersistsAndHotReloads(t *testing.T) {
 	token := env.login(t, testUsername, testPassword)
 	root := filepath.ToSlash(filepath.Dir(env.strmPath))
 
-	recorder := env.do(http.MethodPost, BasePath+"/upstreams", upstreamPayloadJSON("abs", root), token)
+	recorder := env.do(http.MethodPost, BasePath+"/upstreams", upstreamPayloadJSON("abs", root, 13378), token)
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("create status = %d, body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -326,13 +327,13 @@ func TestUpstreamCRUDPersistsAndHotReloads(t *testing.T) {
 	}
 
 	// Omitting apiKey on update must keep the stored key instead of clearing it.
-	recorder = env.do(http.MethodPut, BasePath+"/upstreams/abs", `{"prefix":"/audiobooks"}`, token)
+	recorder = env.do(http.MethodPut, BasePath+"/upstreams/abs", `{"listenPort":18096}`, token)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("update status = %d, body=%s", recorder.Code, recorder.Body.String())
 	}
 	updated := env.rt.Config().UpstreamByName("abs")
-	if updated == nil || updated.Prefix != "/audiobooks" {
-		t.Fatalf("prefix not updated: %+v", updated)
+	if updated == nil || updated.ListenPort != 18096 {
+		t.Fatalf("listen port not updated: %+v", updated)
 	}
 	if updated.APIKey != "jwt-key" {
 		t.Fatalf("api key was lost on update: %q", updated.APIKey)
@@ -343,7 +344,7 @@ func TestUpstreamCRUDPersistsAndHotReloads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded.UpstreamByName("abs").Prefix != "/audiobooks" {
+	if reloaded.UpstreamByName("abs").ListenPort != 18096 {
 		t.Fatal("update was not persisted")
 	}
 
@@ -361,13 +362,21 @@ func TestCreateUpstreamRejectsDuplicateAndInvalid(t *testing.T) {
 	token := env.login(t, testUsername, testPassword)
 	root := filepath.ToSlash(filepath.Dir(env.strmPath))
 
-	if recorder := env.do(http.MethodPost, BasePath+"/upstreams", upstreamPayloadJSON("abs", root), token); recorder.Code != http.StatusCreated {
+	if recorder := env.do(http.MethodPost, BasePath+"/upstreams", upstreamPayloadJSON("abs", root, 13378), token); recorder.Code != http.StatusCreated {
 		t.Fatalf("first create status = %d", recorder.Code)
 	}
-	if recorder := env.do(http.MethodPost, BasePath+"/upstreams", upstreamPayloadJSON("abs", root), token); recorder.Code != http.StatusBadRequest {
-		t.Fatalf("duplicate create status = %d, want 400", recorder.Code)
+	if recorder := env.do(http.MethodPost, BasePath+"/upstreams", upstreamPayloadJSON("abs", root, 18096), token); recorder.Code != http.StatusBadRequest {
+		t.Fatalf("duplicate name status = %d, want 400", recorder.Code)
 	}
-	bad := `{"name":"broken","type":"audiobookshelf","baseUrl":"10.0.0.31:13378"}`
+	// 端口是每个上游的唯一入口，撞车必须当场拒绝。
+	if recorder := env.do(http.MethodPost, BasePath+"/upstreams", upstreamPayloadJSON("emby", root, 13378), token); recorder.Code != http.StatusBadRequest {
+		t.Fatalf("duplicate port status = %d, want 400", recorder.Code)
+	}
+	// 管理端口不能被抢走，否则界面自己就没了。
+	if recorder := env.do(http.MethodPost, BasePath+"/upstreams", upstreamPayloadJSON("clash", root, 5151), token); recorder.Code != http.StatusBadRequest {
+		t.Fatalf("admin port status = %d, want 400", recorder.Code)
+	}
+	bad := `{"name":"broken","type":"audiobookshelf","baseUrl":"10.0.0.31:13378","listenPort":18097}`
 	if recorder := env.do(http.MethodPost, BasePath+"/upstreams", bad, token); recorder.Code != http.StatusBadRequest {
 		t.Fatalf("invalid base url status = %d, want 400", recorder.Code)
 	}
@@ -377,11 +386,33 @@ func TestCreateUpstreamRejectsDuplicateAndInvalid(t *testing.T) {
 	}
 }
 
+// 界面上添加上游只要求填地址和密钥，端口留空时后端应当自动挑一个不冲突的。
+func TestCreateUpstreamAssignsAFreePortWhenOmitted(t *testing.T) {
+	env := newEnv(t)
+	token := env.login(t, testUsername, testPassword)
+	payload := `{"name":"abs","type":"audiobookshelf","baseUrl":"http://127.0.0.1:1","apiKey":"jwt-key"}`
+	if recorder := env.do(http.MethodPost, BasePath+"/upstreams", payload, token); recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	created := env.rt.Config().UpstreamByName("abs")
+	if created == nil || created.ListenPort != 5152 {
+		t.Fatalf("listen port = %+v, want the first free port after the admin one", created)
+	}
+
+	second := `{"name":"emby","type":"emby","baseUrl":"http://127.0.0.1:2","apiKey":"emby-key"}`
+	if recorder := env.do(http.MethodPost, BasePath+"/upstreams", second, token); recorder.Code != http.StatusCreated {
+		t.Fatalf("second status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	if got := env.rt.Config().UpstreamByName("emby").ListenPort; got != 5153 {
+		t.Fatalf("second listen port = %d, want 5153", got)
+	}
+}
+
 func TestConfigNeverLeaksApiKeys(t *testing.T) {
 	env := newEnv(t)
 	token := env.login(t, testUsername, testPassword)
 	root := filepath.ToSlash(filepath.Dir(env.strmPath))
-	env.do(http.MethodPost, BasePath+"/upstreams", upstreamPayloadJSON("abs", root), token)
+	env.do(http.MethodPost, BasePath+"/upstreams", upstreamPayloadJSON("abs", root, 13378), token)
 
 	recorder := env.do(http.MethodGet, BasePath+"/config", "", token)
 	if recorder.Code != http.StatusOK {

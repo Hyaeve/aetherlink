@@ -84,9 +84,14 @@ func main() {
 		logx.Errorf("初始化运行时失败: %v", err)
 		os.Exit(1)
 	}
+	// 每个上游各自监听一个端口，这里在启动日志里把「反代端口 → 原地址」列清楚。
+	if err := rt.Start(); err != nil {
+		logx.Errorf("启动上游反代端口失败: %v", err)
+		os.Exit(1)
+	}
 	for _, upstreamCfg := range cfg.Upstreams {
 		if upstreamCfg.IsEnabled() {
-			logx.Infof("上游 %s (%s) 挂载于 %s -> %s", upstreamCfg.Name, upstreamCfg.Type, upstreamCfg.Prefix, upstreamCfg.BaseURL)
+			logx.Infof("上游 %s (%s) 反代端口 %d -> %s", upstreamCfg.Name, upstreamCfg.Type, upstreamCfg.ListenPort, upstreamCfg.BaseURL)
 		}
 	}
 
@@ -100,6 +105,8 @@ func main() {
 		logx.Warnf("检测到应急令牌 AETHERLINK_ADMIN_TOKEN：它可以绕过口令登录，排障完成后请移除")
 	}
 
+	// 管理端口只服务管理界面与管理 API：上游反代各自占一个端口，
+	// 因此这里不需要再按路径分流。
 	mux := http.NewServeMux()
 	mux.Handle(adminapi.BasePath+"/", admin.Handler())
 	mux.Handle(web.MountPath, web.Handler())
@@ -107,10 +114,7 @@ func main() {
 	mux.HandleFunc("/aetherlink", func(writer http.ResponseWriter, request *http.Request) {
 		http.Redirect(writer, request, web.MountPath, http.StatusMovedPermanently)
 	})
-	// 其余路径都属于被反代的上游。交给 runtime 而不是某个具体 proxy 实例，
-	// 这样在网页上增删上游后无需重启即可生效。
-	// 没有上游挂在根路径时，裸访问 / 直接送进管理界面，省得手敲 /aetherlink/。
-	mux.Handle("/", rootHandler(rt))
+	mux.Handle("/", adminRootHandler())
 
 	server := &http.Server{
 		Addr:    cfg.Server.Listen,
@@ -135,21 +139,22 @@ func main() {
 	logx.Infof("正在关闭")
 	gracefulCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	rt.Shutdown(gracefulCtx)
 	if err := server.Shutdown(gracefulCtx); err != nil {
 		logx.Warnf("优雅关闭失败: %v", err)
 	}
 }
 
-// rootHandler 让 http://主机:端口/ 直接落到管理界面，不必记住 /aetherlink/ 后缀。
-// 有上游挂在根路径（prefix 为 /）时，根路径属于那个上游，不能抢：此时仍然只有
-// /aetherlink/ 是管理界面。
-func rootHandler(rt *runtime.Runtime) http.Handler {
+// adminRootHandler 让 http://主机:管理端口/ 直接落到管理界面，不必记住
+// /aetherlink/ 后缀。管理端口上的其他路径一律 404：反代请求应该发到上游自己的
+// 端口，打到这里说明端口填错了，直接报错比静默转发更容易排查。
+func adminRootHandler() http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path == "/" && !rt.RootUpstreamMounted() {
+		if request.URL.Path == "/" {
 			http.Redirect(writer, request, web.MountPath, http.StatusFound)
 			return
 		}
-		rt.ServeHTTP(writer, request)
+		http.NotFound(writer, request)
 	})
 }
 

@@ -8,6 +8,8 @@ import UpstreamForm from './UpstreamForm.vue'
 const emit = defineEmits(['changed'])
 
 const upstreams = ref([])
+const suggestedPort = ref(0)
+const adminPort = ref(0)
 const error = ref('')
 const notice = ref('')
 
@@ -23,6 +25,8 @@ async function load() {
   try {
     const payload = await api.upstreams()
     upstreams.value = payload.upstreams || []
+    suggestedPort.value = payload.suggestedPort || 0
+    adminPort.value = payload.adminPort || 0
     error.value = ''
   } catch (loadError) {
     error.value = loadError.message
@@ -37,6 +41,18 @@ function hostLabel(baseUrl) {
   } catch {
     return baseUrl
   }
+}
+
+// 上游端口 → 反代端口，播放端只要把地址里的端口换成后者。
+function portFlow(upstream) {
+  let source = ''
+  try {
+    const parsed = new URL(upstream.baseUrl)
+    source = parsed.port || (parsed.protocol === 'https:' ? '443' : '80')
+  } catch {
+    source = '?'
+  }
+  return `${source} → ${upstream.listenPort}`
 }
 
 function typeLabel(type) {
@@ -116,7 +132,9 @@ onMounted(load)
   <section>
     <div class="section-head">
       <h2>反代上游</h2>
-      <span class="muted" style="font-size:12.5px">右键卡片可编辑、试连或删除。保存后立即生效，无需重启容器。</span>
+      <span class="muted" style="font-size:12.5px">
+        每个上游独占一个反代端口，播放端只把地址里的端口换掉即可。右键卡片可编辑、试连或删除。
+      </span>
     </div>
 
     <p v-if="error" class="error" style="margin-bottom:12px">{{ error }}</p>
@@ -144,10 +162,10 @@ onMounted(load)
           <div class="card-meta">{{ hostLabel(upstream.baseUrl) }}</div>
           <div class="card-chips">
             <span class="chip">{{ typeLabel(upstream.type) }}</span>
-            <span class="chip" v-if="upstream.prefix && upstream.prefix !== '/'">{{ upstream.prefix }}</span>
+            <span class="chip">{{ portFlow(upstream) }}</span>
             <span class="chip bad" v-if="!upstream.enabled">已停用</span>
             <span class="chip warn" v-else-if="!upstream.hasApiKey">缺密钥</span>
-            <span class="chip warn" v-else-if="!upstream.active">未挂载</span>
+            <span class="chip warn" v-else-if="!upstream.listening">端口未监听</span>
           </div>
         </div>
       </div>
@@ -159,8 +177,9 @@ onMounted(load)
     </div>
 
     <p v-if="!upstreams.length" class="muted" style="margin-top:16px;font-size:13px">
-      还没有上游。点「添加上游」，填入 Audiobookshelf 的地址和 API 密钥
-      （设置 → 用户 → 该用户的 API Token），AetherLink 就能读到它的书库并对 strm 做 302 播放。
+      还没有上游。点「添加上游」，填入媒体服务器地址、要占用的反代端口和 API 密钥，
+      AetherLink 就能读到它的书库并对 strm 做 302 播放。
+      <template v-if="suggestedPort">下一个空闲端口是 {{ suggestedPort }}，记得在 compose 的 ports 里映射出去。</template>
     </p>
 
     <ContextMenu
@@ -182,6 +201,8 @@ onMounted(load)
     <UpstreamForm
       v-if="editing"
       :upstream="editing.upstream"
+      :suggested-port="suggestedPort"
+      :admin-port="adminPort"
       @close="editing = null"
       @saved="onSaved"
     />
@@ -192,7 +213,7 @@ onMounted(load)
         <div class="modal-body">
           <p style="margin:0;font-size:13.5px;line-height:1.6">
             确认删除 <strong>{{ pendingDelete.name }}</strong>？
-            它的地址与 API 密钥会一并从配置里移除，指向该入口的播放器会立刻失效。
+            它的地址与 API 密钥会一并从配置里移除，端口 {{ pendingDelete.listenPort }} 会立即停止监听。
           </p>
         </div>
         <div class="modal-foot">

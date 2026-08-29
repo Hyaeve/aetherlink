@@ -192,8 +192,8 @@ onMounted(load)
           <div class="mono">{{ server.configPath }}</div>
         </div>
         <div>
-          <div class="muted" style="font-size:12px">监听地址</div>
-          <div class="mono">{{ server.listen }}</div>
+          <div class="muted" style="font-size:12px">管理界面端口</div>
+          <div class="mono">{{ server.adminPort || server.listen }}</div>
         </div>
       </div>
       <div class="row" style="margin-top:12px">
@@ -204,7 +204,9 @@ onMounted(load)
         <span class="tag bad" v-if="server.restartRequired">监听地址已改动，需重启容器</span>
       </div>
       <p class="muted" style="font-size:12px;margin-bottom:0">
-        容器内固定监听 5151；对外端口由 docker compose 的 ports 决定，改端口请改 compose 而不是这里。
+        管理界面固定在容器内 5151；每个反代上游还会各自占一个容器内端口。
+        这些端口都要在 docker compose 的 ports 里映射出去，容器才能被外部访问。
+        <template v-if="server.suggestedPort">下一个空闲的反代端口是 {{ server.suggestedPort }}。</template>
       </p>
     </div>
   </section>

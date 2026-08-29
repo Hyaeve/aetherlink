@@ -234,6 +234,8 @@ type statusResponse struct {
 	ConfigPath      string    `json:"configPath"`
 	RestartRequired bool      `json:"restartRequired"`
 	BootListen      string    `json:"bootListen"`
+	// AdminPort 是管理界面所在端口，页头用它提示当前入口。
+	AdminPort int `json:"adminPort"`
 }
 
 func (a *API) handleStatus(writer http.ResponseWriter, request *http.Request) {
@@ -261,6 +263,7 @@ func (a *API) handleStatus(writer http.ResponseWriter, request *http.Request) {
 		ConfigPath:      a.rt.ConfigPath(),
 		RestartRequired: a.rt.RestartRequired(),
 		BootListen:      a.rt.BootListen(),
+		AdminPort:       config.PortOf(cfg.Server.Listen),
 	})
 }
 
@@ -312,6 +315,8 @@ func (a *API) handleGetConfig(writer http.ResponseWriter, request *http.Request)
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"server": map[string]any{
 			"listen":            cfg.Server.Listen,
+			"adminPort":         config.PortOf(cfg.Server.Listen),
+			"suggestedPort":     cfg.SuggestPort(),
 			"configPath":        a.rt.ConfigPath(),
 			"restartRequired":   a.rt.RestartRequired(),
 			"breakGlassEnabled": strings.TrimSpace(cfg.Server.AdminToken) != "",
@@ -375,10 +380,11 @@ func (a *API) handlePutSettings(writer http.ResponseWriter, request *http.Reques
 }
 
 type upstreamSummary struct {
-	Name         string               `json:"name"`
-	Type         string               `json:"type"`
-	BaseURL      string               `json:"baseUrl"`
-	Prefix       string               `json:"prefix"`
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	BaseURL string `json:"baseUrl"`
+	// ListenPort 是 AetherLink 容器内为该上游开的反代端口。
+	ListenPort   int                  `json:"listenPort"`
 	Enabled      bool                 `json:"enabled"`
 	HasAPIKey    bool                 `json:"hasApiKey"`
 	Insecure     bool                 `json:"insecureSkipVerify"`
@@ -386,6 +392,8 @@ type upstreamSummary struct {
 	PathMappings []config.PathMapping `json:"pathMappings"`
 	// Active 表示该上游当前是否已在反向代理中挂载。
 	Active bool `json:"active"`
+	// Listening 表示对应端口是否真的绑定成功。
+	Listening bool `json:"listening"`
 }
 
 func (a *API) describeUpstreams(upstreams []config.Upstream) []upstreamSummary {
@@ -395,13 +403,14 @@ func (a *API) describeUpstreams(upstreams []config.Upstream) []upstreamSummary {
 			Name:         up.Name,
 			Type:         string(up.Type),
 			BaseURL:      up.BaseURL,
-			Prefix:       up.Prefix,
+			ListenPort:   up.ListenPort,
 			Enabled:      up.IsEnabled(),
 			HasAPIKey:    strings.TrimSpace(up.APIKey) != "",
 			Insecure:     up.Insecure,
 			StrmRoots:    up.StrmRoots,
 			PathMappings: up.PathMappings,
 			Active:       a.rt.ProviderByName(up.Name) != nil,
+			Listening:    a.rt.PortActive(up.ListenPort),
 		}
 		if summary.StrmRoots == nil {
 			summary.StrmRoots = []string{}
@@ -415,7 +424,13 @@ func (a *API) describeUpstreams(upstreams []config.Upstream) []upstreamSummary {
 }
 
 func (a *API) handleUpstreams(writer http.ResponseWriter, request *http.Request) {
-	writeJSON(writer, http.StatusOK, map[string]any{"upstreams": a.describeUpstreams(a.rt.Config().Upstreams)})
+	cfg := a.rt.Config()
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"upstreams": a.describeUpstreams(cfg.Upstreams),
+		// 界面用它给「添加上游」预填一个不冲突的端口。
+		"suggestedPort": cfg.SuggestPort(),
+		"adminPort":     config.PortOf(cfg.Server.Listen),
+	})
 }
 
 // upstreamPayload 是新增/修改上游的请求体。APIKey 用指针：省略表示保留原有
@@ -426,7 +441,7 @@ type upstreamPayload struct {
 	BaseURL      string               `json:"baseUrl"`
 	APIKey       *string              `json:"apiKey"`
 	Enabled      *bool                `json:"enabled"`
-	Prefix       string               `json:"prefix"`
+	ListenPort   int                  `json:"listenPort"`
 	Insecure     bool                 `json:"insecureSkipVerify"`
 	StrmRoots    []string             `json:"strmRoots"`
 	PathMappings []config.PathMapping `json:"pathMappings"`
@@ -439,7 +454,7 @@ func (p upstreamPayload) toConfig(existing *config.Upstream) config.Upstream {
 		Type:         config.UpstreamType(strings.TrimSpace(p.Type)),
 		BaseURL:      strings.TrimSpace(p.BaseURL),
 		Enabled:      p.Enabled,
-		Prefix:       p.Prefix,
+		ListenPort:   p.ListenPort,
 		Insecure:     p.Insecure,
 		StrmRoots:    p.StrmRoots,
 		PathMappings: p.PathMappings,
@@ -466,13 +481,20 @@ func (a *API) handleCreateUpstream(writer http.ResponseWriter, request *http.Req
 		if draft.UpstreamByName(entry.Name) != nil {
 			return fmt.Errorf("上游 %q 已存在", entry.Name)
 		}
+		// 没填端口就自动挑一个空闲的，界面上添加一个上游只需要地址和密钥。
+		if entry.ListenPort == 0 {
+			entry.ListenPort = draft.SuggestPort()
+			if entry.ListenPort == 0 {
+				return errors.New("找不到空闲的反代端口，请手动指定")
+			}
+		}
 		draft.Upstreams = append(draft.Upstreams, entry)
 		return nil
 	}); err != nil {
 		writeError(writer, http.StatusBadRequest, err.Error())
 		return
 	}
-	logx.Infof("[adminapi] 已新增上游 %s (%s)", entry.Name, entry.Type)
+	logx.Infof("[adminapi] 已新增上游 %s (%s)，反代端口 %d", entry.Name, entry.Type, entry.ListenPort)
 	writeJSON(writer, http.StatusCreated, map[string]any{"ok": true, "upstreams": a.describeUpstreams(a.rt.Config().Upstreams)})
 }
 
@@ -487,7 +509,7 @@ func (a *API) handleUpdateUpstream(writer http.ResponseWriter, request *http.Req
 		Name:         existing.Name,
 		Type:         string(existing.Type),
 		BaseURL:      existing.BaseURL,
-		Prefix:       existing.Prefix,
+		ListenPort:   existing.ListenPort,
 		Insecure:     existing.Insecure,
 		StrmRoots:    existing.StrmRoots,
 		PathMappings: existing.PathMappings,
@@ -549,6 +571,10 @@ func (a *API) handleTestUpstream(writer http.ResponseWriter, request *http.Reque
 		return
 	}
 	candidate := payload.toConfig(a.rt.Config().UpstreamByName(strings.TrimSpace(payload.Name)))
+	// 试连只验证地址与密钥，端口还没定下来也应该能点，因此这里补一个占位值。
+	if candidate.ListenPort == 0 {
+		candidate.ListenPort = 1
+	}
 	// 试连不进入配置文件，但同样要过一遍校验，避免把明显错误的地址发出去。
 	probe := &config.Config{Server: config.Server{Listen: ":0"}, Redirect: config.Redirect{Mode: config.RedirectAlways}, Upstreams: []config.Upstream{candidate}}
 	if err := probe.Validate(); err != nil {
@@ -667,7 +693,7 @@ func (a *API) handleItemFiles(writer http.ResponseWriter, request *http.Request)
 	mapper := provider.Mapper()
 	annotated := make([]annotatedFile, 0, len(files))
 	for _, file := range files {
-		entry := annotatedFile{File: file, PlayPath: provider.Prefix() + provider.PlaybackPath(item.ID, file.ID)}
+		entry := annotatedFile{File: file, PlayPath: provider.PlaybackPath(item.ID, file.ID)}
 		if file.IsStrm {
 			containerPath, mapErr := mapper.Check(file.Path)
 			if mapErr != nil {

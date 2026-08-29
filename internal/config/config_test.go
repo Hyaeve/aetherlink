@@ -25,7 +25,7 @@ upstreams:
     type: audiobookshelf
     base_url: "http://10.0.0.31:13378/"
     api_key: secret
-    prefix: audiobooks/
+    listen_port: 15152
     strm_roots:
       - "/NetDisk/"
     path_mappings:
@@ -53,8 +53,8 @@ upstreams:
 	if upstream.BaseURL != "http://10.0.0.31:13378" {
 		t.Fatalf("base_url = %q, trailing slash should be trimmed", upstream.BaseURL)
 	}
-	if upstream.Prefix != "/audiobooks" {
-		t.Fatalf("prefix = %q, want /audiobooks", upstream.Prefix)
+	if upstream.ListenPort != 15152 {
+		t.Fatalf("listen_port = %d, want 15152", upstream.ListenPort)
 	}
 	if upstream.StrmRoots[0] != "/NetDisk" {
 		t.Fatalf("strm root = %q", upstream.StrmRoots[0])
@@ -83,12 +83,15 @@ func TestLoadKeepsExplicitFalseBooleans(t *testing.T) {
 
 func TestLoadRejectsInvalidValues(t *testing.T) {
 	cases := map[string]string{
-		"bad redirect mode": "redirect:\n  mode: sometimes\nupstreams:\n  - name: a\n    type: emby\n    base_url: http://x:1\n",
-		"missing type":      "upstreams:\n  - name: a\n    base_url: http://x:1\n",
-		"bad base url":      "upstreams:\n  - name: a\n    type: emby\n    base_url: x:1\n",
-		"duplicate prefix":  "upstreams:\n  - name: a\n    type: emby\n    base_url: http://x:1\n  - name: b\n    type: emby\n    base_url: http://y:1\n",
-		"duplicate name":    "upstreams:\n  - name: a\n    type: emby\n    base_url: http://x:1\n    prefix: /x\n  - name: a\n    type: emby\n    base_url: http://y:1\n    prefix: /y\n",
-		"slash in name":     "upstreams:\n  - name: a/b\n    type: emby\n    base_url: http://x:1\n",
+		"bad redirect mode": "redirect:\n  mode: sometimes\nupstreams:\n  - name: a\n    type: emby\n    base_url: http://x:1\n    listen_port: 8096\n",
+		"missing type":      "upstreams:\n  - name: a\n    base_url: http://x:1\n    listen_port: 8096\n",
+		"bad base url":      "upstreams:\n  - name: a\n    type: emby\n    base_url: x:1\n    listen_port: 8096\n",
+		"missing port":      "upstreams:\n  - name: a\n    type: emby\n    base_url: http://x:1\n",
+		"port out of range": "upstreams:\n  - name: a\n    type: emby\n    base_url: http://x:1\n    listen_port: 70000\n",
+		"duplicate port":    "upstreams:\n  - name: a\n    type: emby\n    base_url: http://x:1\n    listen_port: 8096\n  - name: b\n    type: emby\n    base_url: http://y:1\n    listen_port: 8096\n",
+		"admin port taken":  "upstreams:\n  - name: a\n    type: emby\n    base_url: http://x:1\n    listen_port: 5151\n",
+		"duplicate name":    "upstreams:\n  - name: a\n    type: emby\n    base_url: http://x:1\n    listen_port: 8096\n  - name: a\n    type: emby\n    base_url: http://y:1\n    listen_port: 8097\n",
+		"slash in name":     "upstreams:\n  - name: a/b\n    type: emby\n    base_url: http://x:1\n    listen_port: 8096\n",
 	}
 	for name, contents := range cases {
 		if _, err := Load(writeConfig(t, contents)); err == nil {
@@ -162,6 +165,7 @@ func TestSaveRoundTripsUpstreamsAndAuth(t *testing.T) {
 		Type:         UpstreamAudiobookshelf,
 		BaseURL:      "http://10.0.0.31:13378",
 		APIKey:       "jwt-key",
+		ListenPort:   13378,
 		StrmRoots:    []string{"/NetDisk"},
 		PathMappings: []PathMapping{{From: "/audiobooks", To: "/NetDisk/115-Strm/Set/Read"}},
 	}}
@@ -186,7 +190,7 @@ func TestSaveRoundTripsUpstreamsAndAuth(t *testing.T) {
 
 func TestCloneIsDeep(t *testing.T) {
 	cfg := Default()
-	cfg.Upstreams = []Upstream{{Name: "abs", Type: UpstreamAudiobookshelf, BaseURL: "http://x:1", StrmRoots: []string{"/a"}}}
+	cfg.Upstreams = []Upstream{{Name: "abs", Type: UpstreamAudiobookshelf, BaseURL: "http://x:1", ListenPort: 8096, StrmRoots: []string{"/a"}}}
 	clone := cfg.Clone()
 	clone.Upstreams[0].StrmRoots[0] = "/changed"
 	clone.Redirect.ForwardUserAgent = Bool(false)
@@ -201,7 +205,7 @@ func TestCloneIsDeep(t *testing.T) {
 func TestEnvOverridesServerSettings(t *testing.T) {
 	t.Setenv("AETHERLINK_ADMIN_TOKEN", "token-from-env")
 	t.Setenv("AETHERLINK_LOG_LEVEL", "debug")
-	cfg, err := Load(writeConfig(t, "upstreams:\n  - name: my-abs\n    type: audiobookshelf\n    base_url: http://x:1\n"))
+	cfg, err := Load(writeConfig(t, "upstreams:\n  - name: my-abs\n    type: audiobookshelf\n    base_url: http://x:1\n    listen_port: 13378\n"))
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -210,5 +214,37 @@ func TestEnvOverridesServerSettings(t *testing.T) {
 	}
 	if cfg.Server.LogLevel != "debug" {
 		t.Fatalf("log level = %q", cfg.Server.LogLevel)
+	}
+}
+
+// 反代端口是每个上游的唯一入口，界面新增上游时要自动挑一个不冲突的号。
+func TestSuggestPortSkipsAdminAndTakenPorts(t *testing.T) {
+	cfg := Default()
+	first := cfg.SuggestPort()
+	if first != 5152 {
+		t.Fatalf("first suggestion = %d, want 5152 (管理端口 5151 之后的第一个)", first)
+	}
+
+	cfg.Upstreams = []Upstream{
+		{Name: "abs", Type: UpstreamAudiobookshelf, BaseURL: "http://x:1", ListenPort: 5152},
+		{Name: "emby", Type: UpstreamEmby, BaseURL: "http://y:1", ListenPort: 5153},
+	}
+	if got := cfg.SuggestPort(); got != 5154 {
+		t.Fatalf("suggestion = %d, want the first free port after the taken ones", got)
+	}
+	if cfg.UpstreamByPort(5153).Name != "emby" {
+		t.Fatal("UpstreamByPort did not find the upstream owning 5153")
+	}
+	if cfg.UpstreamByPort(9999) != nil {
+		t.Fatal("UpstreamByPort must return nil for a free port")
+	}
+}
+
+func TestPortOfParsesListenAddress(t *testing.T) {
+	cases := map[string]int{":5151": 5151, "0.0.0.0:5151": 5151, "127.0.0.1:80": 80, "": 0, "nope": 0}
+	for listen, want := range cases {
+		if got := PortOf(listen); got != want {
+			t.Errorf("PortOf(%q) = %d, want %d", listen, got, want)
+		}
 	}
 }
