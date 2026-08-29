@@ -58,6 +58,16 @@ func main() {
 	if created {
 		logx.Infof("已在 %s 创建默认配置", *configPath)
 	}
+	// 旧配置（用 prefix 区分上游的版本）在加载时会被自动补上反代端口，
+	// 这里立刻落盘，避免每次启动都重算一次端口。
+	if cfg.Migrated() {
+		for _, upstreamCfg := range cfg.Upstreams {
+			logx.Warnf("上游 %s 已从路径前缀升级为独占反代端口 %d，请在 compose 的 ports 里映射该端口", upstreamCfg.Name, upstreamCfg.ListenPort)
+		}
+		if saveErr := cfg.Save(*configPath); saveErr != nil {
+			logx.Warnf("升级后的配置写回失败（本次运行仍然有效）: %v", saveErr)
+		}
+	}
 
 	// 没有账号时补上内置的 admin/password，省掉初始化向导：打开页面直接登录。
 	// 这个分支也覆盖了从旧版本升级、以及用户手工清空 auth 段的情况。

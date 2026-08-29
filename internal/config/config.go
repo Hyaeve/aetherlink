@@ -62,6 +62,11 @@ type Upstream struct {
 	ListenPort int  `yaml:"listen_port" json:"listenPort"`
 	Insecure   bool `yaml:"insecure_skip_verify" json:"insecureSkipVerify"`
 
+	// Prefix 是已废弃的路径前缀，反代改成按端口区分后不再使用。
+	// 保留这个字段只为让旧配置仍能被严格解析读进来，migrate 会清掉它，
+	// 因此它永远不会再被写回磁盘。
+	Prefix string `yaml:"prefix,omitempty" json:"-"`
+
 	// StrmRoots limits which container directories .strm pointers may resolve
 	// local targets into.
 	StrmRoots []string `yaml:"strm_roots" json:"strmRoots"`
@@ -161,6 +166,9 @@ type Config struct {
 	Upstreams []Upstream `yaml:"upstreams" json:"upstreams"`
 
 	path string `yaml:"-"`
+	// migrated 记录本次加载是否改写了旧版字段，由 Load 设置，调用方据此决定
+	// 是否把迁移结果落盘。
+	migrated bool `yaml:"-"`
 }
 
 // Path returns the file the config was loaded from.
@@ -260,10 +268,68 @@ func Load(path string) (*Config, error) {
 	merge(cfg, &parsed)
 	cfg.path = path
 	applyEnvOverrides(cfg)
+	// 旧版本用路径前缀区分上游，升级后必须先补上端口再校验，
+	// 否则一份能用的老配置会让容器直接起不来。
+	cfg.migrated = cfg.migrate()
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// Migrated 报告加载时是否改写过旧版字段，调用方应把结果保存回磁盘。
+func (c *Config) Migrated() bool { return c.migrated }
+
+// migrate 把旧版配置升级到当前结构，返回是否发生了改动。
+//
+// 目前只有一处：上游的 prefix 换成了独占的 listen_port。老配置没有端口，
+// 这里按管理端口往上顺次分配一个空闲端口，并清掉已废弃的 prefix。
+func (c *Config) migrate() bool {
+	changed := false
+	taken := map[int]bool{}
+	if adminPort := PortOf(c.Server.Listen); adminPort > 0 {
+		taken[adminPort] = true
+	}
+	for i := range c.Upstreams {
+		if port := c.Upstreams[i].ListenPort; port > 0 {
+			taken[port] = true
+		}
+	}
+	for i := range c.Upstreams {
+		upstream := &c.Upstreams[i]
+		if upstream.Prefix != "" {
+			upstream.Prefix = ""
+			changed = true
+		}
+		if upstream.ListenPort > 0 {
+			continue
+		}
+		port := nextFreePort(taken, PortOf(c.Server.Listen))
+		if port == 0 {
+			continue
+		}
+		upstream.ListenPort = port
+		taken[port] = true
+		changed = true
+	}
+	return changed
+}
+
+// nextFreePort 从 base 往上找一个还没被占用的端口，找不到返回 0。
+func nextFreePort(taken map[int]bool, base int) int {
+	if base <= 0 {
+		base = 5151
+	}
+	for offset := 1; offset <= 200; offset++ {
+		port := base + offset
+		if port > 65535 {
+			return 0
+		}
+		if !taken[port] {
+			return port
+		}
+	}
+	return 0
 }
 
 // merge copies non-zero values from parsed over the defaults in base.

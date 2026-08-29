@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -86,7 +87,6 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 		"bad redirect mode": "redirect:\n  mode: sometimes\nupstreams:\n  - name: a\n    type: emby\n    base_url: http://x:1\n    listen_port: 8096\n",
 		"missing type":      "upstreams:\n  - name: a\n    base_url: http://x:1\n    listen_port: 8096\n",
 		"bad base url":      "upstreams:\n  - name: a\n    type: emby\n    base_url: x:1\n    listen_port: 8096\n",
-		"missing port":      "upstreams:\n  - name: a\n    type: emby\n    base_url: http://x:1\n",
 		"port out of range": "upstreams:\n  - name: a\n    type: emby\n    base_url: http://x:1\n    listen_port: 70000\n",
 		"duplicate port":    "upstreams:\n  - name: a\n    type: emby\n    base_url: http://x:1\n    listen_port: 8096\n  - name: b\n    type: emby\n    base_url: http://y:1\n    listen_port: 8096\n",
 		"admin port taken":  "upstreams:\n  - name: a\n    type: emby\n    base_url: http://x:1\n    listen_port: 5151\n",
@@ -97,6 +97,27 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 		if _, err := Load(writeConfig(t, contents)); err == nil {
 			t.Errorf("%s: Load should have failed", name)
 		}
+	}
+}
+
+// 手写配置漏了 listen_port 时不该让容器起不来：加载阶段会补一个空闲端口。
+// 但从管理界面提交的草稿必须显式带端口，否则 Validate 要拦下来。
+func TestValidateRequiresListenPort(t *testing.T) {
+	cfg := Default()
+	cfg.Upstreams = []Upstream{{Name: "a", Type: UpstreamEmby, BaseURL: "http://x:1"}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate should reject an upstream without a listen port")
+	}
+}
+
+func TestLoadFillsMissingListenPort(t *testing.T) {
+	path := writeConfig(t, "upstreams:\n  - name: a\n    type: emby\n    base_url: http://x:1\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load should assign a port instead of failing: %v", err)
+	}
+	if cfg.Upstreams[0].ListenPort != 5152 {
+		t.Fatalf("listen_port = %d, want 5152", cfg.Upstreams[0].ListenPort)
 	}
 }
 
@@ -123,6 +144,81 @@ func TestLoadRejectsUnknownFields(t *testing.T) {
 	path := writeConfig(t, "server:\n  listten: \":9000\"\n")
 	if _, err := Load(path); err == nil {
 		t.Fatal("Load should reject unknown fields")
+	}
+}
+
+func TestLoadMigratesLegacyPrefixToListenPort(t *testing.T) {
+	// 旧版本用 prefix 区分上游，升级后这份配置必须仍能加载，
+	// 否则容器会卡在「解析配置失败」的重启循环里。
+	path := writeConfig(t, `
+server:
+  listen: ":5151"
+upstreams:
+  - name: abs
+    type: audiobookshelf
+    base_url: "http://10.0.0.31:13378"
+    api_key: secret
+    prefix: "/"
+  - name: emby
+    type: emby
+    base_url: "http://10.0.0.31:8096"
+    api_key: secret
+    prefix: "/emby"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load should accept a legacy config: %v", err)
+	}
+	if !cfg.Migrated() {
+		t.Fatal("Migrated should report that the legacy fields were rewritten")
+	}
+	if cfg.Upstreams[0].ListenPort != 5152 || cfg.Upstreams[1].ListenPort != 5153 {
+		t.Fatalf("ports = %d, %d; want 5152, 5153", cfg.Upstreams[0].ListenPort, cfg.Upstreams[1].ListenPort)
+	}
+	for _, upstream := range cfg.Upstreams {
+		if upstream.Prefix != "" {
+			t.Fatalf("prefix should be cleared, got %q", upstream.Prefix)
+		}
+	}
+
+	// 迁移结果落盘后不得再包含已废弃的 prefix。
+	if err := cfg.Save(path); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	saved, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(saved), "prefix:") {
+		t.Fatalf("saved config still carries prefix:\n%s", saved)
+	}
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("reload returned error: %v", err)
+	}
+	if reloaded.Migrated() {
+		t.Fatal("a migrated config should not need migrating again")
+	}
+}
+
+func TestLoadKeepsExplicitListenPortDuringMigration(t *testing.T) {
+	path := writeConfig(t, `
+server:
+  listen: ":5151"
+upstreams:
+  - name: abs
+    type: audiobookshelf
+    base_url: "http://10.0.0.31:13378"
+    api_key: secret
+    prefix: "/"
+    listen_port: 5160
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Upstreams[0].ListenPort != 5160 {
+		t.Fatalf("listen_port = %d, want the explicit 5160", cfg.Upstreams[0].ListenPort)
 	}
 }
 

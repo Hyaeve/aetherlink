@@ -95,7 +95,7 @@ docker inspect -f "{{.State.ExitCode}} {{.State.Error}}" AetherLink
 | --- | --- |
 | `加载配置失败: ... permission denied` | 入口脚本会自动把 `/config` 的属主改好，用当前镜像不该再出现。仍出现说明你在 compose 里加了 `user:`（脚本没有改属主的权限），在宿主执行 `chown -R <那个uid>:<那个gid> ./config` 即可。 |
 | `[entrypoint] 错误：/config 必须可写` | 卷被挂成了只读。检查 compose 的 `volumes` 有没有多写结尾的 `:ro`。 |
-| `解析 /config/config.yaml 失败` | 手改过配置文件且 YAML 写坏了，或写了程序不认识的字段（配置是严格解析的）。改回去，或直接删掉该文件让程序重建。 |
+| `解析 /config/config.yaml 失败` | 手改过配置文件且 YAML 写坏了，或写了程序不认识的字段（配置是严格解析的）。改回去，或直接删掉该文件让程序重建。旧版的 `prefix` 字段会被自动升级成 `listen_port`，不会再报这个错。 |
 | `redirect.mode "xxx" 必须是 always、private 或 never` | 手改配置或环境变量 `AETHERLINK_REDIRECT_MODE` 填了非法值。 |
 | `listen tcp :5151: bind: address already in use` | 管理端口被占，通常是某个上游的反代端口和它撞了。管理端口固定 5151，把上游端口改成别的。 |
 | `端口 xxxx 无法监听（可能已被其他程序占用）` | 该反代端口在容器内已被占用（多半是两个上游撞了端口，或与管理端口 5151 冲突）。在界面上改成别的端口保存即可，原有上游不受影响。 |
