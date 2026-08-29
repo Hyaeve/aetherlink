@@ -85,29 +85,31 @@ docker inspect -f "{{.State.ExitCode}} {{.State.Error}}" AetherLink
 
 | 日志里的现象 | 原因与处置 |
 | --- | --- |
-| `加载配置失败: ... permission denied` | 宿主的 `./config` 属主是 root，容器内非 root 进程写不进去。正常情况下入口脚本会自动 `chown`；如果你在 compose 里加了 `user:`，脚本无权改属主，需要自己在宿主执行 `chown -R 10001:10001 ./config`。 |
+| `加载配置失败: ... permission denied` | 入口脚本会自动把 `/config` 的属主改好，用当前镜像不该再出现。仍出现说明你在 compose 里加了 `user:`（脚本没有改属主的权限），在宿主执行 `chown -R <那个uid>:<那个gid> ./config` 即可。 |
+| `[entrypoint] 错误：/config 必须可写` | 卷被挂成了只读。检查 compose 的 `volumes` 有没有多写结尾的 `:ro`。 |
 | `解析 /config/config.yaml 失败` | 手改过配置文件且 YAML 写坏了，或写了程序不认识的字段（配置是严格解析的）。改回去，或直接删掉该文件让程序重建。 |
 | `redirect.mode "xxx" 必须是 always、private 或 never` | 手改配置或环境变量 `AETHERLINK_REDIRECT_MODE` 填了非法值。 |
 | `listen tcp :5151: bind: address already in use` | 容器内端口被占，通常是自己改了 `server.listen`。容器内固定用 5151，对外端口改 compose 的 `ports`。 |
 | 没有任何日志、`ExitCode` 是 127 或 `exec format error` | 镜像架构不对。本项目只发 `linux/amd64`，ARM 设备（树莓派、某些 NAS）跑不了。 |
 
-需要以指定用户运行时，自己把目录属主准备好再加 `user:`：
+### 配置目录的属主
 
-```bash
-mkdir -p config && sudo chown -R 1000:1000 config
-```
+默认不需要管：容器以 root 进入入口脚本，脚本把 `/config` 的属主改成服务用户（uid 10001）后降权运行主进程。属主实在改不动时（部分 NAS 的 SMB/NFS 挂载、带强制 ACL 的存储池）脚本会退回以 root 运行，宁可让你进得去界面，也不陷入重启循环。
 
-```yaml
-    user: "1000:1000"
-```
-
-也可以保持 root 入口，用 `PUID` / `PGID` 让入口脚本把 `/config` 改成你要的属主：
+想让配置文件归某个特定用户，加两个环境变量即可，仍由脚本自动完成：
 
 ```yaml
     environment:
       - PUID=1000
       - PGID=1000
 ```
+
+只有当你坚持用 compose 的 `user:` 时，脚本才没有改属主的权限，需要自己在宿主准备好目录：
+
+```bash
+mkdir -p config && sudo chown -R 1000:1000 config
+```
+
 ## 管理界面
 
 | 页面 | 作用 |

@@ -109,3 +109,38 @@ jobs:
             exit 1
           fi
           docker rm -f aetherlink-smoke
+
+      - name: 冒烟测试 PUID/PGID
+        env:
+          IMAGE: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+        run: |
+          # 指定 PUID/PGID 时，配置文件应归该用户所有，主进程也应以它运行。
+          sudo mkdir -p /tmp/al-puid
+          sudo chown 0:0 /tmp/al-puid
+          docker run -d --name aetherlink-puid -p 5152:5151 \
+            -e PUID=1000 -e PGID=1000 -v /tmp/al-puid:/config "$IMAGE"
+
+          ok=0
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:5152/aetherlink/api/health >/dev/null; then
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ok" != "1" ]; then
+            echo "错误：指定 PUID/PGID 后容器没能起来"
+            docker logs aetherlink-puid
+            docker rm -f aetherlink-puid
+            exit 1
+          fi
+
+          owner=$(sudo stat -c "%u:%g" /tmp/al-puid/config.yaml)
+          main_uid=$(docker exec aetherlink-puid stat -c %u /proc/1)
+          docker rm -f aetherlink-puid
+          echo "配置文件属主：$owner，PID 1 的 uid：$main_uid"
+          if [ "$owner" != "1000:1000" ] || [ "$main_uid" != "1000" ]; then
+            echo "错误：PUID/PGID 未生效"
+            exit 1
+          fi
+          echo "PUID/PGID 生效"
