@@ -53,16 +53,6 @@ const testResult = ref(null)
 
 const isEmby = computed(() => form.value.type === 'emby')
 
-// 从上游地址里取出端口，用来在提示里写出「原端口 → 反代端口」。
-const sourcePort = computed(() => {
-  try {
-    const parsed = new URL(form.value.baseUrl)
-    return parsed.port || (parsed.protocol === 'https:' ? '443' : '80')
-  } catch {
-    return ''
-  }
-})
-
 const keyHint = computed(() =>
   isEmby.value
     ? 'Emby 控制台 → 高级 → API 密钥 → 新建 API 密钥，把生成的字符串粘到这里。'
@@ -150,15 +140,11 @@ async function save() {
       <div class="modal-body">
         <div class="field-group">
           <div class="title">基本信息</div>
-          <div class="hint">
-            反代端口是 AetherLink 在容器内为这个上游单独开的端口：播放端把地址里的
-            <template v-if="sourcePort">{{ sourcePort }}</template><template v-else>上游端口</template>
-            换成它，路径保持原样。端口要在 docker compose 的 ports 里一并映射出去。
-          </div>
+          <div class="hint">播放时把原地址端口换成反代端口，路径保持不变。</div>
           <div class="grid cols-2">
             <label class="field">
-              <span>名称（仅用于识别，不能含斜杠）</span>
-              <input v-model="form.name" placeholder="abs" />
+              <span>名称</span>
+              <input v-model="form.name" placeholder="例如：我的有声书" />
             </label>
             <label class="field">
               <span>服务端类型</span>
@@ -168,13 +154,14 @@ async function save() {
               </select>
             </label>
             <label class="field">
-              <span>上游地址</span>
+              <span>原服务地址</span>
               <input v-model="form.baseUrl" :placeholder="isEmby ? 'http://10.0.0.31:8096' : 'http://10.0.0.31:13378'" />
             </label>
             <label class="field">
               <span>反代端口</span>
               <input v-model.number="form.listenPort" type="number" min="1" max="65535"
                      :placeholder="props.suggestedPort ? String(props.suggestedPort) : '如 5152'" />
+              <small class="field-note">保存后把宿主机端口映射到这个端口</small>
             </label>
           </div>
           <div class="row">
@@ -191,28 +178,19 @@ async function save() {
 
         <div class="field-group">
           <div class="title">{{ isEmby ? 'Emby API 密钥' : 'Audiobookshelf API 密钥' }}</div>
-          <div class="hint">
-            {{ keyHint }}
-            密钥等同于该账号权限，AetherLink 用它查询媒体库与文件真实路径。
-            <template v-if="form.keepApiKey">当前已保存一枚密钥，留空即保留原值。</template>
-          </div>
+          <div class="hint">{{ keyHint }}<template v-if="form.keepApiKey">留空则保留原密钥。</template></div>
           <input v-model="form.apiKey" type="password" autocomplete="off" :placeholder="keyPlaceholder" />
         </div>
 
         <div class="field-group">
           <div class="title">STRM 允许根目录</div>
-          <div class="hint">
-            每行一个。仅在 .strm 指向容器内本地文件时用到，作为白名单防止指针变成任意文件读取入口；
-            指向 http 直链时留空即可。
-          </div>
+          <div class="hint">只有 STRM 指向容器内文件时填写；直链 STRM 留空。</div>
           <textarea v-model="form.strmRoots" rows="3" placeholder="/NetDisk"></textarea>
         </div>
 
         <div class="field-group">
           <div class="title">路径映射</div>
-          <div class="hint">
-            把上游报告的媒体路径改写成 AetherLink 容器内的路径。两边挂载同名时不用填。
-          </div>
+          <div class="hint">上游路径和容器路径不一致时填写，否则留空。</div>
           <div class="row" v-for="(mapping, index) in form.pathMappings" :key="index" style="margin-bottom:8px">
             <input v-model="mapping.from" :placeholder="isEmby ? '上游看到的路径，如 /media' : '上游看到的路径，如 /audiobooks'" style="flex:1;min-width:190px" />
             <span class="muted">→</span>

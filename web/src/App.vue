@@ -54,6 +54,7 @@ let statusTimer = null
 
 const activeLabel = computed(() => tabs.find((tab) => tab.id === activeTab.value)?.label || '')
 const activeDescription = computed(() => tabs.find((tab) => tab.id === activeTab.value)?.description || '')
+const showPageDescription = computed(() => activeTab.value !== 'upstreams')
 
 watch(railOpen, (open) => localStorage.setItem(RAIL_KEY, open ? 'open' : 'closed'))
 
@@ -243,16 +244,18 @@ onUnmounted(() => statusTimer && clearInterval(statusTimer))
     <main class="main">
       <header class="page-head">
         <div class="page-title">
-          <span class="eyebrow">AETHERLINK CONTROL</span>
+          <span v-if="showPageDescription" class="eyebrow">AETHERLINK CONTROL</span>
           <h1>{{ activeLabel }}</h1>
-          <p>{{ activeDescription }}</p>
+          <p v-if="showPageDescription">{{ activeDescription }}</p>
         </div>
         <div class="system-summary" v-if="status">
           <span class="status-pill online"><i></i>运行中</span>
-          <span class="status-pill">v{{ status.version }}</span>
-          <span class="status-pill">管理端口 {{ status.adminPort }}</span>
-          <span class="status-pill">链接 {{ status.enabledUpstreamCount }}/{{ status.upstreamCount }}</span>
-          <span class="status-pill">已运行 {{ uptime }}</span>
+          <span class="status-pill">v1.0</span>
+          <template v-if="activeTab !== 'upstreams'">
+            <span class="status-pill">管理端口 {{ status.adminPort }}</span>
+            <span class="status-pill">链接 {{ status.enabledUpstreamCount }}/{{ status.upstreamCount }}</span>
+            <span class="status-pill">已运行 {{ uptime }}</span>
+          </template>
         </div>
       </header>
 

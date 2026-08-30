@@ -63,6 +63,12 @@ function typeLabel(type) {
   return TYPE_LABELS[type] || type
 }
 
+function openProxy(upstream) {
+  if (!upstream.enabled || !upstream.listening || !upstream.listenPort) return
+  const target = `${window.location.protocol}//${window.location.hostname}:${upstream.listenPort}`
+  window.open(target, '_blank', 'noopener,noreferrer')
+}
+
 function openMenu(event, upstream) {
   menu.value = { x: event.clientX, y: event.clientY, upstream }
 }
@@ -136,9 +142,7 @@ onMounted(load)
   <section class="upstreams-page">
     <div class="workspace-toolbar">
       <div>
-        <span class="eyebrow">PROXY WORKSPACE</span>
         <h2>服务入口</h2>
-        <p>每个媒体服务拥有独立反代端口，播放端只换端口，路径保持原样。</p>
       </div>
       <button class="primary add-button" @click="openEditor(null)">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
@@ -211,12 +215,16 @@ onMounted(load)
           <strong>{{ portFlow(upstream).split(' → ')[0] }}</strong>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M14 7l5 5-5 5" /></svg>
           <span>反代端口</span>
-          <strong>{{ upstream.listenPort }}</strong>
+          <button
+            class="route-port"
+            :disabled="!upstream.enabled || !upstream.listening"
+            :title="upstream.enabled && upstream.listening ? '打开反代入口' : '入口未运行'"
+            @click.stop="openProxy(upstream)"
+          >{{ upstream.listenPort }}</button>
         </div>
 
         <div class="proxy-card-foot">
           <span class="card-tag" :class="{ muted: !upstream.hasApiKey }">{{ upstream.hasApiKey ? '密钥已配置' : '缺少密钥' }}</span>
-          <span class="edit-hint">点击编辑 · 右键更多</span>
         </div>
       </article>
 

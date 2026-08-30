@@ -152,7 +152,7 @@ onMounted(load)
           <dl class="runtime-list">
             <div><dt>管理端口</dt><dd>{{ server.adminPort || server.listen }}</dd></div>
             <div><dt>配置文件</dt><dd class="mono">{{ server.configPath }}</dd></div>
-            <div v-if="status"><dt>版本</dt><dd>v{{ status.version }}</dd></div>
+            <div><dt>版本</dt><dd>v1.0</dd></div>
             <div v-if="status"><dt>活跃会话</dt><dd>{{ status.sessions }}</dd></div>
           </dl>
           <div class="runtime-tags">

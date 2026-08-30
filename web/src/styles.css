@@ -880,6 +880,26 @@ code {
   font-weight: 600;
 }
 
+.route-port {
+  min-width: 48px;
+  padding: 2px 7px;
+  border: 1px solid rgba(253, 253, 252, 0.48);
+  border-radius: 7px;
+  background: rgba(253, 253, 252, 0.25);
+  color: inherit;
+  font: 600 13px "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  cursor: pointer;
+}
+
+.route-port:hover:not(:disabled) {
+  background: rgba(253, 253, 252, 0.48);
+}
+
+.route-port:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
 .route-flow svg {
   width: 15px;
   height: 15px;
@@ -911,18 +931,6 @@ code {
 .card-tag.muted {
   background: rgba(184, 154, 116, 0.92);
   color: #fdfdfc;
-}
-
-.edit-hint {
-  font-size: 11px;
-  opacity: 0;
-  transition: opacity 0.16s ease;
-  white-space: nowrap;
-}
-
-.proxy-card:hover .edit-hint,
-.proxy-card:focus-visible .edit-hint {
-  opacity: 0.85;
 }
 
 /* 骨架卡片：加载中占位，避免布局跳动。 */
@@ -1836,6 +1844,13 @@ label.field > span {
   color: var(--muted);
   font-size: 12px;
   margin-bottom: 6px;
+}
+
+.field-note {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 11px;
 }
 
 label.inline {
