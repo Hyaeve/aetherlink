@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -236,6 +237,11 @@ type apiClient struct {
 // ErrNoAPIKey is returned when an upstream has no API key configured, which
 // means AetherLink cannot resolve media paths for it.
 var ErrNoAPIKey = fmt.Errorf("upstream api key is not configured")
+
+// ErrDirectPlayUnsupported 表示 Emby 在刚才的 PlaybackInfo 中已经判定当前
+// 客户端不能直接播放原始文件。这时即使客户端请求了 /stream，也应退回 Emby
+// 自己处理，不能把无法解码的原文件强行 302 出去。
+var ErrDirectPlayUnsupported = errors.New("Emby 判定当前客户端不能直接播放原始文件")
 
 // getJSON issues an authenticated GET and decodes the JSON body into out.
 func (c *apiClient) getJSON(ctx context.Context, endpoint string, query url.Values, out any) error {

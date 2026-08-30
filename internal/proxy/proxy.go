@@ -138,7 +138,7 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		if rewriter, ok := s.provider.(upstream.ResponseRewriter); ok && rewriter.WantsResponseRewrite(request) {
 			logx.Infof("[%s] 拦截播放协商 %s %s（将检查并改写 STRM 媒体源的直放能力）", s.provider.Name(), request.Method, request.URL.RequestURI())
 		} else if isEmbyHLSRequest(s.provider, request.URL.Path) {
-			logx.Infof("[%s] 检测到 Emby HLS 转码请求 %s %s（HLS 清单或分片本身不能 302；STRM 若持续走这里，说明客户端没有采用直放 PlaybackInfo，请停止后重新播放）", s.provider.Name(), request.Method, request.URL.RequestURI())
+			logx.Infof("[%s] 检测到 Emby HLS 转码请求 %s %s（HLS 清单或分片本身不能 302；若前一条 PlaybackInfo 日志提示保留转码，这是客户端兼容性回退）", s.provider.Name(), request.Method, request.URL.RequestURI())
 		} else if looksLikeMedia(request.URL.Path) {
 			logx.Infof("[%s] 未识别的疑似播放请求 %s %s（没有匹配到媒体路由，已原样转发）", s.provider.Name(), request.Method, request.URL.RequestURI())
 		} else {
@@ -220,6 +220,12 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 	resolution, cacheHit, err := s.resolver.Resolve(request.Context(), s.provider, ref, request.UserAgent())
 	event.CacheHit = cacheHit
 	if err != nil {
+		if errors.Is(err, upstream.ErrDirectPlayUnsupported) {
+			event.Error = err.Error()
+			finish(stats.OutcomePassthrough, "Emby 判定当前客户端不支持原始文件，本次交回上游直流或转码")
+			s.proxy.ServeHTTP(writer, request)
+			return
+		}
 		if errors.Is(err, resolver.ErrNotStrm) {
 			// Regular media file: let the upstream serve it.
 			finish(stats.OutcomePassthrough, "不是 strm 指针，交给上游自己播")
@@ -414,6 +420,11 @@ func (s *Server) serveLocalFile(writer http.ResponseWriter, request *http.Reques
 func joinPath(basePath, requestPath string) string {
 	basePath = strings.TrimRight(basePath, "/")
 	if basePath == "" {
+		return requestPath
+	}
+	loweredBase := strings.ToLower(basePath)
+	loweredRequest := strings.ToLower(requestPath)
+	if loweredRequest == loweredBase || strings.HasPrefix(loweredRequest, loweredBase+"/") {
 		return requestPath
 	}
 	if requestPath == "/" {

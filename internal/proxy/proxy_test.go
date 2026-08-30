@@ -448,10 +448,9 @@ func newEmbyTestServer(t *testing.T, embyURL string, redirectCfg config.Redirect
 	return New(provider, mediaResolver, collector, redirectCfg), collector
 }
 
-// Emby 客户端先读取 PlaybackInfo，再按 Supports* 字段选择直放或 HLS。
-// STRM 若被选成 HLS，后续只会出现 hls1/main/*.ts，完整媒体地址再也不会经过
-// AetherLink。因此必须在协商响应阶段只把 STRM 源切换为直放。
-func TestEmbyPlaybackInfoForcesOnlyStrmSourcesToDirectPlay(t *testing.T) {
+// Emby 已判定可直接播放的 STRM 只需要把 DirectStreamUrl 接到 AetherLink，
+// 不能篡改它的转码能力；客户端可以优先直放，也仍保留必要时回退转码的能力。
+func TestEmbyPlaybackInfoRoutesCompatibleStrmToDirectPlay(t *testing.T) {
 	var acceptEncoding string
 	var itemRequests int
 	remoteSource := map[string]any{
@@ -460,7 +459,7 @@ func TestEmbyPlaybackInfoForcesOnlyStrmSourcesToDirectPlay(t *testing.T) {
 		"Protocol":             "Http",
 		"Container":            "mkv",
 		"MediaType":            "Video",
-		"SupportsDirectPlay":   false,
+		"SupportsDirectPlay":   true,
 		"SupportsDirectStream": false,
 		"SupportsTranscoding":  true,
 		"DirectStreamUrl":      "/emby/Videos/movie-1/stream.mkv?PlaySessionId=play-1",
@@ -479,7 +478,7 @@ func TestEmbyPlaybackInfoForcesOnlyStrmSourcesToDirectPlay(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/emby/Items/movie-1/PlaybackInfo", func(writer http.ResponseWriter, request *http.Request) {
+	mux.HandleFunc("/emby/emby/Items/movie-1/PlaybackInfo", func(writer http.ResponseWriter, request *http.Request) {
 		acceptEncoding = request.Header.Get("Accept-Encoding")
 		writeJSON(t, writer, map[string]any{
 			"PlaySessionId": "play-1",
@@ -513,7 +512,7 @@ func TestEmbyPlaybackInfoForcesOnlyStrmSourcesToDirectPlay(t *testing.T) {
 	server, collector := newEmbyTestServer(t, emby.URL, defaultRedirect())
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/emby/Items/movie-1/PlaybackInfo?UserId=user-1", strings.NewReader(`{}`))
+	request := httptest.NewRequest(http.MethodPost, "/emby/emby/Items/movie-1/PlaybackInfo?UserId=user-1", strings.NewReader(`{}`))
 	request.Header.Set("Accept-Encoding", "gzip")
 	request.Header.Set("Content-Type", "application/json")
 	server.ServeHTTP(recorder, request)
@@ -534,11 +533,11 @@ func TestEmbyPlaybackInfoForcesOnlyStrmSourcesToDirectPlay(t *testing.T) {
 		t.Fatalf("media source count = %d, want 2", len(playbackInfo.MediaSources))
 	}
 	rewritten := playbackInfo.MediaSources[0]
-	if rewritten["SupportsDirectPlay"] != true || rewritten["SupportsDirectStream"] != true || rewritten["SupportsTranscoding"] != false {
-		t.Fatalf("STRM direct-play flags were not rewritten: %#v", rewritten)
+	if rewritten["SupportsDirectPlay"] != true || rewritten["SupportsDirectStream"] != false || rewritten["SupportsTranscoding"] != true {
+		t.Fatalf("STRM playback capability flags should stay unchanged: %#v", rewritten)
 	}
-	if _, exists := rewritten["TranscodingUrl"]; exists {
-		t.Fatalf("STRM TranscodingUrl was not removed: %#v", rewritten)
+	if rewritten["TranscodingUrl"] == nil || rewritten["TranscodingContainer"] != "ts" {
+		t.Fatalf("STRM transcoding fallback should stay available: %#v", rewritten)
 	}
 	directURL, _ := rewritten["DirectStreamUrl"].(string)
 	parsedDirectURL, err := url.Parse(directURL)
@@ -565,6 +564,86 @@ func TestEmbyPlaybackInfoForcesOnlyStrmSourcesToDirectPlay(t *testing.T) {
 	}
 	if itemRequests != 0 {
 		t.Fatalf("direct stream queried /Items %d times; want the just-rewritten PlaybackInfo source to be reused", itemRequests)
+	}
+}
+
+// Emby 判定不兼容时必须保留 HLS。4K H.265 这类原文件即使成功 302，网页端也
+// 可能完全无法解码；让 Emby 转码虽然不走 302，但至少能够正常播放。
+func TestEmbyPlaybackInfoKeepsTranscodingForIncompatibleStrm(t *testing.T) {
+	remoteSource := map[string]any{
+		"Id":                   "source-h265",
+		"Path":                 "https://cdn.example/episode.h265.mkv",
+		"Protocol":             "Http",
+		"Container":            "mkv",
+		"MediaType":            "Video",
+		"SupportsDirectPlay":   false,
+		"SupportsDirectStream": false,
+		"SupportsTranscoding":  true,
+		"DirectStreamUrl":      "/emby/Videos/movie-h265/stream.mkv?PlaySessionId=play-h265",
+		"TranscodingUrl":       "/emby/Videos/movie-h265/master.m3u8?PlaySessionId=play-h265&TranscodeReasons=VideoCodecNotSupported",
+		"TranscodingContainer": "ts",
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/emby/Items/movie-h265/PlaybackInfo", func(writer http.ResponseWriter, request *http.Request) {
+		writeJSON(t, writer, map[string]any{"MediaSources": []map[string]any{remoteSource}})
+	})
+	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
+		writer.Write([]byte("emby-transcode:" + request.URL.Path))
+	})
+	emby := httptest.NewServer(mux)
+	t.Cleanup(emby.Close)
+	server, collector := newEmbyTestServer(t, emby.URL, defaultRedirect())
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/emby/Items/movie-h265/PlaybackInfo", strings.NewReader(`{}`)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("PlaybackInfo status = %d, want 200", recorder.Code)
+	}
+	var playbackInfo struct {
+		MediaSources []map[string]any `json:"MediaSources"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &playbackInfo); err != nil {
+		t.Fatal(err)
+	}
+	source := playbackInfo.MediaSources[0]
+	if source["SupportsDirectPlay"] != false || source["SupportsTranscoding"] != true {
+		t.Fatalf("incompatible STRM capability flags changed: %#v", source)
+	}
+	if source["DirectStreamUrl"] != remoteSource["DirectStreamUrl"] || source["TranscodingUrl"] != remoteSource["TranscodingUrl"] {
+		t.Fatalf("incompatible STRM routes changed: %#v", source)
+	}
+
+	directRecorder := httptest.NewRecorder()
+	server.ServeHTTP(directRecorder, httptest.NewRequest(http.MethodGet, "/emby/Videos/movie-h265/stream.mkv?MediaSourceId=source-h265", nil))
+	if directRecorder.Code != http.StatusOK || !strings.HasPrefix(directRecorder.Body.String(), "emby-transcode:") {
+		t.Fatalf("incompatible direct route status=%d body=%q", directRecorder.Code, directRecorder.Body.String())
+	}
+
+	hlsRecorder := httptest.NewRecorder()
+	server.ServeHTTP(hlsRecorder, httptest.NewRequest(http.MethodGet, "/emby/videos/movie-h265/hls1/main/10.ts", nil))
+	if hlsRecorder.Code != http.StatusOK || !strings.HasPrefix(hlsRecorder.Body.String(), "emby-transcode:") {
+		t.Fatalf("HLS fallback status=%d body=%q", hlsRecorder.Code, hlsRecorder.Body.String())
+	}
+	if snapshot := collector.Snapshot(10); snapshot.Redirects != 0 || snapshot.Passthroughs != 1 {
+		t.Fatalf("redirects=%d passthroughs=%d, want 0 and 1 for incompatible STRM", snapshot.Redirects, snapshot.Passthroughs)
+	}
+}
+
+func TestJoinPathAvoidsDuplicateBasePrefix(t *testing.T) {
+	tests := []struct {
+		basePath    string
+		requestPath string
+		want        string
+	}{
+		{basePath: "/emby", requestPath: "/emby/Items/1", want: "/emby/Items/1"},
+		{basePath: "/emby", requestPath: "/Items/1", want: "/emby/Items/1"},
+		{basePath: "/emby/", requestPath: "/Emby/Videos/1/stream.mkv", want: "/Emby/Videos/1/stream.mkv"},
+	}
+	for _, test := range tests {
+		if got := joinPath(test.basePath, test.requestPath); got != test.want {
+			t.Fatalf("joinPath(%q, %q) = %q, want %q", test.basePath, test.requestPath, got, test.want)
+		}
 	}
 }
 

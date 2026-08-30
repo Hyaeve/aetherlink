@@ -10,7 +10,7 @@
 | `internal/urlx` | STRM 原始内容的 URL 归一化与分类。保留已有 `%XX` 转义，识别 115 pick code / openlist 形态，判断私有网段。 |
 | `internal/pathmap` | 上游媒体路径 → 容器路径的前缀重写（最长前缀优先）、本地目标的根目录白名单校验，以及 `Locate`：翻译后的路径不存在时，把上游路径逐段剥前缀，在配置根目录、映射目标与常见挂载点下 stat 定位指针，两侧挂载点不同名也不必手写映射。 |
 | `internal/strm` | 读取 `.strm` 指针（跳过注释行、限制读取长度），区分远程 URL 与容器本地文件，推导显示文件名。 |
-| `internal/upstream` | Audiobookshelf 与 Emby 的 API 客户端：识别需要拦截的媒体请求、回答「这个媒体是什么」（`MediaTarget`：ABS 给指针路径，Emby 给已解析的直链）、书库浏览。Emby 还会改写客户端的 `PlaybackInfo`，只把 STRM 媒体源切换为直放。 |
+| `internal/upstream` | Audiobookshelf 与 Emby 的 API 客户端：识别需要拦截的媒体请求、回答「这个媒体是什么」（`MediaTarget`：ABS 给指针路径，Emby 给已解析的直链）、书库浏览。Emby 还会改写客户端的 `PlaybackInfo`，只把已经通过客户端兼容性判断的 STRM 接到 302 路由。 |
 | `internal/resolver` | 解析流水线：问上游 → 直链直接用 / 定位并读指针 →（可选）走完跳转链。带 TTL+LRU 缓存与并发去重。读不到指针时返回 `ErrPointerUnavailable`，由调用方退回透传。 |
 | `internal/proxy` | 反向代理与拦截决策：302、中继转发、本地直读、透传四条出口。一个 `Server` 只服务一个上游，因此不需要路径匹配。 |
 | `internal/stats` | 内存计数与最近事件环形缓冲，供日志与排障使用。 |
@@ -42,7 +42,7 @@
 ## 请求判定顺序
 
 1. 请求落在哪个反代端口上，就是哪个上游（`runtime.handlerFor`，一端口一上游，路径不参与选择）。
-2. Emby 的 `/Items/:id/PlaybackInfo` 先原样请求上游，再改写响应中 STRM 源的 `SupportsDirectPlay` / `SupportsDirectStream` / `SupportsTranscoding` 与 `DirectStreamUrl`，让客户端下一步请求可拦截的直放路由。普通媒体源不修改。
+2. Emby 的 `/Items/:id/PlaybackInfo` 先原样请求上游。STRM 源只有在 `SupportsDirectPlay=true` 时才重写 `DirectStreamUrl`，三个 `Supports*` 能力字段与 `TranscodingUrl` 全部保留；若 Emby 判断客户端不兼容，则响应逐字节不改并继续 HLS 转码。普通媒体源始终不修改。
 3. 交给该上游的 `Match` 判断是否为媒体字节接口，不是则直接反代。未命中但路径看起来像播放请求（含 `/stream`、`/track/`、媒体扩展名等）时记一条 info 日志；Emby HLS 清单或分片会单独说明「分片本身不能 302，应重新播放以重新协商直放」。
 4. 上游没有 API 密钥 → 记为 `passthrough` 并反代（无法查询媒体信息）。
 5. 问上游 `MediaTarget`，按回答分三条路：
@@ -74,7 +74,8 @@
 - **拦截规则容忍路径前缀**：Audiobookshelf 支持 `ROUTER_BASE_PATH`，Emby 常带 `/emby`，两者的媒体路由都可能多一段前缀。ABS 至少容忍一段，Emby 直放路由容忍任意层级前缀，否则子路径部署会整条漏匹配，现象是完全静默、既不 302 也没有日志。
 - **ABS 会话音轨要两步查**：`/public/session/:id/track/:index` 是网页端与 App 真正取字节的入口，但 `/api/session/:id` 从数据库重建会话、**不返回 audioTracks**，而刚开始播放的会话甚至还没落库（404）。因此先查会话、必要时回退 `/api/sessions/open`，拿到 `libraryItemId` 后再查条目按序号定位音频文件。少了这两级回退，ABS 侧永远不会 302。
 - **Emby 查媒体源要带 UserId**：不少 Emby 版本只在「以某个用户身份查询」时才展开 `MediaSources`，`PlaybackInfo` 缺 `UserId` 甚至直接 400。`resolveUserID` 取一次管理员 ID 并缓存，`/Items` 与 `PlaybackInfo` 都带上，最后再留一次不带 UserId 的重试。
-- **Emby 的 302 起点是 PlaybackInfo，不是 HLS 分片**：客户端先根据 `PlaybackInfo` 决定直放或转码。一旦选中 `/hls1/main/*.ts`，每个请求只代表一段转码数据，不可能 302 到完整媒体文件。因此反代响应钩子只改 STRM 源：打开直放、关闭转码并重写 `DirectStreamUrl`；普通本地媒体保持上游原值，需要时仍能正常转码。改写时还会把这份媒体源短暂缓存，下一跳直接复用同一个 URL，不依赖 `/Items` 是否展开媒体源。
+- **Emby 的 302 起点是 PlaybackInfo，不是 HLS 分片**：客户端先根据 `PlaybackInfo` 决定直放或转码。一旦选中 `/hls1/main/*.ts`，每个请求只代表一段转码数据，不可能 302 到完整媒体文件。但也不能把所有 STRM 强制直放：网页端拿到不支持的 H.265 原文件同样无法播放。因此只在上游给出 `SupportsDirectPlay=true` 时重写 `DirectStreamUrl`，其余能力字段和转码 URL 保持原样；不兼容时宁可不 302，也要让 Emby 正常转码。媒体源和兼容性判断会一起短暂缓存；不兼容的客户端即使又请求 `/stream`，也会退回上游而不会误跳原文件。
+- **基础路径不能重复拼接**：配置的 Emby 地址可能已经带 `/emby`，客户端请求也可能以 `/emby` 开头。反代 `joinPath` 会先判断请求是否已含基础路径，直放 URL 也会优先复用 Emby 原本的路由前缀并折叠相邻重复段，避免生成 `/emby/emby/Videos/...`。
 - **自动定位而非要求手写映射**：`pathmap.Locate` 把上游路径逐段剥前缀，在配置根目录、映射目标与常见挂载点下 stat。白名单校验从不放宽——白名单外的候选连 stat 都不做。凡能自动化的就不要求用户填表。
 - **不缓存指针内容按 mtime**：文件系统 mtime 精度不足，同一 tick 内两次写入无法区分。缓存键是媒体引用（上游 + 条目 + 文件），TTL 到期后重新读取指针，路径白名单校验永远在缓存之外无条件执行。
 - **并发去重**：播放器 seek 时会并发发起多个 Range 请求，`resolver` 用 inflight map 让同一轨道只打一次上游 API。
