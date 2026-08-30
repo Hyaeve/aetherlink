@@ -29,7 +29,7 @@
 | `web/src/components/UpstreamsView.vue` | 卡片网格：一个上游一张方卡，左键开编辑弹窗，右键出上下文菜单。 |
 | `web/src/components/ContextMenu.vue` | 通用右键菜单，含视口边缘回折与点击外部关闭。 |
 | `web/src/components/UpstreamForm.vue` | 上游详细编辑弹窗，按「基本 / 密钥 / 路径」分组；密钥说明随服务端类型在 Audiobookshelf 与 Emby 之间切换。 |
-| `web/src/components/LogsView.vue` | 运行日志，按级别过滤。 |
+| `web/src/components/LogsView.vue` | 播放流水（读 `/stats`：计数 + 逐条事件 + 无 302 时的诊断结论）与运行日志（读 `/logs`，按级别过滤）。 |
 | `web/src/components/SettingsView.vue` | 302 策略、缓存与日志、管理账号、运行信息。 |
 ## 管理账号与入口
 
@@ -42,7 +42,7 @@
 ## 请求判定顺序
 
 1. 请求落在哪个反代端口上，就是哪个上游（`runtime.handlerFor`，一端口一上游，路径不参与选择）。
-2. 交给该上游的 `Match` 判断是否为媒体字节接口，不是则直接反代。
+2. 交给该上游的 `Match` 判断是否为媒体字节接口，不是则直接反代。未命中但路径看起来像播放请求（含 `/stream`、`/track/`、媒体扩展名等）时记一条 info 日志，因为「拦截规则漏了某条路由」正是「反代通了却不 302」最常见的原因，必须可观测。
 3. 上游没有 API 密钥 → 记为 `passthrough` 并反代（无法查询媒体信息）。
 4. 问上游 `MediaTarget`，按回答分三条路：
    - **已是直链**（Emby：`Protocol: Http` 或 `Path` 以 `http(s)://` 开头）→ 归一化后直接进入第 6 步，不读任何文件。
@@ -68,7 +68,11 @@
 ## 关键设计取舍
 
 - **Emby 与 ABS 的 strm 形态根本不同**：Emby 扫库时就把指针读掉了，`MediaSources[].Path` 直接是直链，AetherLink 完全不需要挂载媒体目录；Audiobookshelf 保留指针原样、播放时自己代理，AetherLink 必须能读到那个 `.strm` 才能 302。两条链路在 `resolver.resolveUncached` 里分开处理，`upstream.MediaTarget` 就是为了让这个区别显式化而存在的。
-- **指针读不到就透传，不报错**：上游自己能读到那个文件，让它继续服务比让播放失败好得多。原因记进日志与事件，用户能查到「为什么没有 302」，而不是听到一段静音。
+- **指针读不到就透传，不报错**：上游自己能读到那个文件，让它继续服务比让播放失败好得多。原因记进日志与事件，用户能查到「为什么没有 302」，而不是听到一段静音。解析报错（上游 API 挂了、返回体变了）同样退回透传而不是回 502——装上 AetherLink 之后反而播不了，是最不可接受的失败模式。
+- **每条出口都必须留下日志**：`serveMedia` 里所有分支统一走一个 `finish` 闭包，记事件的同时必定打一行日志。早先只写 `stats.Collector`、成功路径一行日志都不打，结果「不能 302」这个问题在容器日志与界面里完全不可观测——排障能力本身就是功能。
+- **拦截规则容忍路径前缀**：Audiobookshelf 支持 `ROUTER_BASE_PATH`，Emby 常带 `/emby`，两者的媒体路由都可能多一段前缀。正则统一写成 `^(?:/[^/]+)?/…`，否则子路径部署会整条漏匹配，现象是完全静默、既不 302 也没有日志。
+- **ABS 会话音轨要两步查**：`/public/session/:id/track/:index` 是网页端与 App 真正取字节的入口，但 `/api/session/:id` 从数据库重建会话、**不返回 audioTracks**，而刚开始播放的会话甚至还没落库（404）。因此先查会话、必要时回退 `/api/sessions/open`，拿到 `libraryItemId` 后再查条目按序号定位音频文件。少了这两级回退，ABS 侧永远不会 302。
+- **Emby 查媒体源要带 UserId**：不少 Emby 版本只在「以某个用户身份查询」时才展开 `MediaSources`，`PlaybackInfo` 缺 `UserId` 甚至直接 400。`resolveUserID` 取一次管理员 ID 并缓存，`/Items` 与 `PlaybackInfo` 都带上，最后再留一次不带 UserId 的重试。
 - **自动定位而非要求手写映射**：`pathmap.Locate` 把上游路径逐段剥前缀，在配置根目录、映射目标与常见挂载点下 stat。白名单校验从不放宽——白名单外的候选连 stat 都不做。凡能自动化的就不要求用户填表。
 - **不缓存指针内容按 mtime**：文件系统 mtime 精度不足，同一 tick 内两次写入无法区分。缓存键是媒体引用（上游 + 条目 + 文件），TTL 到期后重新读取指针，路径白名单校验永远在缓存之外无条件执行。
 - **并发去重**：播放器 seek 时会并发发起多个 Range 请求，`resolver` 用 inflight map 让同一轨道只打一次上游 API。
@@ -92,6 +96,7 @@
 | --- | --- | --- |
 | 指针解析 | `server/utils/strmUtils.js` 的 `resolveStrmTarget` | `internal/strm`（读文件）+ `internal/strm.ParseURL`（上游已给直链）+ `internal/urlx` |
 | 指针定位 | 指针路径就在本机，直接 `fs.readFile` | `internal/pathmap.Locate`：跨容器，挂载点可能不同名 |
+| 音轨定位 | `SessionController.getTrack` 直接从内存里的会话取 `audioTracks[i].metadata.path` | 只能靠 API：`/api/session/:id` 无音轨 → 回退 `/api/sessions/open` → 用 `libraryItemId` 查条目按序号取路径 |
 | 字节投递 | `proxyStrm` 服务端流式转发 | 默认 302，必要时才中继 |
 | 根目录限制 | 库目录 + 固定 `/NetDisk` | 界面配置的 `strm_roots` |
 | 私网放行 | STRM 链路绕过 SSRF 过滤 | `redirect.mode: private` / `allow_public_targets` |

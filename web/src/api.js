@@ -69,5 +69,7 @@ export const api = {
   testUpstream: (payload) => request('/upstreams/test', { method: 'POST', ...jsonBody(payload) }),
 
   ping: (name) => request(`/upstreams/${encodeURIComponent(name)}/ping`),
-  logs: (limit = 200) => request(`/logs?limit=${limit}`)
+  logs: (limit = 200) => request(`/logs?limit=${limit}`),
+  // stats 是播放事件流水：每条媒体请求最终是 302、透传还是中继都在这里。
+  stats: (events = 100) => request(`/stats?events=${events}`)
 }

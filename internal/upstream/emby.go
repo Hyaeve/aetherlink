@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/aetherlink/aetherlink/internal/logx"
 )
@@ -18,13 +19,20 @@ import (
 // the api_key query parameter, which is what Emby accepts for admin-level calls.
 type embyProvider struct {
 	providerBase
+
+	// userMu 保护下面两个字段：PlaybackInfo 需要一个 UserId，查到之后缓存复用。
+	userMu       sync.Mutex
+	userLookedUp bool
+	userID       string
 }
 
+// 前缀写成 (?:/[^/]+)? 而不是只认 /emby/：Emby 既可能装在反向代理的子路径下，
+// 也有客户端会带上 /emby 前缀，只认死一种就会整条漏匹配。
 var (
-	// /Videos/:id/stream(.ext), /Audio/:id/stream(.ext), /Videos/:id/original.ext
-	embyStreamRe = regexp.MustCompile(`(?i)^/(?:emby/)?(?:videos|audio)/([^/]+)/(?:stream|original|universal)(?:\.[A-Za-z0-9]+)?$`)
-	// /Items/:id/Download
-	embyDownloadRe = regexp.MustCompile(`(?i)^/(?:emby/)?items/([^/]+)/download$`)
+	// [/前缀]/Videos/:id/stream(.ext)、/Audio/:id/universal 等直放入口
+	embyStreamRe = regexp.MustCompile(`(?i)^(?:/[^/]+)?/(?:videos|audio)/([^/]+)/(?:stream|original|universal)(?:\.[A-Za-z0-9]+)?$`)
+	// [/前缀]/Items/:id/Download、/Items/:id/File
+	embyDownloadRe = regexp.MustCompile(`(?i)^(?:/[^/]+)?/items/([^/]+)/(?:download|file)$`)
 )
 
 // Match intercepts Emby's direct-play and download endpoints. HLS/transcode
@@ -101,6 +109,10 @@ func (p *embyProvider) fetchItem(ctx context.Context, itemID string) (embyItem, 
 	query := url.Values{}
 	query.Set("Ids", itemID)
 	query.Set("Fields", "Path,MediaSources")
+	// 带上 UserId：不少 Emby 版本只在「以某个用户身份查询」时才展开 MediaSources。
+	if userID := p.resolveUserID(ctx); userID != "" {
+		query.Set("UserId", userID)
+	}
 	var response embyItemsResponse
 	if err := p.client.getJSON(ctx, "/Items", query, &response); err != nil {
 		return embyItem{}, err
@@ -120,15 +132,75 @@ func (p *embyProvider) fetchItem(ctx context.Context, itemID string) (embyItem, 
 }
 
 // fetchPlaybackSources asks PlaybackInfo for the media sources of one item.
+//
+// Emby 的 PlaybackInfo 在多数版本上要求带 UserId，缺了会直接 400。
+// 这里先取一个用户 ID（取到就缓存），拿不到再裸调一次，最大限度保证能读到
+// MediaSources —— 读不到 MediaSources，Emby 侧就永远只能看到 .strm 路径，
+// 于是退化成透传，也就是用户看到的「反代通了但不 302」。
 func (p *embyProvider) fetchPlaybackSources(ctx context.Context, itemID string) ([]embyMediaSource, error) {
-	var info embyPlaybackInfo
-	if err := p.client.getJSON(ctx, "/Items/"+url.PathEscape(itemID)+"/PlaybackInfo", nil, &info); err != nil {
-		return nil, err
+	endpoint := "/Items/" + url.PathEscape(itemID) + "/PlaybackInfo"
+	var lastErr error
+	for _, userID := range p.playbackUserCandidates(ctx) {
+		query := url.Values{}
+		if userID != "" {
+			query.Set("UserId", userID)
+		}
+		var info embyPlaybackInfo
+		if err := p.client.getJSON(ctx, endpoint, query, &info); err != nil {
+			lastErr = err
+			continue
+		}
+		if len(info.MediaSources) == 0 {
+			lastErr = fmt.Errorf("emby 条目 %q 的 PlaybackInfo 没有返回媒体源", itemID)
+			continue
+		}
+		return info.MediaSources, nil
 	}
-	if len(info.MediaSources) == 0 {
-		return nil, fmt.Errorf("emby item %q has no media sources", itemID)
+	return nil, lastErr
+}
+
+// playbackUserCandidates 返回调用 PlaybackInfo 时可用的 UserId 列表，
+// 末尾始终留一个空串，表示「不带 UserId 再试一次」。
+func (p *embyProvider) playbackUserCandidates(ctx context.Context) []string {
+	if userID := p.resolveUserID(ctx); userID != "" {
+		return []string{userID, ""}
 	}
-	return info.MediaSources, nil
+	return []string{""}
+}
+
+// resolveUserID 取一个可用的 Emby 用户 ID，优先管理员。结果缓存在 provider 上，
+// 每次播放都去问一遍 /Users 太浪费。
+func (p *embyProvider) resolveUserID(ctx context.Context) string {
+	p.userMu.Lock()
+	defer p.userMu.Unlock()
+	if p.userLookedUp {
+		return p.userID
+	}
+	p.userLookedUp = true
+
+	var users []embyUser
+	if err := p.client.getJSON(ctx, "/Users", nil, &users); err != nil {
+		logx.Debugf("[emby] 取用户列表失败，PlaybackInfo 将不带 UserId: %v", err)
+		return ""
+	}
+	for _, user := range users {
+		if user.Policy.IsAdministrator {
+			p.userID = user.ID
+			return p.userID
+		}
+	}
+	if len(users) > 0 {
+		p.userID = users[0].ID
+	}
+	return p.userID
+}
+
+type embyUser struct {
+	ID     string `json:"Id"`
+	Name   string `json:"Name"`
+	Policy struct {
+		IsAdministrator bool `json:"IsAdministrator"`
+	} `json:"Policy"`
 }
 
 // MediaTarget resolves what the requested Emby media source really is.

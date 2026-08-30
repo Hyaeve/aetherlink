@@ -54,6 +54,20 @@ func newFakeABS(t *testing.T, strmPath, regularPath string) *fakeABS {
 		writer.Header().Set("Content-Type", "audio/mp4")
 		writer.Write([]byte("upstream-served-bytes"))
 	})
+	// 会话响应刻意不带 audioTracks：真实的 Audiobookshelf 就是这样，
+	// PlaybackSession 模型不持久化音轨，只有 libraryItemId 可用。
+	mux.HandleFunc("/api/session/sess-1", func(writer http.ResponseWriter, request *http.Request) {
+		writeJSON(t, writer, map[string]any{"id": "sess-1", "libraryItemId": "book-1"})
+	})
+	// 刚开始播放的会话还没落库，这条接口就是 404，只能去活跃会话列表里找。
+	mux.HandleFunc("/api/session/sess-new", func(writer http.ResponseWriter, request *http.Request) {
+		http.Error(writer, "not found", http.StatusNotFound)
+	})
+	mux.HandleFunc("/api/sessions/open", func(writer http.ResponseWriter, request *http.Request) {
+		writeJSON(t, writer, map[string]any{
+			"sessions": []map[string]any{{"id": "sess-new", "libraryItemId": "book-1"}},
+		})
+	})
 	mux.HandleFunc("/api/libraries", func(writer http.ResponseWriter, request *http.Request) {
 		writeJSON(t, writer, map[string]any{"libraries": []map[string]any{{"id": "lib-1", "name": "有声书", "mediaType": "book"}}})
 	})
@@ -579,5 +593,63 @@ func TestHeadRequestGetsRedirectWithoutBody(t *testing.T) {
 	}
 	if recorder.Body.Len() != 0 {
 		t.Fatalf("HEAD response had a body: %q", recorder.Body.String())
+	}
+}
+
+// Audiobookshelf 可以装在子路径下（ROUTER_BASE_PATH），此时客户端请求的是
+// /audiobookshelf/api/items/...。旧正则只认 ^/api/，这类部署会整条漏掉拦截，
+// 对外表现就是「反代通了但一次都不 302，日志里也什么都看不到」。
+func TestABSRequestUnderRouterBasePathIsIntercepted(t *testing.T) {
+	root, strmPath, regularPath := writeStrm(t, "http://10.0.0.31:19527/d/bi6jeznun2rvu88v6.m4a")
+	fake := newFakeABS(t, strmPath, regularPath)
+	server, collector := newTestServer(t, fake.server.URL, root, defaultRedirect())
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/audiobookshelf/api/items/book-1/file/ino-strm", nil))
+
+	if recorder.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302; body = %q", recorder.Code, recorder.Body.String())
+	}
+	if snapshot := collector.Snapshot(10); snapshot.Redirects != 1 {
+		t.Fatalf("redirect count = %d, want 1", snapshot.Redirects)
+	}
+}
+
+// 网页端与 App 播放走的是 /public/session/:id/track/:index，而 ABS 的会话接口
+// 不返回 audioTracks，必须回到条目里按序号找音频文件，否则这条链路永远不 302。
+func TestSessionTrackResolvesThroughLibraryItem(t *testing.T) {
+	root, strmPath, regularPath := writeStrm(t, "http://10.0.0.31:19527/d/bi6jeznun2rvu88v6.m4a")
+	fake := newFakeABS(t, strmPath, regularPath)
+	server, collector := newTestServer(t, fake.server.URL, root, defaultRedirect())
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/public/session/sess-1/track/1", nil))
+
+	if recorder.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302; body = %q", recorder.Code, recorder.Body.String())
+	}
+	if location := recorder.Header().Get("Location"); !strings.HasPrefix(location, "http://10.0.0.31:19527/d/") {
+		t.Fatalf("Location = %q", location)
+	}
+	if snapshot := collector.Snapshot(10); snapshot.Redirects != 1 {
+		t.Fatalf("redirect count = %d, want 1", snapshot.Redirects)
+	}
+}
+
+// 会话刚创建时还没写进数据库，/api/session/:id 会 404。必须回退到活跃会话列表，
+// 否则播放刚开始的那几秒全部解析失败，用户看到的就是「不 302」。
+func TestSessionTrackFallsBackToOpenSessions(t *testing.T) {
+	root, strmPath, regularPath := writeStrm(t, "http://10.0.0.31:19527/d/bi6jeznun2rvu88v6.m4a")
+	fake := newFakeABS(t, strmPath, regularPath)
+	server, collector := newTestServer(t, fake.server.URL, root, defaultRedirect())
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/public/session/sess-new/track/1", nil))
+
+	if recorder.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302; body = %q", recorder.Code, recorder.Body.String())
+	}
+	if snapshot := collector.Snapshot(10); snapshot.Redirects != 1 {
+		t.Fatalf("redirect count = %d, want 1", snapshot.Redirects)
 	}
 }

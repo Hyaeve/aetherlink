@@ -109,10 +109,43 @@ func newReverseProxy(provider upstream.Provider) *httputil.ReverseProxy {
 func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	ref, isMedia := s.provider.Match(request)
 	if !isMedia {
+		// 没被拦截的请求量很大（界面、封面、进度同步），所以只在 debug 级别
+		// 记一行。排查「明明在播放却完全不 302」时，这一行是唯一能回答
+		// 「播放请求到底长什么样、为什么没被识别成媒体」的证据。
+		if looksLikeMedia(request.URL.Path) {
+			logx.Infof("[%s] 未识别的疑似播放请求 %s %s（没有匹配到媒体路由，已原样转发）", s.provider.Name(), request.Method, request.URL.RequestURI())
+		} else {
+			logx.Debugf("[%s] 透传 %s %s", s.provider.Name(), request.Method, request.URL.RequestURI())
+		}
 		s.proxy.ServeHTTP(writer, request)
 		return
 	}
+	logx.Infof("[%s] 拦截播放请求 %s %s（类型 %s，item=%s file=%s）", s.provider.Name(), request.Method, request.URL.RequestURI(), ref.Kind, ref.ItemID, ref.FileID)
 	s.serveMedia(writer, request, ref)
+}
+
+// mediaExtensions 是播放请求路径里常见的媒体扩展名，用来在「没被拦截」时判断
+// 这条请求是否值得升级成 info 日志。
+var mediaExtensions = []string{
+	".m4b", ".m4a", ".mp3", ".flac", ".opus", ".ogg", ".oga", ".aac", ".wav",
+	".wma", ".webm", ".webma", ".mka", ".mkv", ".mp4", ".avi", ".ts", ".strm",
+}
+
+// looksLikeMedia 判断一条未匹配的请求是否很可能是播放请求。
+// 命中说明拦截规则漏了这条路由，这正是「反代通了但不 302」的典型原因。
+func looksLikeMedia(requestPath string) bool {
+	lowered := strings.ToLower(requestPath)
+	for _, keyword := range []string{"/stream", "/original", "/universal", "/download", "/track/", "/file/", "/playbackinfo"} {
+		if strings.Contains(lowered, keyword) {
+			return true
+		}
+	}
+	for _, extension := range mediaExtensions {
+		if strings.HasSuffix(lowered, extension) {
+			return true
+		}
+	}
+	return false
 }
 
 // serveMedia resolves a media request and answers with a redirect, a relayed
@@ -128,13 +161,21 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 		UserAgent: request.UserAgent(),
 	}
 
+	// finish 是所有出口的唯一收尾：记录事件之后必定打一行日志。
+	// 之前只有 s.stats.Record，成功的 302 与透传一行日志都没有，
+	// 于是「不能 302」这个问题在容器日志与界面日志里完全不可观测。
+	finish := func(outcome stats.Outcome, note string) {
+		event.Outcome = outcome
+		event.Duration = time.Since(started)
+		s.stats.Record(event)
+		s.logOutcome(event, note)
+	}
+
 	if !s.provider.HasCredentials() {
 		// Without an API key AetherLink cannot ask the upstream where the media
 		// lives, so behave like a plain reverse proxy.
-		event.Outcome = stats.OutcomePassthrough
 		event.Error = upstream.ErrNoAPIKey.Error()
-		event.Duration = time.Since(started)
-		s.stats.Record(event)
+		finish(stats.OutcomePassthrough, "未配置 API 密钥，无法向上游查询媒体位置")
 		s.proxy.ServeHTTP(writer, request)
 		return
 	}
@@ -142,11 +183,9 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 	resolution, cacheHit, err := s.resolver.Resolve(request.Context(), s.provider, ref, request.UserAgent())
 	event.CacheHit = cacheHit
 	if err != nil {
-		event.Duration = time.Since(started)
 		if errors.Is(err, resolver.ErrNotStrm) {
 			// Regular media file: let the upstream serve it.
-			event.Outcome = stats.OutcomePassthrough
-			s.stats.Record(event)
+			finish(stats.OutcomePassthrough, "不是 strm 指针，交给上游自己播")
 			s.proxy.ServeHTTP(writer, request)
 			return
 		}
@@ -154,19 +193,17 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 			// 指针确实是 strm，但这个容器读不到它（媒体目录没挂进来）。
 			// 上游自己能读，退回透传让播放继续，同时把原因记进日志与事件，
 			// 避免用户只看到「能播但没有 302」而查不出为什么。
-			event.Outcome = stats.OutcomePassthrough
 			event.Error = err.Error()
-			s.stats.Record(event)
-			logx.Warnf("[proxy] %s 读不到 strm 指针，本次退回透传（挂载媒体目录后即可 302）: %v", s.provider.Name(), err)
+			finish(stats.OutcomePassthrough, "读不到 strm 指针文件，本次退回透传；把上游的媒体目录也挂进 AetherLink 后即可 302")
 			s.proxy.ServeHTTP(writer, request)
 			return
 		}
-		event.Outcome = stats.OutcomeError
+		// 解析失败也不能让播放中断。上游本来就能自己处理这个请求，
+		// 502 只会把「AetherLink 装上之后反而播不了」变成事实。
+		// 失败原因照样记进事件与日志，方便在界面上直接看到。
 		event.Error = err.Error()
-		event.StatusCode = http.StatusBadGateway
-		s.stats.Record(event)
-		logx.Errorf("[proxy] resolve failed for %s %s: %v", s.provider.Name(), request.URL.Path, err)
-		http.Error(writer, "AetherLink could not resolve the strm target", http.StatusBadGateway)
+		finish(stats.OutcomeError, "解析 strm 目标失败，本次退回透传")
+		s.proxy.ServeHTTP(writer, request)
 		return
 	}
 
@@ -177,10 +214,8 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 
 	if resolution.Target != nil && resolution.Target.Type == strm.TargetLocal {
 		event.Target = resolution.Target.Path
-		event.Outcome = stats.OutcomeLocalFile
 		event.StatusCode = http.StatusOK
-		event.Duration = time.Since(started)
-		s.stats.Record(event)
+		finish(stats.OutcomeLocalFile, "指针指向本容器内的文件，直接读盘返回")
 		s.serveLocalFile(writer, request, resolution.Target.Path)
 		return
 	}
@@ -189,10 +224,8 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 	event.Target = playURL
 
 	if s.resolver.ShouldRedirect(resolution) {
-		event.Outcome = stats.OutcomeRedirect
 		event.StatusCode = http.StatusFound
-		event.Duration = time.Since(started)
-		s.stats.Record(event)
+		finish(stats.OutcomeRedirect, "已 302 到真实地址")
 		// 302 keeps the request method for GET/HEAD and is what media players
 		// (Emby clients, ABS apps, browsers) handle most reliably.
 		writer.Header().Set("Location", playURL)
@@ -201,15 +234,70 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 		return
 	}
 
+	// 走到这里说明目标解析出来了，但当前的 302 策略不允许跳转，
+	// 只能由 AetherLink 中继字节。把具体原因写清楚，否则用户会以为 302 坏了。
 	status, err := s.relayRemote(writer, request, playURL)
-	event.Outcome = stats.OutcomeProxyStream
 	event.StatusCode = status
-	event.Duration = time.Since(started)
 	if err != nil {
-		event.Outcome = stats.OutcomeError
 		event.Error = err.Error()
+		finish(stats.OutcomeError, "中继 strm 目标失败")
+		return
 	}
-	s.stats.Record(event)
+	finish(stats.OutcomeProxyStream, "按 302 策略不跳转，改由 AetherLink 中继："+s.noRedirectReason(resolution))
+}
+
+// noRedirectReason 说明为什么一个已经解析成功的目标没有被 302 出去。
+func (s *Server) noRedirectReason(resolution *resolver.Resolution) string {
+	if resolution == nil || resolution.Target == nil {
+		return "没有解析出可跳转的地址"
+	}
+	if resolution.Target.Type != strm.TargetRemote {
+		return "目标不是 http 地址"
+	}
+	switch s.redirect.Mode {
+	case config.RedirectNever:
+		return "302 模式为 never"
+	case config.RedirectPrivate:
+		return "302 模式为 private，而目标不是内网地址"
+	default:
+		return "设置里关闭了「允许跳转到公网地址」，而目标不是内网地址"
+	}
+}
+
+// logOutcome 把一条播放请求的处理结果写进日志。302 与透传都记成 info，
+// 因为用户排查的正是这两条路的区别；失败记成 warn/error。
+func (s *Server) logOutcome(event stats.Event, note string) {
+	milliseconds := event.Duration.Milliseconds()
+	switch event.Outcome {
+	case stats.OutcomeRedirect:
+		logx.Infof("[%s] 302 %s -> %s（类型 %s，%dms，缓存 %s）", event.Upstream, event.Path, event.Target, displayKind(event.Kind), milliseconds, cacheWord(event.CacheHit))
+	case stats.OutcomeLocalFile:
+		logx.Infof("[%s] 本地直读 %s -> %s（%dms）：%s", event.Upstream, event.Path, event.Target, milliseconds, note)
+	case stats.OutcomeProxyStream:
+		logx.Infof("[%s] 中继 %s -> %s（状态 %d，%dms）：%s", event.Upstream, event.Path, event.Target, event.StatusCode, milliseconds, note)
+	case stats.OutcomePassthrough:
+		if event.Error != "" {
+			logx.Warnf("[%s] 透传 %s（%dms）：%s；原因：%s", event.Upstream, event.Path, milliseconds, note, event.Error)
+			return
+		}
+		logx.Infof("[%s] 透传 %s（%dms）：%s", event.Upstream, event.Path, milliseconds, note)
+	default:
+		logx.Errorf("[%s] 失败 %s（%dms）：%s；原因：%s", event.Upstream, event.Path, milliseconds, note, event.Error)
+	}
+}
+
+func displayKind(kind string) string {
+	if kind == "" {
+		return "未知"
+	}
+	return kind
+}
+
+func cacheWord(hit bool) string {
+	if hit {
+		return "命中"
+	}
+	return "未命中"
 }
 
 // relayRemote streams the remote target through AetherLink, preserving Range

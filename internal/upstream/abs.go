@@ -18,11 +18,14 @@ type absProvider struct {
 	providerBase
 }
 
+// 两条正则都允许前面多一段路径前缀：Audiobookshelf 支持 ROUTER_BASE_PATH，
+// 装在子路径下时客户端请求的是 /audiobookshelf/api/items/...，只按 ^/api/
+// 匹配就会整条漏掉，表现正是「反代通了但完全不 302、日志里什么都没有」。
 var (
-	// /api/items/:itemId/file/:fileId[/download]
-	absLibraryFileRe = regexp.MustCompile(`^/api/items/([^/]+)/file/([^/]+)(/download)?$`)
-	// /public/session/:sessionId/track/:index
-	absSessionTrackRe = regexp.MustCompile(`^/public/session/([^/]+)/track/([^/]+)$`)
+	// [/前缀]/api/items/:itemId/file/:fileId[/download]
+	absLibraryFileRe = regexp.MustCompile(`(?i)^(?:/[^/]+)?/api/items/([^/]+)/file/([^/]+)(/download)?$`)
+	// [/前缀]/public/session/:sessionId/track/:index
+	absSessionTrackRe = regexp.MustCompile(`(?i)^(?:/[^/]+)?/public/session/([^/]+)/track/([^/]+)$`)
 )
 
 // Match intercepts the two Audiobookshelf endpoints that deliver audio bytes.
@@ -75,11 +78,21 @@ type absLibraryItem struct {
 	Media        struct {
 		Duration   float64        `json:"duration"`
 		AudioFiles []absAudioFile `json:"audioFiles"`
-		Metadata   struct {
+		// Episodes 是播客单集，展开后的条目里字段名就叫 episodes。
+		Episodes []absPodcastEpisode `json:"episodes"`
+		Metadata struct {
 			Title      string `json:"title"`
 			AuthorName string `json:"authorName"`
 		} `json:"metadata"`
 	} `json:"media"`
+}
+
+// absPodcastEpisode 是播客单集，音频文件挂在 audioFile 上而不是 audioFiles 数组里。
+type absPodcastEpisode struct {
+	ID        string       `json:"id"`
+	Index     int          `json:"index"`
+	Title     string       `json:"title"`
+	AudioFile absAudioFile `json:"audioFile"`
 }
 
 func (i absLibraryItem) title() string {
@@ -137,6 +150,7 @@ func (p *absProvider) libraryFilePath(ctx context.Context, itemID, fileID string
 type absSessionResponse struct {
 	ID            string `json:"id"`
 	LibraryItemID string `json:"libraryItemId"`
+	EpisodeID     string `json:"episodeId"`
 	AudioTracks   []struct {
 		Index      int             `json:"index"`
 		ContentURL string          `json:"contentUrl"`
@@ -144,29 +158,102 @@ type absSessionResponse struct {
 	} `json:"audioTracks"`
 }
 
-// sessionTrackPath resolves /public/session/:id/track/:index. The open session
-// endpoint is admin-or-owner protected, so the configured API key must belong to
-// an admin user for session playback to be intercepted; when it is not, the
-// caller falls back to plain proxying.
+// sessionTrackPath resolves /public/session/:id/track/:index，也就是
+// Audiobookshelf 网页端与 App 实际请求音频字节的那个入口。
+//
+// 这里必须分两步走：/api/session/:id 是从数据库重建会话的，返回体里
+// **没有 audioTracks**（PlaybackSession 模型不持久化音轨），只靠它永远都找不到
+// 音轨，表现就是 ABS 侧完全不 302。所以拿到 libraryItemId 之后再查一次条目，
+// 按音轨序号定位到具体的音频文件。会话响应里恰好带了音轨时走快路径。
 func (p *absProvider) sessionTrackPath(ctx context.Context, sessionID, trackIndex string) (string, error) {
 	index, err := strconv.Atoi(trackIndex)
 	if err != nil {
-		return "", fmt.Errorf("invalid audio track index %q", trackIndex)
+		return "", fmt.Errorf("音轨序号 %q 不是数字", trackIndex)
 	}
-	var session absSessionResponse
-	if err := p.client.getJSON(ctx, "/api/session/"+url.PathEscape(sessionID), nil, &session); err != nil {
+	session, err := p.lookupSession(ctx, sessionID)
+	if err != nil {
 		return "", err
 	}
 	for _, track := range session.AudioTracks {
-		if track.Index == index {
+		if track.Index == index && track.Metadata.Path != "" {
 			return track.Metadata.Path, nil
 		}
 	}
-	// Podcast episodes created before v2.21.0 have a null index and clients send 0.
-	if index == 0 && len(session.AudioTracks) > 0 {
-		return session.AudioTracks[0].Metadata.Path, nil
+	// 会话响应没带音轨（常态）：回到条目本身按序号找。
+	if session.LibraryItemID == "" {
+		return "", fmt.Errorf("会话 %q 里既没有音轨，也没有 libraryItemId", sessionID)
 	}
-	return "", fmt.Errorf("audio track %d not found in session %q", index, sessionID)
+	return p.itemTrackPath(ctx, session.LibraryItemID, session.EpisodeID, index)
+}
+
+// lookupSession 找一个正在播放的会话。
+//
+// /api/session/:id 读的是数据库，而 Audiobookshelf 只在同步或关闭会话时才落库，
+// 刚开始播放的会话在库里还不存在，这条接口会 404。所以拿不到就再查一次
+// /api/sessions/open（内存里的活跃会话）。少了这个回退，播放刚开始的那几秒
+// 全都解析失败，正好是用户最容易看到「不 302」的时刻。
+func (p *absProvider) lookupSession(ctx context.Context, sessionID string) (absSessionResponse, error) {
+	var session absSessionResponse
+	dbErr := p.client.getJSON(ctx, "/api/session/"+url.PathEscape(sessionID), nil, &session)
+	if dbErr == nil && (session.LibraryItemID != "" || len(session.AudioTracks) > 0) {
+		return session, nil
+	}
+
+	var open absOpenSessionsResponse
+	if err := p.client.getJSON(ctx, "/api/sessions/open", nil, &open); err != nil {
+		if dbErr != nil {
+			return absSessionResponse{}, fmt.Errorf("查会话 %q 失败：%v；活跃会话列表也读不到：%w", sessionID, dbErr, err)
+		}
+		return absSessionResponse{}, err
+	}
+	for _, candidate := range open.Sessions {
+		if candidate.ID == sessionID {
+			return candidate, nil
+		}
+	}
+	if dbErr != nil {
+		return absSessionResponse{}, fmt.Errorf("找不到会话 %q：%w", sessionID, dbErr)
+	}
+	return session, nil
+}
+
+type absOpenSessionsResponse struct {
+	Sessions []absSessionResponse `json:"sessions"`
+}
+
+// itemTrackPath 按音轨序号在条目里定位音频文件路径。
+//
+// 播客单集的音轨只有一条，且 v2.21.0 之前 index 为 null、客户端会传 0，
+// 所以单集分支不看序号，直接取该集的音频文件。
+func (p *absProvider) itemTrackPath(ctx context.Context, itemID, episodeID string, index int) (string, error) {
+	var item absLibraryItem
+	query := url.Values{"expanded": []string{"1"}}
+	if err := p.client.getJSON(ctx, "/api/items/"+url.PathEscape(itemID), query, &item); err != nil {
+		return "", err
+	}
+
+	if episodeID != "" {
+		for _, episode := range item.Media.Episodes {
+			if episode.ID == episodeID {
+				if episode.AudioFile.Metadata.Path == "" {
+					return "", fmt.Errorf("播客单集 %q 没有音频文件路径", episodeID)
+				}
+				return episode.AudioFile.Metadata.Path, nil
+			}
+		}
+		return "", fmt.Errorf("条目 %q 里找不到播客单集 %q", itemID, episodeID)
+	}
+
+	for _, audioFile := range item.Media.AudioFiles {
+		if audioFile.Index == index && audioFile.Metadata.Path != "" {
+			return audioFile.Metadata.Path, nil
+		}
+	}
+	// 单文件有声书的音轨序号可能是 0 或 1，两边对不齐时退回第一条音频。
+	if index <= 1 && len(item.Media.AudioFiles) == 1 {
+		return item.Media.AudioFiles[0].Metadata.Path, nil
+	}
+	return "", fmt.Errorf("条目 %q 里找不到序号为 %d 的音轨", itemID, index)
 }
 
 type absPingResponse struct {
