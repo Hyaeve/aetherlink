@@ -154,7 +154,7 @@ mkdir -p config && sudo chown -R 1000:1000 config
 | 跳转模式 | 在上游卡片中设置：`always` 公网跳转；`private` 仅内网目标 302，公网目标中继；`never` 始终中继。新建上游默认是公网跳转。 |
 | 先跟随上游 302 | 播放前把跳转链走完，把最终直链交给播放器。适合 115 这类二次跳转后端，代价是首次播放多一次预检。 |
 | 转发播放器 User-Agent | 部分网盘直链与 UA 绑定时必须开启；播放器未带 UA 时使用回落 UA。 |
-| 解析缓存 TTL | 播放器 seek 会反复请求同一轨道，缓存能大幅减少上游 API 调用。 |
+| 直链缓存 TTL | 保存已解析出的 STRM 直链，播放器重复播放或 seek 时直接复用，默认 3 小时；填 `0` 表示不缓存。 |
 | 反代端口 | 该上游在 AetherLink 上独占的端口。播放端把地址里的上游端口换成它，路径保持原样。改动后要在 compose 的 `ports` 里同步映射。 |
 | 服务端类型 | 选 Audiobookshelf 就填 Audiobookshelf 的 API Token（设置 → 用户 → 该用户的 API Token）；选 Emby 就填 Emby 的 API 密钥（控制台 → 高级 → API 密钥）。 |
 | 路径映射 | 上游看到的媒体路径 → AetherLink 容器内路径。两侧挂载一致时留空。 |

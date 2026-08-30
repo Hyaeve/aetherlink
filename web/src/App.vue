@@ -241,11 +241,11 @@ onUnmounted(() => statusTimer && clearInterval(statusTimer))
     </nav>
 
     <main class="main">
-      <header class="page-head" :class="{ 'page-head-banner': activeTab !== 'settings' }">
+      <header class="page-head page-head-banner">
         <div class="page-title">
-          <span v-if="activeTab !== 'settings'" class="eyebrow">AETHERLINK</span>
+          <span class="eyebrow">AETHERLINK</span>
           <h1>{{ activeLabel }}</h1>
-          <p v-if="activeTab !== 'settings'">{{ activeDescription }}</p>
+          <p>{{ activeDescription }}</p>
         </div>
         <div class="system-summary" v-if="status">
           <span class="status-pill online"><i></i>运行中</span>

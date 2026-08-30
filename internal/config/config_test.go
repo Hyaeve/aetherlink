@@ -47,8 +47,8 @@ upstreams:
 	if !cfg.Redirect.ShouldForwardUserAgent() || !cfg.Redirect.PublicTargetsAllowed() {
 		t.Fatal("optional booleans must keep their true defaults when the key is absent")
 	}
-	if cfg.Cache.TTL != 5*time.Minute {
-		t.Fatalf("cache ttl = %v, want 5m", cfg.Cache.TTL)
+	if cfg.Cache.TTL != 3*time.Hour {
+		t.Fatalf("cache ttl = %v, want 3h", cfg.Cache.TTL)
 	}
 	upstream := cfg.Upstreams[0]
 	if upstream.BaseURL != "http://10.0.0.31:13378" {
