@@ -145,6 +145,7 @@ type loginPayload struct {
 type accountPayload struct {
 	CurrentPassword string `json:"currentPassword"`
 	Username        string `json:"username"`
+	Password        string `json:"password"`
 	NewPassword     string `json:"newPassword"`
 }
 
@@ -177,27 +178,36 @@ func (a *API) handleLogout(writer http.ResponseWriter, request *http.Request) {
 	writeJSON(writer, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleUpdateAccount 修改用户名与/或密码。改完注销所有会话，包括调用方自己。
-// 只想改用户名时把新密码留空即可，但当前密码始终要验，避免会话被盗后直接改账号。
+// handleUpdateAccount 修改用户名与密码。改完注销所有会话，包括调用方自己。
+// 新界面使用 password；保留旧字段以兼容已有客户端。
 func (a *API) handleUpdateAccount(writer http.ResponseWriter, request *http.Request) {
 	var payload accountPayload
 	if !decodeJSON(writer, request, &payload) {
 		return
 	}
 	cfg := a.rt.Config()
-	if err := auth.Verify(cfg.Auth, payload.CurrentPassword); err != nil {
-		writeError(writer, http.StatusUnauthorized, "当前密码不正确")
-		return
+	if payload.CurrentPassword != "" {
+		if err := auth.Verify(cfg.Auth, payload.CurrentPassword); err != nil {
+			writeError(writer, http.StatusUnauthorized, "当前密码不正确")
+			return
+		}
 	}
 
 	username := auth.NormalizeUsername(payload.Username)
 	if username == "" {
 		username = cfg.Auth.Username
 	}
-	password := payload.NewPassword
+	password := payload.Password
+	if password == "" {
+		password = payload.NewPassword
+	}
 	if strings.TrimSpace(password) == "" {
-		// 只改用户名：沿用当前密码需要重新派生，因为盐与哈希是绑在一起的。
+		// 兼容旧客户端只改用户名的请求。
 		password = payload.CurrentPassword
+	}
+	if strings.TrimSpace(password) == "" {
+		writeError(writer, http.StatusBadRequest, "密码不能为空")
+		return
 	}
 
 	derived, err := auth.Derive(username, password)

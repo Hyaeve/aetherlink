@@ -13,11 +13,10 @@ const saved = ref(false)
 const busy = ref(false)
 
 const username = ref('')
-const currentPassword = ref('')
-const newPassword = ref('')
-const newPasswordAgain = ref('')
+const password = ref('')
 const accountError = ref('')
 const accountBusy = ref(false)
+const accountConfirm = ref(false)
 
 async function load() {
   try {
@@ -48,18 +47,21 @@ async function save() {
   }
 }
 
-async function saveAccount() {
+function saveAccount() {
   accountError.value = ''
-  if (newPassword.value && newPassword.value !== newPasswordAgain.value) {
-    accountError.value = '两次输入的新密码不一致'
+  if (!username.value.trim() || !password.value) {
+    accountError.value = '账号和密码不能为空'
     return
   }
+  accountConfirm.value = true
+}
+
+async function confirmAccountSave() {
+  accountConfirm.value = false
   accountBusy.value = true
   try {
-    await api.updateAccount(currentPassword.value, username.value, newPassword.value)
-    currentPassword.value = ''
-    newPassword.value = ''
-    newPasswordAgain.value = ''
+    await api.updateAccount(username.value, password.value)
+    password.value = ''
     emit('account-changed')
   } catch (saveError) {
     accountError.value = saveError.message
@@ -109,16 +111,8 @@ onMounted(load)
               <input v-model="username" autocomplete="username" />
             </label>
             <label class="field">
-              <span>当前密码</span>
-              <input v-model="currentPassword" type="password" autocomplete="current-password" />
-            </label>
-            <label class="field">
-              <span>新密码</span>
-              <input v-model="newPassword" type="password" autocomplete="new-password" placeholder="留空则不修改" />
-            </label>
-            <label class="field">
-              <span>确认新密码</span>
-              <input v-model="newPasswordAgain" type="password" autocomplete="new-password" />
+              <span>密码</span>
+              <input v-model="password" type="password" autocomplete="new-password" placeholder="输入新密码" />
             </label>
           </div>
 
@@ -128,10 +122,10 @@ onMounted(load)
               <path d="M8 4v6h8V4" />
               <path d="M8 20v-6h8v6" />
             </svg>
-            {{ accountBusy ? '保存中…' : '保存账号' }}
+            {{ accountBusy ? '保存中…' : '保存修改' }}
           </button>
           <p v-if="accountError" class="error form-error">{{ accountError }}</p>
-          <p class="card-footnote">修改账号后，现有登录会话会失效。</p>
+          <p class="card-footnote">保存后需要重新登录。</p>
         </section>
 
         <section class="settings-card runtime-card" v-if="server">
@@ -234,6 +228,24 @@ onMounted(load)
             <path d="M12 11v5M12 8h.01" />
           </svg>
           <span>每个反代上游仍需单独把容器端口映射到宿主机，播放端只更换端口，路径保持不变。</span>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="accountConfirm" class="modal-backdrop" @click.self="accountConfirm = false">
+      <div class="modal account-confirm-modal">
+        <div class="modal-head">
+          <h2>确认修改账号</h2>
+          <button class="ghost close" @click="accountConfirm = false">关闭</button>
+        </div>
+        <div class="modal-body">
+          <p>保存后当前登录会话会失效，需要使用新账号和密码重新登录。</p>
+        </div>
+        <div class="modal-foot">
+          <div class="right">
+            <button @click="accountConfirm = false">取消</button>
+            <button class="primary" :disabled="accountBusy" @click="confirmAccountSave">确认修改</button>
+          </div>
         </div>
       </div>
     </div>

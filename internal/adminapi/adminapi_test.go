@@ -225,6 +225,16 @@ func TestAccountUpdateCanChangeUsernameOnly(t *testing.T) {
 	env.login(t, "renamed", testPassword)
 }
 
+func TestAccountUpdateWithUsernameAndPasswordOnly(t *testing.T) {
+	env := newEnv(t)
+	token := env.login(t, testUsername, testPassword)
+	body := `{"username":"updated","password":"updated-password"}`
+	if recorder := env.do(http.MethodPost, BasePath+"/account", body, token); recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	env.login(t, "updated", "updated-password")
+}
+
 func TestAccountUpdateRejectsShortPassword(t *testing.T) {
 	env := newEnv(t)
 	token := env.login(t, testUsername, testPassword)

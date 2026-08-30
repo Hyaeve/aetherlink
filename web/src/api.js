@@ -54,8 +54,8 @@ export const api = {
   bootstrap: () => request('/bootstrap'),
   login: (username, password) => request('/login', { method: 'POST', ...jsonBody({ username, password }) }),
   logout: () => request('/logout', { method: 'POST', ...jsonBody({}) }),
-  updateAccount: (currentPassword, username, newPassword) =>
-    request('/account', { method: 'POST', ...jsonBody({ currentPassword, username, newPassword }) }),
+  updateAccount: (username, password) =>
+    request('/account', { method: 'POST', ...jsonBody({ username, password }) }),
 
   status: () => request('/status'),
   config: () => request('/config'),
