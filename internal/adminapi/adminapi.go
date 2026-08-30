@@ -390,6 +390,7 @@ type upstreamSummary struct {
 	Insecure     bool                 `json:"insecureSkipVerify"`
 	StrmRoots    []string             `json:"strmRoots"`
 	PathMappings []config.PathMapping `json:"pathMappings"`
+	RedirectMode string               `json:"redirectMode"`
 	// Active 表示该上游当前是否已在反向代理中挂载。
 	Active bool `json:"active"`
 	// Listening 表示对应端口是否真的绑定成功。
@@ -409,6 +410,7 @@ func (a *API) describeUpstreams(upstreams []config.Upstream) []upstreamSummary {
 			Insecure:     up.Insecure,
 			StrmRoots:    up.StrmRoots,
 			PathMappings: up.PathMappings,
+			RedirectMode: string(up.RedirectMode),
 			Active:       a.rt.ProviderByName(up.Name) != nil,
 			Listening:    a.rt.PortActive(up.ListenPort),
 		}
@@ -445,6 +447,7 @@ type upstreamPayload struct {
 	Insecure     bool                 `json:"insecureSkipVerify"`
 	StrmRoots    []string             `json:"strmRoots"`
 	PathMappings []config.PathMapping `json:"pathMappings"`
+	RedirectMode string               `json:"redirectMode"`
 }
 
 // toConfig 把请求体转成配置项，existing 非空时继承其密钥。
@@ -458,6 +461,7 @@ func (p upstreamPayload) toConfig(existing *config.Upstream) config.Upstream {
 		Insecure:     p.Insecure,
 		StrmRoots:    p.StrmRoots,
 		PathMappings: p.PathMappings,
+		RedirectMode: config.RedirectMode(strings.TrimSpace(p.RedirectMode)),
 	}
 	switch {
 	case p.APIKey != nil:
@@ -513,6 +517,7 @@ func (a *API) handleUpdateUpstream(writer http.ResponseWriter, request *http.Req
 		Insecure:     existing.Insecure,
 		StrmRoots:    existing.StrmRoots,
 		PathMappings: existing.PathMappings,
+		RedirectMode: string(existing.RedirectMode),
 	}
 	if !decodeJSON(writer, request, &payload) {
 		return

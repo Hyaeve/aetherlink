@@ -59,8 +59,9 @@ type Upstream struct {
 	APIKey  string       `yaml:"api_key" json:"-"`
 	Enabled *bool        `yaml:"enabled,omitempty" json:"enabled"`
 	// ListenPort is the container port AetherLink serves this upstream on.
-	ListenPort int  `yaml:"listen_port" json:"listenPort"`
-	Insecure   bool `yaml:"insecure_skip_verify" json:"insecureSkipVerify"`
+	ListenPort   int          `yaml:"listen_port" json:"listenPort"`
+	Insecure     bool         `yaml:"insecure_skip_verify" json:"insecureSkipVerify"`
+	RedirectMode RedirectMode `yaml:"redirect_mode,omitempty" json:"redirectMode"`
 
 	// Prefix 是已废弃的路径前缀，反代改成按端口区分后不再使用。
 	// 保留这个字段只为让旧配置仍能被严格解析读进来，migrate 会清掉它，
@@ -297,6 +298,10 @@ func (c *Config) migrate() bool {
 	}
 	for i := range c.Upstreams {
 		upstream := &c.Upstreams[i]
+		if upstream.RedirectMode == "" {
+			upstream.RedirectMode = c.Redirect.Mode
+			changed = true
+		}
 		if upstream.Prefix != "" {
 			upstream.Prefix = ""
 			changed = true
@@ -499,6 +504,14 @@ func (u *Upstream) normalize() error {
 	}
 
 	u.APIKey = strings.TrimSpace(u.APIKey)
+	if u.RedirectMode == "" {
+		u.RedirectMode = RedirectAlways
+	}
+	switch u.RedirectMode {
+	case RedirectAlways, RedirectPrivate, RedirectNever:
+	default:
+		return fmt.Errorf("上游 %s 的跳转模式 %q 无效", u.Name, u.RedirectMode)
+	}
 	if u.ListenPort == 0 {
 		return fmt.Errorf("上游 %s 缺少反代端口", u.Name)
 	}

@@ -172,64 +172,16 @@ onMounted(load)
               </svg>
             </div>
             <div>
-              <h2>播放与跳转</h2>
-              <p>控制 STRM 解析、302 直达与中继回退</p>
+              <h2>缓存与日志</h2>
+              <p>管理解析缓存和运行日志</p>
             </div>
             <span class="live-badge"><i></i>实时生效</span>
           </div>
 
           <div class="settings-section">
             <div class="settings-section-title">
-              <span>302 跳转策略</span>
-              <small>优先让播放器直接连接真实媒体地址</small>
-            </div>
-            <div class="form-grid three">
-              <label class="field field-large">
-                <span>跳转模式</span>
-                <select v-model="settings.redirect.mode">
-                  <option value="always">始终跳转</option>
-                  <option value="private">仅内网地址</option>
-                  <option value="never">始终中继</option>
-                </select>
-                <small>解析成功后将媒体地址交给播放器</small>
-              </label>
-              <label class="field field-large">
-                <span>回落 User-Agent</span>
-                <input v-model="settings.redirect.fallbackUserAgent" />
-                <small>播放器没有携带 UA 时使用</small>
-              </label>
-              <label class="field field-large">
-                <span>最多跟随跳转</span>
-                <input v-model.number="settings.redirect.maxFollowHops" type="number" min="1" />
-                <small>用于 115、OpenList 等签名链接</small>
-              </label>
-            </div>
-
-            <div class="toggle-grid">
-              <label class="setting-toggle">
-                <input type="checkbox" v-model="settings.redirect.followUpstreamRedirects" />
-                <span class="toggle-control"></span>
-                <span class="toggle-copy"><strong>跟随上游跳转</strong><small>把最终签名地址交给播放器</small></span>
-              </label>
-              <label class="setting-toggle">
-                <input type="checkbox" v-model="settings.redirect.forwardUserAgent" />
-                <span class="toggle-control"></span>
-                <span class="toggle-copy"><strong>转发播放器 UA</strong><small>保持客户端识别信息</small></span>
-              </label>
-              <label class="setting-toggle">
-                <input type="checkbox" v-model="settings.redirect.allowPublicTargets" />
-                <span class="toggle-control"></span>
-                <span class="toggle-copy"><strong>允许公网直链</strong><small>关闭后公网地址改走中继</small></span>
-              </label>
-            </div>
-          </div>
-
-          <div class="settings-divider"></div>
-
-          <div class="settings-section">
-            <div class="settings-section-title">
               <span>缓存与日志</span>
-              <small>让重复播放更快，也保留足够的排障上下文</small>
+              <small>重复播放更快，保留必要的排障记录</small>
             </div>
             <div class="form-grid two">
               <label class="field field-large">

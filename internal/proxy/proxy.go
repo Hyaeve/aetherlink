@@ -266,7 +266,7 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 	playURL := resolution.PlayURL()
 	event.Target = playURL
 
-	if s.resolver.ShouldRedirect(resolution) {
+	if s.resolver.ShouldRedirectWith(resolution, s.redirect) {
 		event.StatusCode = http.StatusFound
 		finish(stats.OutcomeRedirect, "已 302 到真实地址")
 		// 302 keeps the request method for GET/HEAD and is what media players

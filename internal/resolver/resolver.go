@@ -300,6 +300,11 @@ func (r *Resolver) effectiveUserAgent(clientUserAgent string) string {
 
 // ShouldRedirect decides between answering with a 302 and relaying the bytes.
 func (r *Resolver) ShouldRedirect(resolution *Resolution) bool {
+	return r.ShouldRedirectWith(resolution, r.config)
+}
+
+// ShouldRedirectWith applies the policy selected for one upstream.
+func (r *Resolver) ShouldRedirectWith(resolution *Resolution, redirectCfg config.Redirect) bool {
 	if resolution == nil || !resolution.IsRemote() {
 		return false
 	}
@@ -307,13 +312,13 @@ func (r *Resolver) ShouldRedirect(resolution *Resolution) bool {
 	if playURL == "" {
 		return false
 	}
-	switch r.config.Mode {
+	switch redirectCfg.Mode {
 	case config.RedirectNever:
 		return false
 	case config.RedirectPrivate:
 		return urlx.IsPrivateHost(playURL)
 	default:
-		if !r.config.PublicTargetsAllowed() && !urlx.IsPrivateHost(playURL) {
+		if !redirectCfg.PublicTargetsAllowed() && !urlx.IsPrivateHost(playURL) {
 			return false
 		}
 		return true

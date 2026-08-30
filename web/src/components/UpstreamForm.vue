@@ -26,7 +26,8 @@ function initialForm() {
       listenPort: props.suggestedPort || null,
       insecureSkipVerify: false,
       strmRoots: '',
-      pathMappings: [{ from: '', to: '' }]
+      pathMappings: [{ from: '', to: '' }],
+      redirectMode: 'always'
     }
   }
   return {
@@ -42,7 +43,8 @@ function initialForm() {
     strmRoots: (source.strmRoots || []).join('\n'),
     pathMappings: (source.pathMappings || []).length
       ? source.pathMappings.map((mapping) => ({ ...mapping }))
-      : [{ from: '', to: '' }]
+      : [{ from: '', to: '' }],
+    redirectMode: source.redirectMode || 'always'
   }
 }
 
@@ -88,7 +90,8 @@ function buildPayload() {
       .filter(Boolean),
     pathMappings: current.pathMappings
       .map((mapping) => ({ from: mapping.from.trim(), to: mapping.to.trim() }))
-      .filter((mapping) => mapping.from || mapping.to)
+      .filter((mapping) => mapping.from || mapping.to),
+    redirectMode: current.redirectMode
   }
   const key = current.apiKey.trim()
   if (key) {
@@ -162,6 +165,14 @@ async function save() {
               <input v-model.number="form.listenPort" type="number" min="1" max="65535"
                      :placeholder="props.suggestedPort ? String(props.suggestedPort) : '如 5152'" />
               <small class="field-note">保存后把宿主机端口映射到这个端口</small>
+            </label>
+            <label class="field">
+              <span>播放跳转</span>
+              <select v-model="form.redirectMode">
+                <option value="always">公网跳转</option>
+                <option value="private">仅内网跳转</option>
+                <option value="never">始终中继</option>
+              </select>
             </label>
           </div>
           <div class="row">

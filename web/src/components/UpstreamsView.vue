@@ -63,6 +63,10 @@ function typeLabel(type) {
   return TYPE_LABELS[type] || type
 }
 
+function redirectLabel(mode) {
+  return { always: '公网跳转', private: '仅内网跳转', never: '始终中继' }[mode] || '公网跳转'
+}
+
 function openProxy(upstream) {
   if (!upstream.enabled || !upstream.listening || !upstream.listenPort) return
   const target = `${window.location.protocol}//${window.location.hostname}:${upstream.listenPort}`
@@ -141,9 +145,6 @@ onMounted(load)
 <template>
   <section class="upstreams-page">
     <div class="workspace-toolbar">
-      <div>
-        <h2>服务入口</h2>
-      </div>
       <button class="primary add-button" @click="openEditor(null)">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
         添加链接
@@ -224,6 +225,7 @@ onMounted(load)
         </div>
 
         <div class="proxy-card-foot">
+          <span class="card-tag">{{ redirectLabel(upstream.redirectMode) }}</span>
           <span class="card-tag" :class="{ muted: !upstream.hasApiKey }">{{ upstream.hasApiKey ? '密钥已配置' : '缺少密钥' }}</span>
         </div>
       </article>

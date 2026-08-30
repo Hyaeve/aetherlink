@@ -107,7 +107,14 @@ func (rt *Runtime) build(cfg *config.Config) (*stack, error) {
 		if !provider.HasCredentials() {
 			logx.Warnf("[runtime] 上游 %s 未配置 API 密钥：请求会被原样反代，不做 strm 解析", provider.Name())
 		}
-		proxies[upstreamCfg.ListenPort] = proxy.New(provider, mediaResolver, rt.stats, cfg.Redirect)
+		redirectCfg := cfg.Redirect
+		if upstreamCfg.RedirectMode != "" {
+			redirectCfg.Mode = upstreamCfg.RedirectMode
+		}
+		if redirectCfg.Mode == config.RedirectAlways {
+			redirectCfg.AllowPublicTargets = config.Bool(true)
+		}
+		proxies[upstreamCfg.ListenPort] = proxy.New(provider, mediaResolver, rt.stats, redirectCfg)
 	}
 	return &stack{cfg: cfg, resolver: mediaResolver, proxies: proxies}, nil
 }
