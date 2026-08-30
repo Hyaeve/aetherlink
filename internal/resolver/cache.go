@@ -36,8 +36,8 @@ func newLRUCache(ttl time.Duration, maxSize int) *lruCache {
 	}
 }
 
-func (c *lruCache) get(key string) (*Resolution, bool) {
-	if c.ttl <= 0 {
+func (c *lruCache) get(key string, ttl time.Duration) (*Resolution, bool) {
+	if ttl <= 0 {
 		return nil, false
 	}
 	c.mu.Lock()
@@ -56,8 +56,8 @@ func (c *lruCache) get(key string) (*Resolution, bool) {
 	return entry.value, true
 }
 
-func (c *lruCache) put(key string, value *Resolution) {
-	if c.ttl <= 0 {
+func (c *lruCache) put(key string, value *Resolution, ttl time.Duration) {
+	if ttl <= 0 {
 		return
 	}
 	c.mu.Lock()
@@ -65,11 +65,11 @@ func (c *lruCache) put(key string, value *Resolution) {
 	if element, ok := c.entries[key]; ok {
 		entry := element.Value.(*cacheEntry)
 		entry.value = value
-		entry.expiresAt = time.Now().Add(c.ttl)
+		entry.expiresAt = time.Now().Add(ttl)
 		c.order.MoveToFront(element)
 		return
 	}
-	element := c.order.PushFront(&cacheEntry{key: key, value: value, expiresAt: time.Now().Add(c.ttl)})
+	element := c.order.PushFront(&cacheEntry{key: key, value: value, expiresAt: time.Now().Add(ttl)})
 	c.entries[key] = element
 	for c.order.Len() > c.maxSize {
 		oldest := c.order.Back()

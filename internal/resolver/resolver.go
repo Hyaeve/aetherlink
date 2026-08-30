@@ -31,6 +31,8 @@ var ErrNotStrm = errors.New("media is not a strm pointer")
 // so callers fall back to plain proxying instead of failing the playback.
 var ErrPointerUnavailable = errors.New("strm pointer file is not readable inside the AetherLink container")
 
+const audiobookshelfCacheTTL = 15 * time.Minute
+
 // Resolution is the outcome of resolving one media reference.
 type Resolution struct {
 	// UpstreamPath is the path reported by the upstream media server.
@@ -109,7 +111,8 @@ func (r *Resolver) PurgeCache() int { return r.cache.purge() }
 // reports whether the result came from the cache.
 func (r *Resolver) Resolve(ctx context.Context, provider upstream.Provider, ref upstream.MediaRef, userAgent string) (resolution *Resolution, cacheHit bool, err error) {
 	key := ref.CacheKey(provider.Name())
-	if cached, ok := r.cache.get(key); ok {
+	ttl := r.cacheTTL(provider)
+	if cached, ok := r.cache.get(key, ttl); ok {
 		return cached, true, nil
 	}
 
@@ -137,9 +140,16 @@ func (r *Resolver) Resolve(ctx context.Context, provider upstream.Provider, ref 
 	r.inflightMu.Unlock()
 
 	if call.err == nil {
-		r.cache.put(key, call.resolution)
+		r.cache.put(key, call.resolution, ttl)
 	}
 	return call.resolution, false, call.err
+}
+
+func (r *Resolver) cacheTTL(provider upstream.Provider) time.Duration {
+	if provider != nil && provider.Type() == config.UpstreamAudiobookshelf {
+		return audiobookshelfCacheTTL
+	}
+	return r.cache.ttl
 }
 
 func (r *Resolver) resolveUncached(ctx context.Context, provider upstream.Provider, ref upstream.MediaRef, userAgent string) (*Resolution, error) {
