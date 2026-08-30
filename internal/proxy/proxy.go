@@ -51,6 +51,8 @@ type Server struct {
 	streamClient *http.Client
 }
 
+type responseRewriteContextKey struct{}
+
 // New builds the proxy serving one upstream.
 func New(provider upstream.Provider, mediaResolver *resolver.Resolver, collector *stats.Collector, redirectCfg config.Redirect) *Server {
 	server := &Server{
@@ -82,10 +84,17 @@ func (s *Server) Provider() upstream.Provider { return s.provider }
 // newReverseProxy builds the pass-through proxy for non-media requests.
 func newReverseProxy(provider upstream.Provider) *httputil.ReverseProxy {
 	target := provider.BaseURL()
+	rewriter, canRewrite := provider.(upstream.ResponseRewriter)
 
 	return &httputil.ReverseProxy{
 		Transport: provider.Transport(),
 		Rewrite: func(request *httputil.ProxyRequest) {
+			if canRewrite && rewriter.WantsResponseRewrite(request.In) {
+				// PlaybackInfo 必须以明文 JSON 返回，才能在交给 Emby 客户端前改写。
+				request.Out.Header.Set("Accept-Encoding", "identity")
+				ctx := context.WithValue(request.Out.Context(), responseRewriteContextKey{}, request.In.URL.Path)
+				request.Out = request.Out.WithContext(ctx)
+			}
 			request.Out.URL.Scheme = target.Scheme
 			request.Out.URL.Host = target.Host
 			request.Out.Host = target.Host
@@ -98,6 +107,20 @@ func newReverseProxy(provider upstream.Provider) *httputil.ReverseProxy {
 			}
 			logx.Warnf("[proxy] upstream %s error for %s: %v", provider.Name(), request.URL.Path, err)
 			writer.WriteHeader(http.StatusBadGateway)
+		},
+		ModifyResponse: func(response *http.Response) error {
+			if !canRewrite {
+				return nil
+			}
+			originalPath, _ := response.Request.Context().Value(responseRewriteContextKey{}).(string)
+			if originalPath == "" {
+				return nil
+			}
+			if _, err := rewriter.RewriteResponse(originalPath, response); err != nil {
+				// 上游响应异常时不能让播放协商失败；RewriteResponse 已恢复原始响应体。
+				logx.Warnf("[%s] PlaybackInfo 改写失败，已返回上游原响应：%v", provider.Name(), err)
+			}
+			return nil
 		},
 		// FlushInterval -1 streams responses without buffering, which matters for
 		// progressive audio and SSE-style endpoints.
@@ -112,7 +135,11 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		// 没被拦截的请求量很大（界面、封面、进度同步），所以只在 debug 级别
 		// 记一行。排查「明明在播放却完全不 302」时，这一行是唯一能回答
 		// 「播放请求到底长什么样、为什么没被识别成媒体」的证据。
-		if looksLikeMedia(request.URL.Path) {
+		if rewriter, ok := s.provider.(upstream.ResponseRewriter); ok && rewriter.WantsResponseRewrite(request) {
+			logx.Infof("[%s] 拦截播放协商 %s %s（将检查并改写 STRM 媒体源的直放能力）", s.provider.Name(), request.Method, request.URL.RequestURI())
+		} else if isEmbyHLSRequest(s.provider, request.URL.Path) {
+			logx.Infof("[%s] 检测到 Emby HLS 转码请求 %s %s（HLS 清单或分片本身不能 302；STRM 若持续走这里，说明客户端没有采用直放 PlaybackInfo，请停止后重新播放）", s.provider.Name(), request.Method, request.URL.RequestURI())
+		} else if looksLikeMedia(request.URL.Path) {
 			logx.Infof("[%s] 未识别的疑似播放请求 %s %s（没有匹配到媒体路由，已原样转发）", s.provider.Name(), request.Method, request.URL.RequestURI())
 		} else {
 			logx.Debugf("[%s] 透传 %s %s", s.provider.Name(), request.Method, request.URL.RequestURI())
@@ -122,6 +149,16 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	}
 	logx.Infof("[%s] 拦截播放请求 %s %s（类型 %s，item=%s file=%s）", s.provider.Name(), request.Method, request.URL.RequestURI(), ref.Kind, ref.ItemID, ref.FileID)
 	s.serveMedia(writer, request, ref)
+}
+
+func isEmbyHLSRequest(provider upstream.Provider, requestPath string) bool {
+	if provider.Type() != config.UpstreamEmby {
+		return false
+	}
+	lowered := strings.ToLower(requestPath)
+	return strings.Contains(lowered, "/videos/") &&
+		(strings.Contains(lowered, "/hls") || strings.Contains(lowered, "/master")) &&
+		(strings.HasSuffix(lowered, ".ts") || strings.HasSuffix(lowered, ".m3u8"))
 }
 
 // mediaExtensions 是播放请求路径里常见的媒体扩展名，用来在「没被拦截」时判断

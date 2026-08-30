@@ -1,8 +1,11 @@
 package upstream
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path"
@@ -10,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aetherlink/aetherlink/internal/logx"
 )
@@ -24,16 +28,261 @@ type embyProvider struct {
 	userMu       sync.Mutex
 	userLookedUp bool
 	userID       string
+
+	// PlaybackInfo 已经给过客户端的 STRM 媒体源短暂缓存下来。客户端下一步
+	// 请求 /stream 时优先复用，避免某些 Emby 版本的 /Items 又把 URL 隐去。
+	playbackMu      sync.Mutex
+	playbackSources map[string]cachedEmbyMediaSource
 }
+
+type cachedEmbyMediaSource struct {
+	source    embyMediaSource
+	expiresAt time.Time
+}
+
+const (
+	embyPlaybackSourceTTL = 10 * time.Minute
+	embyPlaybackSourceMax = 2048
+)
 
 // 前缀写成 (?:/[^/]+)? 而不是只认 /emby/：Emby 既可能装在反向代理的子路径下，
 // 也有客户端会带上 /emby 前缀，只认死一种就会整条漏匹配。
 var (
-	// [/前缀]/Videos/:id/stream(.ext)、/Audio/:id/universal 等直放入口
-	embyStreamRe = regexp.MustCompile(`(?i)^(?:/[^/]+)?/(?:videos|audio)/([^/]+)/(?:stream|original|universal)(?:\.[A-Za-z0-9]+)?$`)
-	// [/前缀]/Items/:id/Download、/Items/:id/File
-	embyDownloadRe = regexp.MustCompile(`(?i)^(?:/[^/]+)?/items/([^/]+)/(?:download|file)$`)
+	// [/任意层级前缀]/Videos/:id/stream(.ext)、/Audio/:id/universal 等直放入口
+	embyStreamRe = regexp.MustCompile(`(?i)^(?:/[^/]+)*/(?:videos|audio)/([^/]+)/(?:stream|original|universal)(?:\.[A-Za-z0-9]+)?$`)
+	// [/任意层级前缀]/Items/:id/Download、/Items/:id/File
+	embyDownloadRe = regexp.MustCompile(`(?i)^(?:/[^/]+)*/items/([^/]+)/(?:download|file)$`)
+	// 任意层级前缀下的 /Items/:id/PlaybackInfo。客户端通常 POST 这条接口，
+	// 根据返回的 Supports* 字段决定直放还是请求 hls1/main/*.ts。
+	embyPlaybackInfoRe = regexp.MustCompile(`(?i)^(.*?)/items/([^/]+)/playbackinfo$`)
+	embyContainerRe    = regexp.MustCompile(`^[a-z0-9]+$`)
 )
+
+// WantsResponseRewrite 判断这是不是 Emby 的播放协商响应。只改这一条 JSON
+// 接口，界面和其他 API 仍然逐字节透传。
+func (p *embyProvider) WantsResponseRewrite(request *http.Request) bool {
+	if request.Method != http.MethodGet && request.Method != http.MethodPost {
+		return false
+	}
+	return embyPlaybackInfoRe.MatchString(path.Clean(request.URL.Path))
+}
+
+// RewriteResponse 只把 STRM 对应的媒体源切换到直放路由。否则 Emby 客户端常会
+// 选择 /hls1/main/*.ts；HLS 分片不能跳转到完整 MKV/M4A 文件，AetherLink 也就
+// 永远没有机会解析指针。
+func (p *embyProvider) RewriteResponse(originalPath string, response *http.Response) (int, error) {
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices || response.Body == nil {
+		return 0, nil
+	}
+
+	body, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	response.Body = io.NopCloser(bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	if encoding := strings.TrimSpace(response.Header.Get("Content-Encoding")); encoding != "" && !strings.EqualFold(encoding, "identity") {
+		return 0, fmt.Errorf("上游返回了无法改写的 Content-Encoding %q", encoding)
+	}
+
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return 0, fmt.Errorf("解析 PlaybackInfo JSON: %w", err)
+	}
+	rawSources, ok := envelope["MediaSources"]
+	if !ok {
+		return 0, nil
+	}
+	var sources []map[string]any
+	if err := json.Unmarshal(rawSources, &sources); err != nil {
+		return 0, fmt.Errorf("解析 PlaybackInfo.MediaSources: %w", err)
+	}
+
+	matches := embyPlaybackInfoRe.FindStringSubmatch(path.Clean(originalPath))
+	if matches == nil {
+		return 0, nil
+	}
+	itemID, err := url.PathUnescape(matches[2])
+	if err != nil {
+		itemID = matches[2]
+	}
+	prefix := strings.TrimRight(matches[1], "/")
+	changed := 0
+	for _, source := range sources {
+		if !isEmbyStrmPlaybackSource(source) || embyBool(source, "IsInfiniteStream") {
+			continue
+		}
+		source["SupportsDirectPlay"] = true
+		source["SupportsDirectStream"] = true
+		source["SupportsTranscoding"] = false
+		delete(source, "TranscodingUrl")
+		delete(source, "TranscodingSubProtocol")
+		delete(source, "TranscodingContainer")
+		source["DirectStreamUrl"] = embyDirectStreamURL(prefix, itemID, source)
+		p.rememberPlaybackSource(itemID, embyMediaSourceFromMap(source))
+		changed++
+	}
+	if changed == 0 {
+		logx.Infof("[%s] PlaybackInfo 未发现 STRM 媒体源（item=%s），保持上游播放能力不变", p.Name(), itemID)
+		return 0, nil
+	}
+
+	encodedSources, err := json.Marshal(sources)
+	if err != nil {
+		return 0, err
+	}
+	envelope["MediaSources"] = encodedSources
+	encodedBody, err := json.Marshal(envelope)
+	if err != nil {
+		return 0, err
+	}
+	response.Body = io.NopCloser(bytes.NewReader(encodedBody))
+	response.ContentLength = int64(len(encodedBody))
+	response.Header.Set("Content-Length", strconv.Itoa(len(encodedBody)))
+	response.Header.Set("Content-Type", "application/json; charset=utf-8")
+	response.Header.Del("Content-Encoding")
+	response.Header.Del("ETag")
+	response.Header.Del("Content-MD5")
+	logx.Infof("[%s] PlaybackInfo 已将 %d 个 STRM 媒体源切换为直放（item=%s），客户端下一步应请求 /Videos/%s/stream 并触发 302", p.Name(), changed, itemID, itemID)
+	return changed, nil
+}
+
+func isEmbyStrmPlaybackSource(source map[string]any) bool {
+	location := strings.TrimSpace(embyString(source, "Path"))
+	container := strings.TrimSpace(embyString(source, "Container"))
+	protocol := strings.TrimSpace(embyString(source, "Protocol"))
+	return strings.EqualFold(container, "strm") ||
+		strings.HasSuffix(strings.ToLower(location), ".strm") ||
+		(strings.EqualFold(protocol, "Http") && isHTTPURL(location))
+}
+
+func embyDirectStreamURL(prefix, itemID string, source map[string]any) string {
+	directURL := strings.TrimSpace(embyString(source, "DirectStreamUrl"))
+	parsed, err := url.Parse(directURL)
+	if err != nil {
+		parsed = &url.URL{}
+	}
+	query := parsed.Query()
+	if sourceID := strings.TrimSpace(embyString(source, "Id")); sourceID != "" {
+		query.Set("MediaSourceId", sourceID)
+	}
+	query.Set("Static", "true")
+
+	route := "Videos"
+	container := embyPlaybackContainer(source)
+	if strings.EqualFold(embyString(source, "MediaType"), "Audio") ||
+		strings.Contains(strings.ToLower(directURL), "/audio/") || isAudioContainer(container) {
+		route = "Audio"
+	}
+	streamPath := prefix + "/" + route + "/" + url.PathEscape(itemID) + "/stream"
+	if container != "" {
+		streamPath += "." + container
+	}
+	parsed.Path = streamPath
+	parsed.RawPath = ""
+	parsed.RawQuery = query.Encode()
+	parsed.Scheme = ""
+	parsed.Host = ""
+	return parsed.String()
+}
+
+func embyPlaybackContainer(source map[string]any) string {
+	container := strings.ToLower(strings.TrimSpace(embyString(source, "Container")))
+	if container != "" && container != "strm" && embyContainerRe.MatchString(container) {
+		return container
+	}
+	location := strings.ReplaceAll(embyString(source, "Path"), "\\", "/")
+	if parsed, err := url.Parse(location); err == nil && parsed.Path != "" {
+		location = parsed.Path
+	}
+	extension := strings.TrimPrefix(strings.ToLower(path.Ext(location)), ".")
+	if embyContainerRe.MatchString(extension) {
+		return extension
+	}
+	return ""
+}
+
+func isAudioContainer(container string) bool {
+	switch strings.ToLower(container) {
+	case "m4a", "m4b", "mp3", "flac", "opus", "ogg", "oga", "aac", "wav", "wma", "webma", "mka":
+		return true
+	default:
+		return false
+	}
+}
+
+func embyString(source map[string]any, key string) string {
+	value, _ := source[key].(string)
+	return value
+}
+
+func embyBool(source map[string]any, key string) bool {
+	value, _ := source[key].(bool)
+	return value
+}
+
+func embyMediaSourceFromMap(source map[string]any) embyMediaSource {
+	return embyMediaSource{
+		ID:        embyString(source, "Id"),
+		Path:      embyString(source, "Path"),
+		Name:      embyString(source, "Name"),
+		Container: embyString(source, "Container"),
+		Protocol:  embyString(source, "Protocol"),
+	}
+}
+
+func embyPlaybackSourceKey(itemID, sourceID string) string {
+	return itemID + "\x00" + sourceID
+}
+
+func (p *embyProvider) rememberPlaybackSource(itemID string, source embyMediaSource) {
+	if itemID == "" || source.Path == "" {
+		return
+	}
+	p.playbackMu.Lock()
+	defer p.playbackMu.Unlock()
+	if p.playbackSources == nil {
+		p.playbackSources = make(map[string]cachedEmbyMediaSource)
+	}
+	if len(p.playbackSources) >= embyPlaybackSourceMax {
+		now := time.Now()
+		for key, cached := range p.playbackSources {
+			if now.After(cached.expiresAt) {
+				delete(p.playbackSources, key)
+			}
+		}
+	}
+	if len(p.playbackSources) >= embyPlaybackSourceMax {
+		for key := range p.playbackSources {
+			delete(p.playbackSources, key)
+			break
+		}
+	}
+	cached := cachedEmbyMediaSource{source: source, expiresAt: time.Now().Add(embyPlaybackSourceTTL)}
+	p.playbackSources[embyPlaybackSourceKey(itemID, source.ID)] = cached
+	if source.ID == "" {
+		p.playbackSources[embyPlaybackSourceKey(itemID, "")] = cached
+	}
+}
+
+func (p *embyProvider) rememberedPlaybackSource(itemID, sourceID string) (embyMediaSource, bool) {
+	p.playbackMu.Lock()
+	defer p.playbackMu.Unlock()
+	if p.playbackSources == nil {
+		return embyMediaSource{}, false
+	}
+	key := embyPlaybackSourceKey(itemID, sourceID)
+	cached, ok := p.playbackSources[key]
+	if !ok && sourceID != "" {
+		key = embyPlaybackSourceKey(itemID, "")
+		cached, ok = p.playbackSources[key]
+	}
+	if !ok || time.Now().After(cached.expiresAt) {
+		delete(p.playbackSources, key)
+		return embyMediaSource{}, false
+	}
+	return cached.source, true
+}
 
 // Match intercepts Emby's direct-play and download endpoints. HLS/transcode
 // segment routes are deliberately left untouched: the upstream must produce
@@ -212,6 +461,9 @@ type embyUser struct {
 // API. Only when Emby reports a plain filesystem path do we fall back to reading
 // a pointer file ourselves.
 func (p *embyProvider) MediaTarget(ctx context.Context, ref MediaRef) (MediaTarget, error) {
+	if source, ok := p.rememberedPlaybackSource(ref.ItemID, ref.MediaSourceID); ok {
+		return embyTarget(source), nil
+	}
 	item, err := p.fetchItem(ctx, ref.ItemID)
 	if err != nil {
 		return MediaTarget{}, err

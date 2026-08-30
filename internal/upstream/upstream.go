@@ -136,6 +136,14 @@ type Provider interface {
 	PlaybackPath(itemID, fileID string) string
 }
 
+// ResponseRewriter 允许上游方言改写指定的反代响应。Emby 用它处理
+// PlaybackInfo：STRM 必须被标成可直放，否则客户端会选择 HLS 转码，之后再也
+// 不会请求能够跳转到指针目标的媒体路由。
+type ResponseRewriter interface {
+	WantsResponseRewrite(request *http.Request) bool
+	RewriteResponse(originalPath string, response *http.Response) (int, error)
+}
+
 // New builds the provider matching the configured upstream type.
 func New(cfg config.Upstream) (Provider, error) {
 	base, err := url.Parse(cfg.BaseURL)

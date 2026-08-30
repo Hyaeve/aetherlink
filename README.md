@@ -27,10 +27,10 @@
 管理界面自己占 5151，且只服务管理页与管理 API，不做反代。
 
 - **拿到账号**：使用上游项目自带的 API 密钥（Audiobookshelf 的 Key 就是一枚 JWT，可作 Bearer 使用；Emby 用 `X-Emby-Token`/`api_key`），因此 AetherLink 能以该账号权限查询书库、条目和文件真实路径。
-- **只拦截字节投递接口**，其余请求（Web UI、封面、元数据、进度同步、HLS 转码）原样反代，客户端行为不变。
+- **只拦截字节投递接口**，并在 Emby 的 `PlaybackInfo` 中把 STRM 媒体源切换成直放；其余请求（Web UI、封面、元数据、进度同步、普通媒体的 HLS 转码）原样反代。
   - Audiobookshelf：`/api/items/:id/file/:ino`、`/api/items/:id/file/:ino/download`、`/public/session/:id/track/:index`
   - Emby：`/Videos|Audio/:id/stream(.ext)`、`/Items/:id/Download`
-- **两种 strm 形态都认**：Emby 在扫库时就把指针读成了 `MediaSources[].Path` + `Protocol: Http`，AetherLink 拿到直链即可 302，不需要挂任何媒体目录；Audiobookshelf 只报告指针文件路径，AetherLink 自己定位并读取那个 `.strm`。Emby 上少数只在 `PlaybackInfo` 里给媒体源的版本也会被自动回退查询。
+- **两种 strm 形态都认**：Emby 在扫库时就把指针读成了 `MediaSources[].Path` + `Protocol: Http`，AetherLink 会改写播放协商，关闭该 STRM 源的转码入口并给客户端返回稳定的直放地址，下一跳即可 302；不需要挂任何媒体目录。Audiobookshelf 只报告指针文件路径，AetherLink 自己定位并读取那个 `.strm`。
 - **非 `.strm` 文件自动透传**给上游，不影响普通有声书和普通影片。读不到指针时同样退回透传，播放不会因为少挂一个目录而失败。
 - **URL 归一化**是关键：STRM 生成器写进去的往往不是合法 URL。AetherLink 会补齐百分号编码，同时保留已编码序列，因此下面三种主流形态都能直接 302：
   - 115 pick code：`http://10.0.0.31:19527/d/bi6jeznun2rvu88v6.m4a?/001.总序.m4a`（查询串里的显示文件名会被识别为 `filename`）
@@ -113,6 +113,7 @@ docker inspect -f "{{.State.ExitCode}} {{.State.Error}}" AetherLink
 | `端口 xxxx 无法监听（可能已被其他程序占用）` | 该反代端口在容器内已被占用（多半是两个上游撞了端口，或与管理端口 5151 冲突）。在界面上改成别的端口保存即可，原有上游不受影响。 |
 | 播放端连不上反代端口 | 端口没在 compose 的 `ports` 里映射出去。加一条 `- 5152:5152` 再 `docker compose up -d`。 |
 | `读不到 strm 指针，本次退回透传` | Audiobookshelf 的媒体目录没挂进 AetherLink，只能透传（能播但没有 302）。按「挂载说明」把媒体目录挂进来即可。Emby 不会出现这条。 |
+| `检测到 Emby HLS 转码请求 ... hls1/main/*.ts` | 这是一段已经开始的转码会话，分片本身不能 302。更新镜像后先停止当前播放再重新开始；正常应先看到 `PlaybackInfo 已将 ... STRM 媒体源切换为直放`，随后看到 `/Videos/:id/stream` 的 `302` 日志。若重新播放后仍只有 HLS 日志，检查播放器是否缓存了旧的 PlaybackInfo。 |
 | 能播但日志里全是 `passthrough`，没有 302 | 上游把这一轨报告成了普通文件。Emby 侧检查项目是不是真的 `.strm` 库（AetherLink 认 `Protocol: Http` 或 `Container: strm`）；Audiobookshelf 侧确认媒体目录已挂载。界面「日志」页的播放流水里，这一行的「目标」列会写明具体原因。 |
 | 日志里一条播放记录都没有 | 播放请求没被识别成媒体请求。看日志里有没有 `未识别的疑似播放请求`：有就把那条路径贴出来（说明拦截规则漏了它）；完全没有，说明播放器根本没走 AetherLink 的反代端口，检查播放端地址里的端口有没有换过来。 |
 | 没有任何日志、`ExitCode` 是 127 或 `exec format error` | 镜像架构不对。本项目只发 `linux/amd64`，ARM 设备（树莓派、某些 NAS）跑不了。 |
@@ -183,7 +184,7 @@ mkdir -p config && sudo chown -R 1000:1000 config
 ## 已知取值边界
 
 - Audiobookshelf 的 `/public/session/:id/track/:index` 走的是「打开会话」接口，只有会话属主或管理员可读。若配置的 API 密钥不属于管理员，该路径会退化为普通反代（普通播放走 `/api/items/:id/file/:ino`，不受影响）。
-- Emby 的 HLS/转码分段路由不拦截：转码必须由 Emby 自己读取媒体完成。
+- Emby 的 HLS/转码分段路由不拦截：普通媒体需要转码时仍由 Emby 完成；STRM 会在 `PlaybackInfo` 阶段被切换为直放，因此正常不会进入 HLS 分片路由。
 - 中继模式转发 `Range`、`If-Range`、`Content-Range`，seek 行为与直连一致。
 - 管理端口无法热改：在配置里改了 `server.listen` 之后界面会提示需要重启容器。上游的反代端口可以热改热增删，但新端口要在 compose 里映射出来才能从外部访问。
 

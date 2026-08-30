@@ -448,6 +448,150 @@ func newEmbyTestServer(t *testing.T, embyURL string, redirectCfg config.Redirect
 	return New(provider, mediaResolver, collector, redirectCfg), collector
 }
 
+// Emby 客户端先读取 PlaybackInfo，再按 Supports* 字段选择直放或 HLS。
+// STRM 若被选成 HLS，后续只会出现 hls1/main/*.ts，完整媒体地址再也不会经过
+// AetherLink。因此必须在协商响应阶段只把 STRM 源切换为直放。
+func TestEmbyPlaybackInfoForcesOnlyStrmSourcesToDirectPlay(t *testing.T) {
+	var acceptEncoding string
+	var itemRequests int
+	remoteSource := map[string]any{
+		"Id":                   "source-strm",
+		"Path":                 "http://10.0.0.31:25244/d/移动云盘/白色巨塔 (2003)/S01E01.再读.mkv",
+		"Protocol":             "Http",
+		"Container":            "mkv",
+		"MediaType":            "Video",
+		"SupportsDirectPlay":   false,
+		"SupportsDirectStream": false,
+		"SupportsTranscoding":  true,
+		"DirectStreamUrl":      "/emby/Videos/movie-1/stream.mkv?PlaySessionId=play-1",
+		"TranscodingUrl":       "/emby/Videos/movie-1/master.m3u8?PlaySessionId=play-1",
+		"TranscodingContainer": "ts",
+	}
+	localSource := map[string]any{
+		"Id":                   "source-local",
+		"Path":                 "/media/movies/普通影片.mkv",
+		"Protocol":             "File",
+		"Container":            "mkv",
+		"SupportsDirectPlay":   false,
+		"SupportsDirectStream": false,
+		"SupportsTranscoding":  true,
+		"TranscodingUrl":       "/emby/Videos/movie-2/master.m3u8",
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/emby/Items/movie-1/PlaybackInfo", func(writer http.ResponseWriter, request *http.Request) {
+		acceptEncoding = request.Header.Get("Accept-Encoding")
+		writeJSON(t, writer, map[string]any{
+			"PlaySessionId": "play-1",
+			"MediaSources":  []map[string]any{remoteSource, localSource},
+		})
+	})
+	mux.HandleFunc("/Users", func(writer http.ResponseWriter, request *http.Request) {
+		writeJSON(t, writer, []map[string]any{})
+	})
+	mux.HandleFunc("/Items", func(writer http.ResponseWriter, request *http.Request) {
+		itemRequests++
+		if request.URL.Query().Get("api_key") != "test-api-key" {
+			writer.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		writeJSON(t, writer, map[string]any{
+			"Items": []map[string]any{{
+				"Id":           "movie-1",
+				"Name":         "白色巨塔",
+				"Type":         "Episode",
+				"Path":         "/media/tv/白色巨塔/S01E01.strm",
+				"MediaSources": []map[string]any{remoteSource},
+			}},
+		})
+	})
+	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
+		writer.Write([]byte("emby-ui:" + request.URL.Path))
+	})
+	emby := httptest.NewServer(mux)
+	t.Cleanup(emby.Close)
+	server, collector := newEmbyTestServer(t, emby.URL, defaultRedirect())
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/emby/Items/movie-1/PlaybackInfo?UserId=user-1", strings.NewReader(`{}`))
+	request.Header.Set("Accept-Encoding", "gzip")
+	request.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %q", recorder.Code, recorder.Body.String())
+	}
+	if acceptEncoding != "identity" {
+		t.Fatalf("upstream Accept-Encoding = %q, want identity", acceptEncoding)
+	}
+	var playbackInfo struct {
+		MediaSources []map[string]any `json:"MediaSources"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &playbackInfo); err != nil {
+		t.Fatalf("decode rewritten PlaybackInfo: %v", err)
+	}
+	if len(playbackInfo.MediaSources) != 2 {
+		t.Fatalf("media source count = %d, want 2", len(playbackInfo.MediaSources))
+	}
+	rewritten := playbackInfo.MediaSources[0]
+	if rewritten["SupportsDirectPlay"] != true || rewritten["SupportsDirectStream"] != true || rewritten["SupportsTranscoding"] != false {
+		t.Fatalf("STRM direct-play flags were not rewritten: %#v", rewritten)
+	}
+	if _, exists := rewritten["TranscodingUrl"]; exists {
+		t.Fatalf("STRM TranscodingUrl was not removed: %#v", rewritten)
+	}
+	directURL, _ := rewritten["DirectStreamUrl"].(string)
+	parsedDirectURL, err := url.Parse(directURL)
+	if err != nil {
+		t.Fatalf("parse DirectStreamUrl %q: %v", directURL, err)
+	}
+	if parsedDirectURL.Path != "/emby/Videos/movie-1/stream.mkv" {
+		t.Fatalf("DirectStreamUrl path = %q", parsedDirectURL.Path)
+	}
+	if parsedDirectURL.Query().Get("MediaSourceId") != "source-strm" || parsedDirectURL.Query().Get("Static") != "true" || parsedDirectURL.Query().Get("PlaySessionId") != "play-1" {
+		t.Fatalf("DirectStreamUrl query = %q", parsedDirectURL.RawQuery)
+	}
+	if playbackInfo.MediaSources[1]["SupportsTranscoding"] != true || playbackInfo.MediaSources[1]["TranscodingUrl"] == nil {
+		t.Fatalf("普通本地媒体源不应被修改: %#v", playbackInfo.MediaSources[1])
+	}
+
+	redirectRecorder := httptest.NewRecorder()
+	server.ServeHTTP(redirectRecorder, httptest.NewRequest(http.MethodGet, directURL, nil))
+	if redirectRecorder.Code != http.StatusFound {
+		t.Fatalf("direct stream status = %d, want 302; body = %q", redirectRecorder.Code, redirectRecorder.Body.String())
+	}
+	if snapshot := collector.Snapshot(10); snapshot.Redirects != 1 {
+		t.Fatalf("redirect count = %d, want 1", snapshot.Redirects)
+	}
+	if itemRequests != 0 {
+		t.Fatalf("direct stream queried /Items %d times; want the just-rewritten PlaybackInfo source to be reused", itemRequests)
+	}
+}
+
+func TestEmbyHLSRequestDetection(t *testing.T) {
+	provider, err := upstream.New(config.Upstream{
+		Name:       "emby",
+		Type:       config.UpstreamEmby,
+		BaseURL:    "http://127.0.0.1:8096",
+		APIKey:     "test-api-key",
+		ListenPort: 8097,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, requestPath := range []string{
+		"/emby/videos/162227/hls1/main/10.ts",
+		"/emby/videos/162227/master.m3u8",
+	} {
+		if !isEmbyHLSRequest(provider, requestPath) {
+			t.Fatalf("%q should be diagnosed as Emby HLS", requestPath)
+		}
+	}
+	if isEmbyHLSRequest(provider, "/emby/Videos/162227/stream.mkv") {
+		t.Fatal("direct stream route must not be diagnosed as HLS")
+	}
+}
+
 // Emby 的 strm 走的是 API 直链，不需要挂载任何媒体目录，这条链路是 Emby 能
 // 302 的唯一原因，因此必须有测试锁住。
 func TestEmbyHTTPMediaSourceRedirectsWithoutMountedMedia(t *testing.T) {
