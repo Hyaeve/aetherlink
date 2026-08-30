@@ -144,13 +144,6 @@ onMounted(load)
 
 <template>
   <section class="upstreams-page">
-    <div class="workspace-toolbar">
-      <button class="primary add-button" @click="openEditor(null)">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-        添加链接
-      </button>
-    </div>
-
     <p v-if="error" class="error page-error">{{ error }}</p>
     <div v-if="notice" class="notice page-notice">{{ notice }}</div>
 
