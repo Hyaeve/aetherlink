@@ -98,94 +98,107 @@ onUnmounted(() => timer && clearInterval(timer))
 </script>
 
 <template>
-  <section class="panel" style="margin-bottom:18px">
-    <h2>播放流水</h2>
-    <p v-if="error" class="error">{{ error }}</p>
-    <div v-if="diagnosis" class="notice">{{ diagnosis }}</div>
+  <section class="logs-page">
+    <p v-if="error" class="error page-error">{{ error }}</p>
+    <div v-if="diagnosis" class="notice page-notice">{{ diagnosis }}</div>
 
-    <div class="grid cols-4" style="margin-bottom:14px">
-      <div class="metric">
-        <div class="label">302 跳转</div>
-        <div class="value">{{ snapshot?.redirects ?? 0 }}</div>
+    <div class="log-metrics">
+      <div class="log-metric violet">
+        <span class="metric-icon"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6" /></svg></span>
+        <span><small>302 跳转</small><strong>{{ snapshot?.redirects ?? 0 }}</strong></span>
       </div>
-      <div class="metric">
-        <div class="label">透传上游</div>
-        <div class="value">{{ snapshot?.passthroughs ?? 0 }}</div>
+      <div class="log-metric amber">
+        <span class="metric-icon"><svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM9 9h6M9 13h4" /></svg></span>
+        <span><small>透传上游</small><strong>{{ snapshot?.passthroughs ?? 0 }}</strong></span>
       </div>
-      <div class="metric">
-        <div class="label">中继 / 本地</div>
-        <div class="value">{{ (snapshot?.proxyStreams ?? 0) + (snapshot?.localFiles ?? 0) }}</div>
+      <div class="log-metric blue">
+        <span class="metric-icon"><svg viewBox="0 0 24 24"><path d="M4 12h16M12 4v16" /><circle cx="12" cy="12" r="8" /></svg></span>
+        <span><small>中继 / 本地</small><strong>{{ (snapshot?.proxyStreams ?? 0) + (snapshot?.localFiles ?? 0) }}</strong></span>
       </div>
-      <div class="metric">
-        <div class="label">失败</div>
-        <div class="value">{{ snapshot?.errors ?? 0 }}</div>
+      <div class="log-metric rose">
+        <span class="metric-icon"><svg viewBox="0 0 24 24"><path d="M12 4 21 20H3zM12 9v5M12 17h.01" /></svg></span>
+        <span><small>失败</small><strong>{{ snapshot?.errors ?? 0 }}</strong></span>
       </div>
-    </div>
-
-    <div class="row" style="margin-bottom:12px">
-      <select v-model="outcomeFilter" style="max-width:180px">
-        <option value="all">全部结果</option>
-        <option value="redirect">302 跳转</option>
-        <option value="passthrough">透传上游</option>
-        <option value="proxy">AetherLink 中继</option>
-        <option value="local">本地直读</option>
-        <option value="error">失败</option>
-      </select>
-      <button @click="load">立即刷新</button>
     </div>
 
-    <div class="scroll">
-      <table>
-        <thead>
-          <tr>
-            <th>时间</th>
-            <th>上游</th>
-            <th>请求路径</th>
-            <th>结果</th>
-            <th>目标</th>
-            <th>耗时</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="(event, index) in events" :key="index">
-            <td>{{ clock(event.time) }}</td>
-            <td>{{ event.upstream }}</td>
-            <td class="mono">{{ shorten(event.path, 48) }}</td>
-            <td>
-              <span :class="outcomeClass(event.outcome)">{{ outcomeLabel(event.outcome) }}</span>
-            </td>
-            <td class="mono">{{ shorten(event.error || event.target || event.mediaPath) }}</td>
-            <td>{{ millis(event.durationMs) }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <p v-if="!events.length" class="muted">还没有播放请求。播放一次媒体，这里就会出现对应的处理结果。</p>
-    </div>
-  </section>
-
-  <section class="panel">
-    <h2>运行日志</h2>
-    <div class="row" style="margin-bottom:12px">
-      <select v-model="levelFilter" style="max-width:160px">
-        <option value="all">全部级别</option>
-        <option value="debug">debug</option>
-        <option value="info">info</option>
-        <option value="warn">warn</option>
-        <option value="error">error</option>
-      </select>
-      <label class="row" style="gap:6px">
-        <input type="checkbox" v-model="autoRefresh" style="width:auto" />
-        <span class="muted">自动刷新</span>
-      </label>
-      <button @click="load">立即刷新</button>
-    </div>
-    <div class="scroll mono">
-      <div v-for="(entry, index) in visible" :key="index" class="log-line">
-        <span class="muted">{{ stamp(entry.time) }}</span>
-        <span :class="levelClass(entry.level)">{{ entry.level }}</span>
-        <span>{{ entry.message }}</span>
+    <section class="activity-card">
+      <div class="activity-head">
+        <div class="activity-title">
+          <span class="activity-icon violet"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h16" /><circle cx="17" cy="12" r="3" /></svg></span>
+          <div><h2>播放流水</h2><p>每一次媒体请求的最终处理结果</p></div>
+        </div>
+        <div class="activity-actions">
+          <select v-model="outcomeFilter" aria-label="筛选播放结果">
+            <option value="all">全部结果</option>
+            <option value="redirect">302 跳转</option>
+            <option value="passthrough">透传上游</option>
+            <option value="proxy">AetherLink 中继</option>
+            <option value="local">本地直读</option>
+            <option value="error">失败</option>
+          </select>
+          <button class="icon-button" title="立即刷新" aria-label="立即刷新" @click="load">
+            <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.8-4L4 9" /><path d="M4 5v4h4M4 13a8 8 0 0 0 14.8 4L20 15" /><path d="M20 19v-4h-4" /></svg>
+          </button>
+        </div>
       </div>
-      <p v-if="!visible.length" class="muted">暂无日志。</p>
-    </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>时间</th><th>上游</th><th>请求路径</th><th>结果</th><th>目标</th><th>耗时</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="(event, index) in events" :key="index">
+              <td>{{ clock(event.time) }}</td>
+              <td>{{ event.upstream }}</td>
+              <td class="mono">{{ shorten(event.path, 48) }}</td>
+              <td><span :class="outcomeClass(event.outcome)">{{ outcomeLabel(event.outcome) }}</span></td>
+              <td class="mono">{{ shorten(event.error || event.target || event.mediaPath) }}</td>
+              <td>{{ millis(event.durationMs) }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-if="!events.length" class="empty-inline">
+          <svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM8 9h8M8 13h5" /></svg>
+          <span>还没有播放请求</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="activity-card">
+      <div class="activity-head">
+        <div class="activity-title">
+          <span class="activity-icon blue"><svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM8 9h8M8 12h8M8 15h5" /></svg></span>
+          <div><h2>服务日志</h2><p>查看 AetherLink 的运行状态与诊断信息</p></div>
+        </div>
+        <div class="activity-actions">
+          <select v-model="levelFilter" aria-label="筛选日志级别">
+            <option value="all">全部级别</option>
+            <option value="debug">debug</option>
+            <option value="info">info</option>
+            <option value="warn">warn</option>
+            <option value="error">error</option>
+          </select>
+          <label class="refresh-toggle">
+            <input type="checkbox" v-model="autoRefresh" />
+            <span class="toggle-control"></span>
+            <span>自动刷新</span>
+          </label>
+          <button class="icon-button" title="立即刷新" aria-label="立即刷新" @click="load">
+            <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.8-4L4 9" /><path d="M4 5v4h4M4 13a8 8 0 0 0 14.8 4L20 15" /><path d="M20 19v-4h-4" /></svg>
+          </button>
+        </div>
+      </div>
+      <div class="log-stream">
+        <div v-for="(entry, index) in visible" :key="index" class="log-line">
+          <span class="log-time">{{ stamp(entry.time) }}</span>
+          <span :class="levelClass(entry.level)">{{ entry.level }}</span>
+          <span class="log-message">{{ entry.message }}</span>
+        </div>
+        <div v-if="!visible.length" class="empty-inline">
+          <svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM8 9h8M8 13h5" /></svg>
+          <span>暂无日志</span>
+        </div>
+      </div>
+    </section>
   </section>
 </template>

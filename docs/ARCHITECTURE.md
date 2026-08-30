@@ -23,7 +23,7 @@
 
 | 文件 | 作用 |
 | --- | --- |
-| `web/src/App.vue` | 左侧图标栏 + 主区布局（图标栏可展开成图标 + 文字，状态存 localStorage），以及 loading / login / app 三态的首屏闸门。只有反代上游 / 日志 / 设置三个页面。 |
+| `web/src/App.vue` | 左侧图标栏 + 主区布局（侧栏右边缘的竖线按钮控制展开成图标 + 文字，状态存 localStorage），以及 loading / login / app 三态的首屏闸门。只有以太链接 / 运行日志 / 系统设置三个页面。 |
 | `web/src/styles.css` | 莫奈低饱和浅色主题的全部样式，配色集中在 `:root` 的 CSS 变量里。动态部分是 `body::before` 的多点径向渐变漂移与卡片的 `background-position` 位移，两者都在 `prefers-reduced-motion` 下静止。 |
 | `web/src/palette.js` | 上游名称哈希到固定的莫奈三段渐变与动画相位，保证同名上游的卡片配色恒定，同时让卡片之间的流动不同步。 |
 | `web/src/components/UpstreamsView.vue` | 卡片网格：一个上游一张方卡，左键开编辑弹窗，右键出上下文菜单。 |

@@ -10,17 +10,24 @@ import SettingsView from './components/SettingsView.vue'
 const tabs = [
   {
     id: 'upstreams',
-    label: '反代上游',
-    paths: ['M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z']
+    label: '以太链接',
+    description: '管理 Audiobookshelf 与 Emby 的反代入口和 302 播放链路。',
+    paths: [
+      'M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.2',
+      'M14 11a5 5 0 0 0-7.1 0l-2 2A5 5 0 0 0 12 20.1l1.1-1.2',
+      'M8.5 15.5l7-7'
+    ]
   },
   {
     id: 'logs',
-    label: '日志',
-    paths: ['M6 4h9l3 3v13H6z', 'M9 10h7', 'M9 14h7']
+    label: '运行日志',
+    description: '查看播放流水、302 命中情况与服务运行日志。',
+    paths: ['M5 5h14v14H5z', 'M8 15l2-2 2 1 4-5', 'M8 9h.01']
   },
   {
     id: 'settings',
-    label: '设置',
+    label: '系统设置',
+    description: '调整跳转策略、缓存日志以及管理账号。',
     paths: [
       'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
       'M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2v.2a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-2.9-1.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 4 15H3.8a2 2 0 1 1 0-4h.3a1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 11 4V3.8a2 2 0 1 1 4 0V4a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 20 11h.2a2 2 0 1 1 0 4H20z'
@@ -46,6 +53,7 @@ const statusError = ref('')
 let statusTimer = null
 
 const activeLabel = computed(() => tabs.find((tab) => tab.id === activeTab.value)?.label || '')
+const activeDescription = computed(() => tabs.find((tab) => tab.id === activeTab.value)?.description || '')
 
 watch(railOpen, (open) => localStorage.setItem(RAIL_KEY, open ? 'open' : 'closed'))
 
@@ -168,44 +176,48 @@ onUnmounted(() => statusTimer && clearInterval(statusTimer))
   </div>
 
   <div v-else class="shell" :class="{ 'rail-open': railOpen }">
-    <nav class="rail">
+    <nav class="rail" aria-label="主导航">
       <div class="rail-top">
-        <div class="brand">AL</div>
-        <span class="rail-name">AetherLink</span>
+        <div class="brand" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <path d="M8.5 15.5 15.5 8.5" />
+            <path d="M10 13a4 4 0 0 0 5.7 0l2-2a4 4 0 0 0-5.7-5.7l-1 1" />
+            <path d="M14 11a4 4 0 0 0-5.7 0l-2 2A4 4 0 0 0 12 18.7l1-1" />
+          </svg>
+        </div>
+        <div class="rail-brand-copy">
+          <strong>AetherLink</strong>
+          <span>以太链接</span>
+        </div>
       </div>
 
-      <button
-        class="rail-toggle"
-        :title="railOpen ? '收起侧栏' : '展开侧栏'"
-        :aria-label="railOpen ? '收起侧栏' : '展开侧栏'"
-        :aria-expanded="railOpen"
-        @click="railOpen = !railOpen"
-      >
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M4 6h16" />
-          <path d="M4 12h16" />
-          <path d="M4 18h16" />
-        </svg>
-        <span class="rail-label">收起侧栏</span>
-      </button>
+      <div class="rail-rule"></div>
 
-      <button
-        v-for="tab in tabs"
-        :key="tab.id"
-        :class="{ active: activeTab === tab.id }"
-        :title="tab.label"
-        :aria-label="tab.label"
-        :aria-current="activeTab === tab.id ? 'page' : undefined"
-        @click="activeTab = tab.id"
-      >
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path v-for="(path, index) in tab.paths" :key="index" :d="path" />
-        </svg>
-        <span class="rail-label">{{ tab.label }}</span>
-      </button>
+      <div class="rail-nav">
+        <button
+          v-for="tab in tabs"
+          :key="tab.id"
+          :class="{ active: activeTab === tab.id }"
+          :title="tab.label"
+          :aria-label="tab.label"
+          :aria-current="activeTab === tab.id ? 'page' : undefined"
+          @click="activeTab = tab.id"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path v-for="(path, index) in tab.paths" :key="index" :d="path" />
+          </svg>
+          <span class="rail-label">{{ tab.label }}</span>
+        </button>
+      </div>
 
       <div class="spacer"></div>
-      <button title="退出登录" aria-label="退出登录" @click="logout">
+
+      <div class="rail-health" v-if="status">
+        <span class="health-dot"></span>
+        <span class="rail-label">服务运行中</span>
+      </div>
+
+      <button class="rail-logout" title="退出登录" aria-label="退出登录" @click="logout">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M15 5H7a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h8" />
           <path d="M17 8l4 4-4 4" />
@@ -213,16 +225,36 @@ onUnmounted(() => statusTimer && clearInterval(statusTimer))
         </svg>
         <span class="rail-label">退出登录</span>
       </button>
+
+      <button
+        class="rail-edge-toggle"
+        :title="railOpen ? '收起侧栏' : '展开侧栏'"
+        :aria-label="railOpen ? '收起侧栏' : '展开侧栏'"
+        :aria-expanded="railOpen"
+        @click="railOpen = !railOpen"
+      >
+        <span class="rail-edge-line"></span>
+        <svg viewBox="0 0 16 24" aria-hidden="true">
+          <path :d="railOpen ? 'M10 6 5 12l5 6' : 'm6 6 5 6-5 6'" />
+        </svg>
+      </button>
     </nav>
 
     <main class="main">
-      <div class="page-head">
-        <h1>{{ activeLabel }}</h1>
-        <span class="sub" v-if="status">
-          v{{ status.version }} · 管理端口 {{ status.adminPort }} · 302 模式 {{ status.redirectMode }} ·
-          上游 {{ status.enabledUpstreamCount }}/{{ status.upstreamCount }} · 运行 {{ uptime }}
-        </span>
-      </div>
+      <header class="page-head">
+        <div class="page-title">
+          <span class="eyebrow">AETHERLINK CONTROL</span>
+          <h1>{{ activeLabel }}</h1>
+          <p>{{ activeDescription }}</p>
+        </div>
+        <div class="system-summary" v-if="status">
+          <span class="status-pill online"><i></i>运行中</span>
+          <span class="status-pill">v{{ status.version }}</span>
+          <span class="status-pill">管理端口 {{ status.adminPort }}</span>
+          <span class="status-pill">链接 {{ status.enabledUpstreamCount }}/{{ status.upstreamCount }}</span>
+          <span class="status-pill">已运行 {{ uptime }}</span>
+        </div>
+      </header>
 
       <p v-if="statusError" class="error" style="margin-top:0">{{ statusError }}</p>
       <div v-if="status?.restartRequired" class="notice">

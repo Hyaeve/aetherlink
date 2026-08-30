@@ -12,6 +12,7 @@ const suggestedPort = ref(0)
 const adminPort = ref(0)
 const error = ref('')
 const notice = ref('')
+const loading = ref(true)
 
 // editing: null 不打开；{ upstream: null } 新增；{ upstream } 编辑。
 const editing = ref(null)
@@ -22,6 +23,7 @@ const busy = ref(false)
 const TYPE_LABELS = { audiobookshelf: 'Audiobookshelf', emby: 'Emby' }
 
 async function load() {
+  loading.value = true
   try {
     const payload = await api.upstreams()
     upstreams.value = payload.upstreams || []
@@ -30,6 +32,8 @@ async function load() {
     error.value = ''
   } catch (loadError) {
     error.value = loadError.message
+  } finally {
+    loading.value = false
   }
 }
 
@@ -129,58 +133,106 @@ onMounted(load)
 </script>
 
 <template>
-  <section>
-    <div class="section-head">
-      <h2>反代上游</h2>
-      <span class="muted" style="font-size:12.5px">
-        每个上游独占一个反代端口，播放端只把地址里的端口换掉即可。右键卡片可编辑、试连或删除。
-      </span>
-    </div>
-
-    <p v-if="error" class="error" style="margin-bottom:12px">{{ error }}</p>
-    <div v-if="notice" class="notice">{{ notice }}</div>
-
-    <div class="card-grid">
-      <div
-        v-for="upstream in upstreams"
-        :key="upstream.name"
-        class="card"
-        :class="{ dimmed: !upstream.enabled }"
-        :style="cardStyleFor(upstream.name)"
-        @click="openEditor(upstream)"
-        @contextmenu.prevent="openMenu($event, upstream)"
-      >
-        <svg class="card-icon" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z" />
-          <path d="M12 10v5" />
-          <path d="M9.5 12.5 12 15l2.5-2.5" />
-        </svg>
-        <span class="card-hint">右键更多</span>
-
-        <div class="card-body">
-          <div class="card-title">{{ upstream.name }}</div>
-          <div class="card-meta">{{ hostLabel(upstream.baseUrl) }}</div>
-          <div class="card-chips">
-            <span class="chip">{{ typeLabel(upstream.type) }}</span>
-            <span class="chip">{{ portFlow(upstream) }}</span>
-            <span class="chip bad" v-if="!upstream.enabled">已停用</span>
-            <span class="chip warn" v-else-if="!upstream.hasApiKey">缺密钥</span>
-            <span class="chip warn" v-else-if="!upstream.listening">端口未监听</span>
-          </div>
-        </div>
+  <section class="upstreams-page">
+    <div class="workspace-toolbar">
+      <div>
+        <span class="eyebrow">PROXY WORKSPACE</span>
+        <h2>服务入口</h2>
+        <p>每个媒体服务拥有独立反代端口，播放端只换端口，路径保持原样。</p>
       </div>
-
-      <button class="card-add" @click="openEditor(null)">
-        <span class="plus">+</span>
-        <span>添加上游</span>
+      <button class="primary add-button" @click="openEditor(null)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+        添加链接
       </button>
     </div>
 
-    <p v-if="!upstreams.length" class="muted" style="margin-top:16px;font-size:13px">
-      还没有上游。点「添加上游」，填入媒体服务器地址、要占用的反代端口和 API 密钥，
-      AetherLink 就能读到它的书库并对 strm 做 302 播放。
-      <template v-if="suggestedPort">下一个空闲端口是 {{ suggestedPort }}，记得在 compose 的 ports 里映射出去。</template>
-    </p>
+    <p v-if="error" class="error page-error">{{ error }}</p>
+    <div v-if="notice" class="notice page-notice">{{ notice }}</div>
+
+    <div class="overview-strip">
+      <div class="overview-item">
+        <span class="overview-icon violet"><svg viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h9" /></svg></span>
+        <span><small>已配置链接</small><strong>{{ upstreams.length }}</strong></span>
+      </div>
+      <div class="overview-item">
+        <span class="overview-icon green"><svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" /></svg></span>
+        <span><small>正在运行</small><strong>{{ upstreams.filter((item) => item.enabled && item.listening).length }}</strong></span>
+      </div>
+      <div class="overview-item">
+        <span class="overview-icon blue"><svg viewBox="0 0 24 24"><path d="M4 12h16M12 4v16" /></svg></span>
+        <span><small>下一个端口</small><strong>{{ suggestedPort || '—' }}</strong></span>
+      </div>
+    </div>
+
+    <div v-if="loading" class="card-grid">
+      <div v-for="index in 2" :key="index" class="proxy-card skeleton-card" aria-hidden="true">
+        <span class="skeleton-line short"></span>
+        <span class="skeleton-line medium"></span>
+        <span class="skeleton-line long"></span>
+        <span class="skeleton-line chips"></span>
+      </div>
+    </div>
+
+    <div v-else-if="upstreams.length" class="card-grid">
+      <article
+        v-for="upstream in upstreams"
+        :key="upstream.name"
+        class="proxy-card"
+        :class="{ dimmed: !upstream.enabled }"
+        :style="cardStyleFor(upstream.name)"
+        tabindex="0"
+        role="button"
+        :aria-label="`编辑 ${upstream.name}`"
+        @click="openEditor(upstream)"
+        @keyup.enter="openEditor(upstream)"
+        @keyup.space.prevent="openEditor(upstream)"
+        @contextmenu.prevent="openMenu($event, upstream)"
+      >
+        <div class="proxy-card-top">
+          <span class="service-mark" :class="upstream.type">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path v-if="upstream.type === 'emby'" d="m12 4 7 4v8l-7 4-7-4V8zM8 10l4 2 4-2M12 12v8" />
+              <path v-else d="M6 5h8l4 4v10H6zM9 5v5h6M9 15h6M9 18h4" />
+            </svg>
+          </span>
+          <span class="proxy-status" :class="upstream.enabled && upstream.listening ? 'online' : 'offline'">
+            <i></i>{{ upstream.enabled && upstream.listening ? '运行中' : '未运行' }}
+          </span>
+        </div>
+
+        <div class="proxy-card-content">
+          <h3>{{ upstream.name }}</h3>
+          <p class="proxy-type">{{ typeLabel(upstream.type) }}</p>
+          <p class="proxy-host">{{ hostLabel(upstream.baseUrl) }}</p>
+        </div>
+
+        <div class="route-flow">
+          <span>原端口</span>
+          <strong>{{ portFlow(upstream).split(' → ')[0] }}</strong>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M14 7l5 5-5 5" /></svg>
+          <span>反代端口</span>
+          <strong>{{ upstream.listenPort }}</strong>
+        </div>
+
+        <div class="proxy-card-foot">
+          <span class="card-tag" :class="{ muted: !upstream.hasApiKey }">{{ upstream.hasApiKey ? '密钥已配置' : '缺少密钥' }}</span>
+          <span class="edit-hint">点击编辑 · 右键更多</span>
+        </div>
+      </article>
+
+      <button class="card-add" @click="openEditor(null)">
+        <span class="plus"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg></span>
+        <strong>添加链接</strong>
+        <small>接入新的媒体服务</small>
+      </button>
+    </div>
+
+    <div v-if="!loading && !upstreams.length" class="empty-state">
+      <span class="empty-orb"><svg viewBox="0 0 24 24"><path d="M5 12a7 7 0 0 1 12-5M19 12a7 7 0 0 1-12 5" /><path d="m15 5 2 2-2 2M9 19l-2-2 2-2" /></svg></span>
+      <strong>还没有以太链接</strong>
+      <p>添加 Audiobookshelf 或 Emby 后，AetherLink 会为它建立独立反代入口。</p>
+      <button class="primary" @click="openEditor(null)">添加第一条链接</button>
+    </div>
 
     <ContextMenu
       v-if="menu"

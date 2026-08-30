@@ -72,142 +72,218 @@ onMounted(load)
 </script>
 
 <template>
-  <section>
-    <p v-if="error" class="error">{{ error }}</p>
+  <section class="settings-page">
+    <p v-if="error" class="error settings-error">{{ error }}</p>
 
-    <div class="panel" v-if="settings">
-      <h2>302 跳转策略</h2>
-      <div class="grid cols-2">
-        <label class="field">
-          <span>跳转模式</span>
-          <select v-model="settings.redirect.mode">
-            <option value="always">always · 解析成功就 302（推荐）</option>
-            <option value="private">private · 仅内网地址 302，公网地址中继</option>
-            <option value="never">never · 从不 302，全部由 AetherLink 中继</option>
-          </select>
-        </label>
-        <label class="field">
-          <span>回落 User-Agent（播放器未带 UA 时使用）</span>
-          <input v-model="settings.redirect.fallbackUserAgent" />
-        </label>
-        <label class="field">
-          <span>探测超时（如 15s）</span>
-          <input v-model="settings.redirect.probeTimeout" />
-        </label>
-        <label class="field">
-          <span>中继超时（0 表示不限制，媒体长连接建议留 0）</span>
-          <input v-model="settings.redirect.streamTimeout" />
-        </label>
-        <label class="field">
-          <span>最多跟随几跳</span>
-          <input v-model.number="settings.redirect.maxFollowHops" type="number" min="1" />
-        </label>
-      </div>
-      <div class="row">
-        <label class="inline">
-          <input type="checkbox" v-model="settings.redirect.followUpstreamRedirects" />
-          先跟随上游 302，把最终地址交给播放器（115 pick code 这类签名直链常需要）
-        </label>
-      </div>
-      <div class="row" style="margin-top:8px">
-        <label class="inline">
-          <input type="checkbox" v-model="settings.redirect.forwardUserAgent" />
-          转发播放器 User-Agent
-        </label>
-        <label class="inline">
-          <input type="checkbox" v-model="settings.redirect.allowPublicTargets" />
-          允许 302 到公网地址
-        </label>
-      </div>
+    <div v-if="!settings && !error" class="settings-loading">
+      <span class="loading-orb"></span>
+      <span>正在读取系统设置…</span>
     </div>
 
-    <div class="panel" v-if="settings">
-      <h2>缓存与日志</h2>
-      <div class="grid cols-2">
-        <label class="field">
-          <span>解析缓存 TTL（如 5m，0 表示不缓存）</span>
-          <input v-model="settings.cache.ttl" />
-        </label>
-        <label class="field">
-          <span>缓存条目上限</span>
-          <input v-model.number="settings.cache.maxSize" type="number" min="1" />
-        </label>
-        <label class="field">
-          <span>日志级别</span>
-          <select v-model="settings.logLevel">
-            <option value="debug">debug</option>
-            <option value="info">info</option>
-            <option value="warn">warn</option>
-            <option value="error">error</option>
-          </select>
-        </label>
-        <label class="field">
-          <span>界面保留日志条数</span>
-          <input v-model.number="settings.logBuffer" type="number" min="50" />
-        </label>
-      </div>
-      <div class="row">
-        <button class="primary" :disabled="busy" @click="save">{{ busy ? '保存中…' : '保存并生效' }}</button>
-        <span v-if="saved" class="tag ok">已保存，立即生效</span>
-      </div>
-    </div>
+    <div v-if="settings" class="settings-layout">
+      <aside class="settings-sidebar">
+        <section class="settings-card account-card">
+          <div class="settings-card-head">
+            <div class="settings-icon violet" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <circle cx="8" cy="8" r="3" />
+                <path d="M10.5 10.5 20 20" />
+                <path d="m16 16 2-2" />
+                <path d="m18 18 2-2" />
+              </svg>
+            </div>
+            <div>
+              <h2>管理账号</h2>
+              <p>更新登录身份与访问口令</p>
+            </div>
+          </div>
 
-    <div class="panel">
-      <h2>管理账号</h2>
-      <p v-if="account?.defaultCredentials" class="notice" style="margin-top:0">
-        仍在使用默认账号 admin / password，请尽快修改。
-      </p>
-      <div class="grid cols-2">
-        <label class="field">
-          <span>账号</span>
-          <input v-model="username" autocomplete="username" />
-        </label>
-        <label class="field">
-          <span>当前密码</span>
-          <input v-model="currentPassword" type="password" autocomplete="current-password" />
-        </label>
-        <label class="field">
-          <span>新密码（只改账号时留空）</span>
-          <input v-model="newPassword" type="password" autocomplete="new-password" />
-        </label>
-        <label class="field">
-          <span>再输入一次新密码</span>
-          <input v-model="newPasswordAgain" type="password" autocomplete="new-password" />
-        </label>
-      </div>
-      <div class="row">
-        <button :disabled="accountBusy" @click="saveAccount">
-          {{ accountBusy ? '提交中…' : '保存账号' }}
-        </button>
-        <span class="muted" style="font-size:12px">改完会注销所有登录会话，需要重新登录。</span>
-        <span v-if="accountError" class="error">{{ accountError }}</span>
-      </div>
-    </div>
+          <div v-if="account?.defaultCredentials" class="setting-alert">
+            <span class="alert-dot"></span>
+            <span>建议尽快修改默认口令</span>
+          </div>
 
-    <div class="panel" v-if="server">
-      <h2>运行信息</h2>
-      <div class="grid cols-2">
-        <div>
-          <div class="muted" style="font-size:12px">配置文件</div>
-          <div class="mono">{{ server.configPath }}</div>
+          <div class="account-form">
+            <label class="field">
+              <span>账号</span>
+              <input v-model="username" autocomplete="username" />
+            </label>
+            <label class="field">
+              <span>当前密码</span>
+              <input v-model="currentPassword" type="password" autocomplete="current-password" />
+            </label>
+            <label class="field">
+              <span>新密码</span>
+              <input v-model="newPassword" type="password" autocomplete="new-password" placeholder="留空则不修改" />
+            </label>
+            <label class="field">
+              <span>确认新密码</span>
+              <input v-model="newPasswordAgain" type="password" autocomplete="new-password" />
+            </label>
+          </div>
+
+          <button class="primary wide-action" :disabled="accountBusy" @click="saveAccount">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 4h11l3 3v13H5z" />
+              <path d="M8 4v6h8V4" />
+              <path d="M8 20v-6h8v6" />
+            </svg>
+            {{ accountBusy ? '保存中…' : '保存账号' }}
+          </button>
+          <p v-if="accountError" class="error form-error">{{ accountError }}</p>
+          <p class="card-footnote">修改账号后，现有登录会话会失效。</p>
+        </section>
+
+        <section class="settings-card runtime-card" v-if="server">
+          <div class="settings-card-head compact">
+            <div class="settings-icon blue" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <rect x="4" y="4" width="16" height="6" rx="2" />
+                <rect x="4" y="14" width="16" height="6" rx="2" />
+                <path d="M8 7h.01M8 17h.01M12 7h5M12 17h5" />
+              </svg>
+            </div>
+            <div>
+              <h2>运行信息</h2>
+              <p>AetherLink 当前状态</p>
+            </div>
+          </div>
+          <div class="runtime-state"><span class="health-dot"></span>服务运行中</div>
+          <dl class="runtime-list">
+            <div><dt>管理端口</dt><dd>{{ server.adminPort || server.listen }}</dd></div>
+            <div><dt>配置文件</dt><dd class="mono">{{ server.configPath }}</dd></div>
+            <div v-if="status"><dt>版本</dt><dd>v{{ status.version }}</dd></div>
+            <div v-if="status"><dt>活跃会话</dt><dd>{{ status.sessions }}</dd></div>
+          </dl>
+          <div class="runtime-tags">
+            <span class="tag warn" v-if="server.breakGlassEnabled">应急令牌启用</span>
+            <span class="tag bad" v-if="server.restartRequired">需要重启</span>
+          </div>
+        </section>
+      </aside>
+
+      <div class="settings-main">
+        <section class="settings-card system-card">
+          <div class="settings-card-head system-head">
+            <div class="settings-icon indigo" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="m12 3 2.1 5.1L19 10l-4.9 1.9L12 17l-2.1-5.1L5 10l4.9-1.9z" />
+                <path d="m19 16 .8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z" />
+              </svg>
+            </div>
+            <div>
+              <h2>播放与跳转</h2>
+              <p>控制 STRM 解析、302 直达与中继回退</p>
+            </div>
+            <span class="live-badge"><i></i>实时生效</span>
+          </div>
+
+          <div class="settings-section">
+            <div class="settings-section-title">
+              <span>302 跳转策略</span>
+              <small>优先让播放器直接连接真实媒体地址</small>
+            </div>
+            <div class="form-grid three">
+              <label class="field field-large">
+                <span>跳转模式</span>
+                <select v-model="settings.redirect.mode">
+                  <option value="always">始终跳转</option>
+                  <option value="private">仅内网地址</option>
+                  <option value="never">始终中继</option>
+                </select>
+                <small>解析成功后将媒体地址交给播放器</small>
+              </label>
+              <label class="field field-large">
+                <span>回落 User-Agent</span>
+                <input v-model="settings.redirect.fallbackUserAgent" />
+                <small>播放器没有携带 UA 时使用</small>
+              </label>
+              <label class="field field-large">
+                <span>最多跟随跳转</span>
+                <input v-model.number="settings.redirect.maxFollowHops" type="number" min="1" />
+                <small>用于 115、OpenList 等签名链接</small>
+              </label>
+            </div>
+
+            <div class="toggle-grid">
+              <label class="setting-toggle">
+                <input type="checkbox" v-model="settings.redirect.followUpstreamRedirects" />
+                <span class="toggle-control"></span>
+                <span class="toggle-copy"><strong>跟随上游跳转</strong><small>把最终签名地址交给播放器</small></span>
+              </label>
+              <label class="setting-toggle">
+                <input type="checkbox" v-model="settings.redirect.forwardUserAgent" />
+                <span class="toggle-control"></span>
+                <span class="toggle-copy"><strong>转发播放器 UA</strong><small>保持客户端识别信息</small></span>
+              </label>
+              <label class="setting-toggle">
+                <input type="checkbox" v-model="settings.redirect.allowPublicTargets" />
+                <span class="toggle-control"></span>
+                <span class="toggle-copy"><strong>允许公网直链</strong><small>关闭后公网地址改走中继</small></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="settings-divider"></div>
+
+          <div class="settings-section">
+            <div class="settings-section-title">
+              <span>缓存与日志</span>
+              <small>让重复播放更快，也保留足够的排障上下文</small>
+            </div>
+            <div class="form-grid two">
+              <label class="field field-large">
+                <span>解析缓存 TTL</span>
+                <input v-model="settings.cache.ttl" />
+                <small>例如 5m，填 0 表示不缓存</small>
+              </label>
+              <label class="field field-large">
+                <span>缓存条目上限</span>
+                <input v-model.number="settings.cache.maxSize" type="number" min="1" />
+                <small>超过后自动淘汰最久未使用项</small>
+              </label>
+              <label class="field field-large">
+                <span>日志级别</span>
+                <select v-model="settings.logLevel">
+                  <option value="debug">debug · 最详细</option>
+                  <option value="info">info · 推荐</option>
+                  <option value="warn">warn · 仅警告</option>
+                  <option value="error">error · 仅错误</option>
+                </select>
+                <small>运行日志页会同步更新</small>
+              </label>
+              <label class="field field-large">
+                <span>界面保留日志条数</span>
+                <input v-model.number="settings.logBuffer" type="number" min="50" />
+                <small>用于播放流水与运行日志查询</small>
+              </label>
+            </div>
+          </div>
+
+          <div class="settings-actions">
+            <div>
+              <strong>保存系统设置</strong>
+              <span v-if="saved" class="save-confirm"><i></i>已保存，立即生效</span>
+            </div>
+            <button class="primary action-button" :disabled="busy" @click="save">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 4h11l3 3v13H5z" />
+                <path d="M8 4v6h8V4" />
+                <path d="M8 20v-6h8v6" />
+              </svg>
+              {{ busy ? '保存中…' : '保存并生效' }}
+            </button>
+          </div>
+        </section>
+
+        <div class="settings-tip">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 11v5M12 8h.01" />
+          </svg>
+          <span>每个反代上游仍需单独把容器端口映射到宿主机，播放端只更换端口，路径保持不变。</span>
         </div>
-        <div>
-          <div class="muted" style="font-size:12px">管理界面端口</div>
-          <div class="mono">{{ server.adminPort || server.listen }}</div>
-        </div>
       </div>
-      <div class="row" style="margin-top:12px">
-        <span class="tag" v-if="status">v{{ status.version }}</span>
-        <span class="tag" v-if="status">活跃会话 {{ status.sessions }}</span>
-        <span class="tag" v-if="account?.username">账号 {{ account.username }}</span>
-        <span class="tag warn" v-if="server.breakGlassEnabled">应急令牌已启用，排障完成后请移除环境变量</span>
-        <span class="tag bad" v-if="server.restartRequired">监听地址已改动，需重启容器</span>
-      </div>
-      <p class="muted" style="font-size:12px;margin-bottom:0">
-        管理界面固定在容器内 5151；每个反代上游还会各自占一个容器内端口。
-        这些端口都要在 docker compose 的 ports 里映射出去，容器才能被外部访问。
-        <template v-if="server.suggestedPort">下一个空闲的反代端口是 {{ server.suggestedPort }}。</template>
-      </p>
     </div>
   </section>
 </template>
