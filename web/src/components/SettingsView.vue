@@ -187,7 +187,7 @@ onMounted(load)
               <label class="field field-large">
                 <span>直链缓存 TTL</span>
                 <input v-model="settings.cache.ttl" />
-                <small>默认 3h，填 0 表示不缓存</small>
+                <small>默认 5h，填 0 表示不缓存</small>
               </label>
               <label class="field field-large">
                 <span>缓存条目上限</span>

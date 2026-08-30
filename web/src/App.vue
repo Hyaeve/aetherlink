@@ -27,7 +27,7 @@ const tabs = [
   {
     id: 'settings',
     label: '系统设置',
-    description: '调整跳转策略、缓存日志以及管理账号。',
+    description: '管理缓存、运行日志和登录账号。',
     paths: [
       'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
       'M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2v.2a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-2.9-1.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 4 15H3.8a2 2 0 1 1 0-4h.3a1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 11 4V3.8a2 2 0 1 1 4 0V4a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 20 11h.2a2 2 0 1 1 0 4H20z'
@@ -36,10 +36,21 @@ const tabs = [
 ]
 
 const RAIL_KEY = 'aetherlink.rail'
+const APP_BASE = '/aetherlink/'
+const TAB_IDS = new Set(tabs.map((tab) => tab.id))
+
+function tabFromPath(pathname) {
+  const suffix = pathname.replace(APP_BASE, '').split('/')[0]
+  return TAB_IDS.has(suffix) ? suffix : 'upstreams'
+}
+
+function pathForTab(tab) {
+  return `${APP_BASE}${tab}`
+}
 
 // gate 决定首屏：loading / login / app。没有初始化向导——首次启动就带内置账号。
 const gate = ref('loading')
-const activeTab = ref('upstreams')
+const activeTab = ref(tabFromPath(window.location.pathname))
 // 侧栏展开状态记在 localStorage，刷新后保持上次的选择。
 const railOpen = ref(localStorage.getItem(RAIL_KEY) === 'open')
 
@@ -56,6 +67,16 @@ const activeLabel = computed(() => tabs.find((tab) => tab.id === activeTab.value
 const activeDescription = computed(() => tabs.find((tab) => tab.id === activeTab.value)?.description || '')
 
 watch(railOpen, (open) => localStorage.setItem(RAIL_KEY, open ? 'open' : 'closed'))
+
+function navigateTo(tab) {
+  if (!TAB_IDS.has(tab) || activeTab.value === tab) return
+  activeTab.value = tab
+  window.history.pushState({ tab }, '', pathForTab(tab))
+}
+
+function handlePopState() {
+  activeTab.value = tabFromPath(window.location.pathname)
+}
 
 async function bootstrap() {
   try {
@@ -143,8 +164,17 @@ const uptime = computed(() => {
   return hours > 0 ? `${hours} 小时 ${minutes} 分` : `${minutes} 分`
 })
 
-onMounted(bootstrap)
-onUnmounted(() => statusTimer && clearInterval(statusTimer))
+onMounted(() => {
+  if (window.location.pathname === APP_BASE || window.location.pathname === APP_BASE.slice(0, -1)) {
+    window.history.replaceState({ tab: activeTab.value }, '', pathForTab(activeTab.value))
+  }
+  window.addEventListener('popstate', handlePopState)
+  bootstrap()
+})
+onUnmounted(() => {
+  window.removeEventListener('popstate', handlePopState)
+  if (statusTimer) clearInterval(statusTimer)
+})
 </script>
 
 <template>
@@ -201,7 +231,7 @@ onUnmounted(() => statusTimer && clearInterval(statusTimer))
           :title="tab.label"
           :aria-label="tab.label"
           :aria-current="activeTab === tab.id ? 'page' : undefined"
-          @click="activeTab = tab.id"
+          @click="navigateTo(tab.id)"
         >
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path v-for="(path, index) in tab.paths" :key="index" :d="path" />

@@ -221,7 +221,7 @@ func Default() *Config {
 			StreamTimeout:           0,
 			AllowPublicTargets:      Bool(true),
 		},
-		Cache:     Cache{TTL: 3 * time.Hour, MaxSize: 4096},
+		Cache:     Cache{TTL: 5 * time.Hour, MaxSize: 4096},
 		Upstreams: []Upstream{},
 	}
 }
@@ -287,8 +287,8 @@ func (c *Config) Migrated() bool { return c.migrated }
 // 这里按管理端口往上顺次分配一个空闲端口，并清掉已废弃的 prefix。
 func (c *Config) migrate() bool {
 	changed := false
-	if c.Cache.TTL == 5*time.Minute {
-		c.Cache.TTL = 3 * time.Hour
+	if c.Cache.TTL == 3*time.Hour || c.Cache.TTL == 5*time.Minute {
+		c.Cache.TTL = 5 * time.Hour
 		changed = true
 	}
 	taken := map[int]bool{}
