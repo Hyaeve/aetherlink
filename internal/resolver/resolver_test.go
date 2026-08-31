@@ -97,6 +97,18 @@ func TestPersistentCacheSurvivesReopen(t *testing.T) {
 	}
 }
 
+func TestPersistentCacheSkipsExpiredEntries(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), "direct-links-cache.json")
+	cache := newPersistentLRUCache(time.Hour, 4, cachePath)
+	cache.put("expired", &Resolution{Target: &strm.Target{Type: strm.TargetRemote, URL: "https://cdn.example/expired"}}, time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
+
+	reopened := newPersistentLRUCache(time.Hour, 4, cachePath)
+	if reopened.size() != 0 {
+		t.Fatalf("expired persistent entry was restored: %d entries", reopened.size())
+	}
+}
+
 func TestEmbyCacheFallbackIsFixedAtTwoHours(t *testing.T) {
 	provider, err := upstream.New(config.Upstream{
 		Name:    "emby",

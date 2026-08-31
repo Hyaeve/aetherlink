@@ -133,6 +133,7 @@ func (c *lruCache) load() {
 		return
 	}
 	now := time.Now()
+	restored := 0
 	for _, persisted := range entries {
 		if persisted.Key == "" || persisted.Value == nil || !persisted.ExpiresAt.After(now) {
 			continue
@@ -143,9 +144,13 @@ func (c *lruCache) load() {
 			expiresAt: persisted.ExpiresAt,
 		})
 		c.entries[persisted.Key] = element
+		restored++
 		if c.order.Len() >= c.maxSize {
 			break
 		}
+	}
+	if restored > 0 {
+		logx.Infof("[resolver] 已恢复 %d 条未过期直链缓存（%s）", restored, c.persistencePath)
 	}
 }
 
