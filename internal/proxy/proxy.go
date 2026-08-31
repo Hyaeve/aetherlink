@@ -221,8 +221,9 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 		return
 	}
 
-	resolution, cacheHit, cacheTTL, err := s.resolver.Resolve(request.Context(), s.provider, ref, request.UserAgent())
-	event.CacheHit = cacheHit
+	resolution, cacheSource, cacheTTL, err := s.resolver.ResolveWithSource(request.Context(), s.provider, ref, request.UserAgent())
+	event.CacheSource = string(cacheSource)
+	event.CacheHit = cacheSource != resolver.CacheSourceMiss
 	event.CacheTTLSeconds = cacheTTLSeconds(cacheTTL)
 	if err != nil {
 		if errors.Is(err, upstream.ErrDirectPlayUnsupported) {
@@ -341,11 +342,15 @@ func displayKind(kind string) string {
 	return kind
 }
 
-func cacheWord(hit bool) string {
-	if hit {
-		return "命中缓存"
+func cacheWord(event stats.Event) string {
+	switch event.CacheSource {
+	case string(resolver.CacheSourceRestored):
+		return "重启恢复命中"
+	case string(resolver.CacheSourceHit):
+		return "缓存命中"
+	default:
+		return "首次获取"
 	}
-	return "首次获取"
 }
 
 func cacheTTLSeconds(value time.Duration) int64 {
@@ -372,7 +377,7 @@ func formatCacheTTL(seconds int64) string {
 }
 
 func cacheNote(event stats.Event) string {
-	return "直链" + cacheWord(event.CacheHit) + "，缓存有效期" + formatCacheTTL(event.CacheTTLSeconds)
+	return "直链" + cacheWord(event) + "，缓存有效期" + formatCacheTTL(event.CacheTTLSeconds)
 }
 
 func userAgentNote(event stats.Event) string {

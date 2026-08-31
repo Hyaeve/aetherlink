@@ -58,6 +58,14 @@ type Resolution struct {
 	ResolvedAt time.Time `json:"resolvedAt"`
 }
 
+type CacheSource string
+
+const (
+	CacheSourceMiss     CacheSource = "miss"
+	CacheSourceHit      CacheSource = "hit"
+	CacheSourceRestored CacheSource = "restored"
+)
+
 // IsRemote reports whether the resolution points at an HTTP target.
 func (r *Resolution) IsRemote() bool {
 	return r.Target != nil && r.Target.Type == strm.TargetRemote
@@ -120,11 +128,19 @@ func (r *Resolver) PurgeCache() int { return r.cache.purge() }
 // Resolve returns the target for ref, using the cache when possible. cacheHit
 // reports whether the result came from the cache.
 func (r *Resolver) Resolve(ctx context.Context, provider upstream.Provider, ref upstream.MediaRef, userAgent string) (resolution *Resolution, cacheHit bool, cacheTTL time.Duration, err error) {
+	resolution, source, cacheTTL, err := r.ResolveWithSource(ctx, provider, ref, userAgent)
+	return resolution, source != CacheSourceMiss, cacheTTL, err
+}
+
+func (r *Resolver) ResolveWithSource(ctx context.Context, provider upstream.Provider, ref upstream.MediaRef, userAgent string) (resolution *Resolution, source CacheSource, cacheTTL time.Duration, err error) {
 	effectiveUserAgent := r.effectiveUserAgent(userAgent)
 	ctx = upstream.WithUserAgent(ctx, effectiveUserAgent)
 	key := ref.CacheKey(provider.Name()) + "\x00ua=" + effectiveUserAgent
-	if cached, remaining, ok := r.cache.get(key); ok {
-		return cached, true, remaining, nil
+	if cached, remaining, restored, ok := r.cache.getWithSource(key); ok {
+		if restored {
+			return cached, CacheSourceRestored, remaining, nil
+		}
+		return cached, CacheSourceHit, remaining, nil
 	}
 	ttl := r.cacheTTL(provider)
 
@@ -136,11 +152,11 @@ func (r *Resolver) Resolve(ctx context.Context, provider upstream.Provider, ref 
 		select {
 		case <-call.done:
 			if call.err != nil {
-				return nil, false, 0, call.err
+				return nil, CacheSourceMiss, 0, call.err
 			}
-			return call.resolution, false, r.cacheTTLFor(provider, call.resolution, ttl), nil
+			return call.resolution, CacheSourceMiss, r.cacheTTLFor(provider, call.resolution, ttl), nil
 		case <-ctx.Done():
-			return nil, false, 0, ctx.Err()
+			return nil, CacheSourceMiss, 0, ctx.Err()
 		}
 	}
 	call := &inflightCall{done: make(chan struct{})}
@@ -159,7 +175,7 @@ func (r *Resolver) Resolve(ctx context.Context, provider upstream.Provider, ref 
 		resolvedTTL = r.cacheTTLFor(provider, call.resolution, ttl)
 		r.cache.put(key, call.resolution, resolvedTTL)
 	}
-	return call.resolution, false, resolvedTTL, call.err
+	return call.resolution, CacheSourceMiss, resolvedTTL, call.err
 }
 
 func (r *Resolver) cacheTTLFor(provider upstream.Provider, resolution *Resolution, fallback time.Duration) time.Duration {

@@ -113,6 +113,18 @@ function cacheTTL(seconds) {
   return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}min`
 }
 
+function cacheSourceLabel(event) {
+  if (event.cacheSource === 'restored') return '恢复命中'
+  if (event.cacheSource === 'hit' || event.cacheHit) return '缓存命中'
+  return '首次获取'
+}
+
+function cacheSourceClass(event) {
+  if (event.cacheSource === 'restored') return 'tag ok'
+  if (event.cacheSource === 'hit' || event.cacheHit) return 'tag'
+  return 'tag warn'
+}
+
 function userAgentText(event) {
   const clientUserAgent = event.userAgent || '空'
   const effectiveUserAgent = event.effectiveUserAgent || 'AetherLink'
@@ -243,7 +255,7 @@ onUnmounted(() => {
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>时间</th><th>上游</th><th>请求路径</th><th>结果</th><th>目标</th><th>UA</th><th>缓存有效期</th><th>耗时</th></tr>
+            <tr><th>时间</th><th>上游</th><th>请求路径</th><th>结果</th><th>目标</th><th>UA</th><th>缓存状态</th><th>缓存有效期</th><th>耗时</th></tr>
           </thead>
           <tbody>
             <tr v-for="(event, index) in pagedEvents" :key="index">
@@ -268,6 +280,7 @@ onUnmounted(() => {
                   class="target-box mono"
                 >{{ userAgentText(event) }}</span>
               </td>
+              <td><span :class="cacheSourceClass(event)">{{ cacheSourceLabel(event) }}</span></td>
               <td>{{ cacheTTL(event.cacheTtlSeconds) }}</td>
               <td>{{ millis(event.durationMs) }}</td>
             </tr>

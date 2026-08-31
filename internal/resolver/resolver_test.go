@@ -97,6 +97,20 @@ func TestPersistentCacheSurvivesReopen(t *testing.T) {
 	}
 }
 
+func TestPersistentCacheReportsRestoredThenNormalHit(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), "direct-links-cache.json")
+	first := newPersistentLRUCache(time.Hour, 4, cachePath)
+	first.put("provider:item:ua", &Resolution{Target: &strm.Target{Type: strm.TargetRemote, URL: "https://cdn.example/book.m4a"}}, time.Hour)
+
+	reopened := newPersistentLRUCache(time.Hour, 4, cachePath)
+	if _, _, restored, ok := reopened.getWithSource("provider:item:ua"); !ok || !restored {
+		t.Fatalf("first lookup after reopening should be restored hit: ok=%v restored=%v", ok, restored)
+	}
+	if _, _, restored, ok := reopened.getWithSource("provider:item:ua"); !ok || restored {
+		t.Fatalf("second lookup after reopening should be normal hit: ok=%v restored=%v", ok, restored)
+	}
+}
+
 func TestPersistentCacheSkipsExpiredEntries(t *testing.T) {
 	cachePath := filepath.Join(t.TempDir(), "direct-links-cache.json")
 	cache := newPersistentLRUCache(time.Hour, 4, cachePath)

@@ -16,6 +16,7 @@ type cacheEntry struct {
 	key       string
 	value     *Resolution
 	expiresAt time.Time
+	restored  bool
 }
 
 // lruCache is a TTL + size bounded cache. Resolutions are cheap to recompute
@@ -51,21 +52,28 @@ func newPersistentLRUCache(ttl time.Duration, maxSize int, persistencePath strin
 }
 
 func (c *lruCache) get(key string) (*Resolution, time.Duration, bool) {
+	value, remaining, _, ok := c.getWithSource(key)
+	return value, remaining, ok
+}
+
+func (c *lruCache) getWithSource(key string) (*Resolution, time.Duration, bool, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	element, ok := c.entries[key]
 	if !ok {
-		return nil, 0, false
+		return nil, 0, false, false
 	}
 	entry := element.Value.(*cacheEntry)
 	remaining := time.Until(entry.expiresAt)
 	if remaining <= 0 {
 		c.order.Remove(element)
 		delete(c.entries, key)
-		return nil, 0, false
+		return nil, 0, false, false
 	}
 	c.order.MoveToFront(element)
-	return entry.value, remaining, true
+	restored := entry.restored
+	entry.restored = false
+	return entry.value, remaining, restored, true
 }
 
 func (c *lruCache) put(key string, value *Resolution, ttl time.Duration) {
@@ -122,8 +130,10 @@ func (c *lruCache) load() {
 	}
 	data, err := os.ReadFile(c.persistencePath)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			logx.Warnf("[resolver] 读取直链缓存失败: %v", err)
+		if os.IsNotExist(err) {
+			logx.Infof("[resolver] 直链缓存文件不存在，首次播放将创建：%s", c.persistencePath)
+		} else {
+			logx.Warnf("[resolver] 读取直链缓存失败 %s：%v", c.persistencePath, err)
 		}
 		return
 	}
@@ -134,6 +144,7 @@ func (c *lruCache) load() {
 	}
 	now := time.Now()
 	restored := 0
+	skipped := len(entries)
 	for _, persisted := range entries {
 		if persisted.Key == "" || persisted.Value == nil || !persisted.ExpiresAt.After(now) {
 			continue
@@ -142,16 +153,16 @@ func (c *lruCache) load() {
 			key:       persisted.Key,
 			value:     persisted.Value,
 			expiresAt: persisted.ExpiresAt,
+			restored:  true,
 		})
 		c.entries[persisted.Key] = element
 		restored++
+		skipped--
 		if c.order.Len() >= c.maxSize {
 			break
 		}
 	}
-	if restored > 0 {
-		logx.Infof("[resolver] 已恢复 %d 条未过期直链缓存（%s）", restored, c.persistencePath)
-	}
+	logx.Infof("[resolver] 读取直链缓存文件 %s：共 %d 条，恢复 %d 条，跳过 %d 条过期或无效记录", c.persistencePath, len(entries), restored, skipped)
 }
 
 func (c *lruCache) persist() {

@@ -35,6 +35,7 @@ type Event struct {
 	StatusCode         int           `json:"statusCode"`
 	Duration           time.Duration `json:"durationMs"`
 	CacheHit           bool          `json:"cacheHit"`
+	CacheSource        string        `json:"cacheSource,omitempty"`
 	CacheTTLSeconds    int64         `json:"cacheTtlSeconds,omitempty"`
 	Client             string        `json:"client,omitempty"`
 	UserAgent          string        `json:"userAgent,omitempty"`
