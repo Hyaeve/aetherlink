@@ -14,7 +14,9 @@ const autoRefresh = ref(true)
 const pageSize = 25
 const eventPage = ref(1)
 const logPage = ref(1)
+const copiedTarget = ref('')
 let timer = null
+let copyTimer = null
 
 const OUTCOME_LABELS = {
   redirect: '302 跳转',
@@ -117,6 +119,37 @@ function userAgentText(event) {
   return clientUserAgent === effectiveUserAgent ? effectiveUserAgent : `${clientUserAgent} → ${effectiveUserAgent}`
 }
 
+function targetText(event) {
+  return event.target || event.mediaPath || event.error || ''
+}
+
+function copyableTarget(event) {
+  return event.target || event.mediaPath || ''
+}
+
+async function copyTarget(event) {
+  const target = copyableTarget(event)
+  if (!target) return
+
+  try {
+    await navigator.clipboard.writeText(target)
+    copiedTarget.value = target
+    if (copyTimer) clearTimeout(copyTimer)
+    copyTimer = setTimeout(() => {
+      copiedTarget.value = ''
+    }, 1600)
+  } catch {
+    const textarea = document.createElement('textarea')
+    textarea.value = target
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    document.execCommand('copy')
+    textarea.remove()
+  }
+}
+
 function pageSlice(items, page) {
   const start = (page - 1) * pageSize
   return items.slice(start, start + pageSize)
@@ -147,7 +180,10 @@ onMounted(() => {
   load()
   timer = setInterval(() => autoRefresh.value && load(), 5000)
 })
-onUnmounted(() => timer && clearInterval(timer))
+onUnmounted(() => {
+  if (timer) clearInterval(timer)
+  if (copyTimer) clearTimeout(copyTimer)
+})
 </script>
 
 <template>
@@ -205,16 +241,23 @@ onUnmounted(() => timer && clearInterval(timer))
               <td>{{ event.upstream }}</td>
               <td class="mono">{{ shorten(event.path, 48) }}</td>
               <td><span :class="outcomeClass(event.outcome)">{{ outcomeLabel(event.outcome) }}</span></td>
-              <td class="target-cell">
+              <td
+                class="target-cell"
+                :data-tooltip="copiedTarget === copyableTarget(event) ? '已复制' : targetText(event)"
+              >
                 <span
                   class="target-box mono"
-                  :title="event.error || event.target || event.mediaPath || ''"
-                >{{ shorten(event.error || event.target || event.mediaPath) }}</span>
+                  :class="{ 'is-copyable': copyableTarget(event) }"
+                  :role="copyableTarget(event) ? 'button' : undefined"
+                  :tabindex="copyableTarget(event) ? 0 : undefined"
+                  @click="copyTarget(event)"
+                  @keydown.enter="copyTarget(event)"
+                  @keydown.space.prevent="copyTarget(event)"
+                >{{ shorten(targetText(event)) }}</span>
               </td>
-              <td class="target-cell">
+              <td class="target-cell" :data-tooltip="userAgentText(event)">
                 <span
                   class="target-box mono"
-                  :title="userAgentText(event)"
                 >{{ userAgentText(event) }}</span>
               </td>
               <td>{{ cacheTTL(event.cacheTtlSeconds) }}</td>
@@ -262,7 +305,7 @@ onUnmounted(() => timer && clearInterval(timer))
         <div v-for="(entry, index) in pagedVisible" :key="index" class="log-line">
           <span class="log-time">{{ stamp(entry.time) }}</span>
           <span :class="levelClass(entry.level)">{{ entry.level }}</span>
-          <span class="log-message" :title="entry.message">{{ entry.message }}</span>
+          <span class="log-message">{{ entry.message }}</span>
         </div>
         <div v-if="!visible.length" class="empty-inline">
           <svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM8 9h8M8 13h5" /></svg>

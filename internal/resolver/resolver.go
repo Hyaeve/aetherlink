@@ -95,8 +95,14 @@ type inflightCall struct {
 
 // New builds a resolver.
 func New(cacheCfg config.Cache, redirectCfg config.Redirect) *Resolver {
+	return NewWithPersistence(cacheCfg, redirectCfg, "")
+}
+
+// NewWithPersistence builds a resolver whose direct-link cache can survive
+// process restarts when persistencePath is configured.
+func NewWithPersistence(cacheCfg config.Cache, redirectCfg config.Redirect, persistencePath string) *Resolver {
 	return &Resolver{
-		cache:    newLRUCache(cacheCfg.TTL, cacheCfg.MaxSize),
+		cache:    newPersistentLRUCache(cacheCfg.TTL, cacheCfg.MaxSize, persistencePath),
 		config:   redirectCfg,
 		inflight: make(map[string]*inflightCall),
 		client: &http.Client{

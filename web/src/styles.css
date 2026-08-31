@@ -1362,21 +1362,22 @@ input:focus-visible + .toggle-control {
   display: grid;
   grid-template-columns: 168px 62px 1fr;
   gap: 12px;
-  padding: 6px 0;
+  padding: 10px 0;
   border-bottom: 1px solid var(--border);
   font-size: 12.5px;
-  align-items: baseline;
+  align-items: start;
+  line-height: 1.7;
 }
 
 .log-time {
   color: var(--muted);
+  white-space: nowrap;
 }
 
 .log-message {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* ---------- 系统设置页 ---------- */
@@ -1924,6 +1925,7 @@ th {
 }
 
 .target-cell {
+  position: relative;
   min-width: 220px;
   max-width: 440px;
 }
@@ -1934,19 +1936,53 @@ th {
   overflow: hidden;
   padding: 6px 9px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: 10px;
   background: var(--surface-2);
   color: var(--text-soft);
-  cursor: help;
+  cursor: default;
   text-overflow: ellipsis;
   white-space: nowrap;
   transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
 }
 
-.target-box:hover {
+.target-box.is-copyable {
+  cursor: copy;
+}
+
+.target-box:hover,
+.target-box:focus-visible {
   border-color: var(--accent);
   background: var(--accent-wash);
   color: var(--text);
+}
+
+.target-cell::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 18px;
+  bottom: calc(100% + 8px);
+  z-index: 5;
+  width: max-content;
+  max-width: min(52vw, 620px);
+  padding: 8px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: rgba(253, 253, 252, 0.97);
+  box-shadow: var(--shadow-md);
+  color: var(--text-soft);
+  font: 12px/1.5 "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+
+.target-cell[data-tooltip]:not([data-tooltip=""]):hover::after,
+.target-cell[data-tooltip]:not([data-tooltip=""]):focus-within::after {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 tr.clickable {

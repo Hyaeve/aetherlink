@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -93,7 +94,8 @@ func New(cfg *config.Config, collector *stats.Collector) (*Runtime, error) {
 
 // build 由一份配置构建全套组件，任何上游初始化失败都不会影响现有 stack。
 func (rt *Runtime) build(cfg *config.Config) (*stack, error) {
-	mediaResolver := resolver.New(cfg.Cache, cfg.Redirect)
+	cachePath := filepath.Join(filepath.Dir(rt.configPath), "direct-links-cache.json")
+	mediaResolver := resolver.NewWithPersistence(cfg.Cache, cfg.Redirect, cachePath)
 	proxies := make(map[int]*proxy.Server, len(cfg.Upstreams))
 	for _, upstreamCfg := range cfg.Upstreams {
 		if !upstreamCfg.IsEnabled() {

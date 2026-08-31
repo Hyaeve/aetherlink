@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -78,6 +79,21 @@ func TestCacheEntryUsesPerEntryTTL(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	if _, _, ok := cache.get("short"); ok {
 		t.Fatal("short-lived cache entry did not expire")
+	}
+}
+
+func TestPersistentCacheSurvivesReopen(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), "direct-links-cache.json")
+	value := &Resolution{
+		Target: &strm.Target{Type: strm.TargetRemote, URL: "https://cdn.example/book.m4a"},
+	}
+	first := newPersistentLRUCache(time.Hour, 4, cachePath)
+	first.put("provider:item:ua", value, time.Hour)
+
+	second := newPersistentLRUCache(time.Hour, 4, cachePath)
+	got, _, ok := second.get("provider:item:ua")
+	if !ok || got.PlayURL() != value.PlayURL() {
+		t.Fatalf("persistent cache entry was not restored: got=%+v ok=%v", got, ok)
 	}
 }
 

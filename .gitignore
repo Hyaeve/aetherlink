@@ -3,6 +3,8 @@
 /dist/
 /config.yaml
 /config/
+/direct-links-cache.json
+/.aetherlink-cache-*.tmp
 web/node_modules/
 internal/web/dist/*
 !internal/web/dist/.gitkeep
