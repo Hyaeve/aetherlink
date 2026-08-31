@@ -221,7 +221,7 @@ func Default() *Config {
 			StreamTimeout:           0,
 			AllowPublicTargets:      Bool(true),
 		},
-		Cache:     Cache{TTL: 5 * time.Hour, MaxSize: 4096},
+		Cache:     Cache{TTL: 2 * time.Hour, MaxSize: 4096},
 		Upstreams: []Upstream{},
 	}
 }
@@ -288,7 +288,7 @@ func (c *Config) Migrated() bool { return c.migrated }
 func (c *Config) migrate() bool {
 	changed := false
 	if c.Cache.TTL == 3*time.Hour || c.Cache.TTL == 5*time.Minute {
-		c.Cache.TTL = 5 * time.Hour
+		c.Cache.TTL = 2 * time.Hour
 		changed = true
 	}
 	taken := map[int]bool{}

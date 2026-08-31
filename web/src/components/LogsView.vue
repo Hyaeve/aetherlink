@@ -88,10 +88,11 @@ function millis(duration) {
 function cacheTTL(seconds) {
   const total = Number(seconds) || 0
   if (total <= 0) return '不缓存'
-  const hours = Math.floor(total / 3600)
-  const minutes = Math.floor((total % 3600) / 60)
-  const remainingSeconds = total % 60
-  return `${String(hours).padStart(2, '0')}小时${String(minutes).padStart(2, '0')}分${String(remainingSeconds).padStart(2, '0')}秒`
+  const minutesTotal = Math.ceil(total / 60)
+  if (total < 3600) return `${minutesTotal}min`
+  const hours = Math.floor(minutesTotal / 60)
+  const minutes = minutesTotal % 60
+  return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}min`
 }
 
 function shorten(value, max = 64) {
@@ -161,7 +162,12 @@ onUnmounted(() => timer && clearInterval(timer))
               <td>{{ event.upstream }}</td>
               <td class="mono">{{ shorten(event.path, 48) }}</td>
               <td><span :class="outcomeClass(event.outcome)">{{ outcomeLabel(event.outcome) }}</span></td>
-              <td class="mono">{{ shorten(event.error || event.target || event.mediaPath) }}</td>
+              <td class="target-cell">
+                <span
+                  class="target-box mono"
+                  :title="event.error || event.target || event.mediaPath || ''"
+                >{{ shorten(event.error || event.target || event.mediaPath) }}</span>
+              </td>
               <td>{{ cacheTTL(event.cacheTtlSeconds) }}</td>
               <td>{{ millis(event.durationMs) }}</td>
             </tr>

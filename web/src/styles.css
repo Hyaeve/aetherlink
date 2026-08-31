@@ -1819,6 +1819,32 @@ th {
   z-index: 1;
 }
 
+.target-cell {
+  min-width: 220px;
+  max-width: 440px;
+}
+
+.target-box {
+  display: block;
+  max-width: min(42vw, 420px);
+  overflow: hidden;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-soft);
+  cursor: help;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.target-box:hover {
+  border-color: var(--accent);
+  background: var(--accent-wash);
+  color: var(--text);
+}
+
 tr.clickable {
   cursor: pointer;
 }

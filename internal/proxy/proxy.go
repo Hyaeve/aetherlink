@@ -361,10 +361,16 @@ func formatCacheTTL(seconds int64) string {
 	if seconds <= 0 {
 		return "不缓存"
 	}
-	hours := seconds / 3600
-	minutes := (seconds % 3600) / 60
-	remainingSeconds := seconds % 60
-	return fmt.Sprintf("%02d小时%02d分%02d秒", hours, minutes, remainingSeconds)
+	minutesTotal := (seconds + 59) / 60
+	if seconds < 3600 {
+		return fmt.Sprintf("%dmin", minutesTotal)
+	}
+	hours := minutesTotal / 60
+	minutes := minutesTotal % 60
+	if minutes == 0 {
+		return fmt.Sprintf("%dh", hours)
+	}
+	return fmt.Sprintf("%dh %dmin", hours, minutes)
 }
 
 func cacheNote(event stats.Event) string {

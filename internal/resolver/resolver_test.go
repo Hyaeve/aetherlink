@@ -5,7 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aetherlink/aetherlink/internal/config"
 	"github.com/aetherlink/aetherlink/internal/strm"
+	"github.com/aetherlink/aetherlink/internal/upstream"
 )
 
 func TestDirectURLTTLUsesEarliestTExpiry(t *testing.T) {
@@ -76,5 +78,21 @@ func TestCacheEntryUsesPerEntryTTL(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	if _, _, ok := cache.get("short"); ok {
 		t.Fatal("short-lived cache entry did not expire")
+	}
+}
+
+func TestEmbyCacheFallbackIsFixedAtTwoHours(t *testing.T) {
+	provider, err := upstream.New(config.Upstream{
+		Name:    "emby",
+		Type:    config.UpstreamEmby,
+		BaseURL: "http://127.0.0.1:8096",
+		APIKey:  "test-key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := New(config.Cache{TTL: 5 * time.Hour, MaxSize: 4}, config.Redirect{})
+	if got := resolver.cacheTTL(provider); got != 2*time.Hour {
+		t.Fatalf("Emby fallback cache ttl = %v, want 2h", got)
 	}
 }

@@ -32,7 +32,10 @@ var ErrNotStrm = errors.New("media is not a strm pointer")
 // so callers fall back to plain proxying instead of failing the playback.
 var ErrPointerUnavailable = errors.New("strm pointer file is not readable inside the AetherLink container")
 
-const audiobookshelfCacheTTL = 15 * time.Minute
+const (
+	audiobookshelfCacheTTL = 15 * time.Minute
+	embyFallbackCacheTTL   = 2 * time.Hour
+)
 
 // Resolution is the outcome of resolving one media reference.
 type Resolution struct {
@@ -203,8 +206,13 @@ func directURLTTL(resolution *Resolution) (time.Duration, bool) {
 }
 
 func (r *Resolver) cacheTTL(provider upstream.Provider) time.Duration {
-	if provider != nil && provider.Type() == config.UpstreamAudiobookshelf {
-		return audiobookshelfCacheTTL
+	if provider != nil {
+		switch provider.Type() {
+		case config.UpstreamAudiobookshelf:
+			return audiobookshelfCacheTTL
+		case config.UpstreamEmby:
+			return embyFallbackCacheTTL
+		}
 	}
 	return r.cache.ttl
 }

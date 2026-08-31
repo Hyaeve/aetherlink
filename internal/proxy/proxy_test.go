@@ -119,6 +119,23 @@ func defaultRedirect() config.Redirect {
 	}
 }
 
+func TestFormatCacheTTLUsesMinutesAndHoursWithoutSeconds(t *testing.T) {
+	tests := []struct {
+		seconds int64
+		want    string
+	}{
+		{seconds: 45, want: "1min"},
+		{seconds: 3599, want: "60min"},
+		{seconds: 3600, want: "1h"},
+		{seconds: 3661, want: "1h 2min"},
+	}
+	for _, test := range tests {
+		if got := formatCacheTTL(test.seconds); got != test.want {
+			t.Fatalf("formatCacheTTL(%d) = %q, want %q", test.seconds, got, test.want)
+		}
+	}
+}
+
 // writeStrm creates a .strm pointer and a sibling regular audio file.
 func writeStrm(t *testing.T, contents string) (root, strmPath, regularPath string) {
 	t.Helper()
