@@ -1316,7 +1316,6 @@ input:focus-visible + .toggle-control {
 }
 
 .pager {
-  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1331,8 +1330,11 @@ input:focus-visible + .toggle-control {
   box-shadow: 0 -6px 16px rgba(63, 69, 80, 0.06);
 }
 
-.activity-card > .pager:last-child {
-  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+.table-wrap > .pager,
+.log-stream > .pager {
+  position: static;
+  margin-top: 8px;
+  border-radius: var(--radius);
 }
 
 .pager-button {
