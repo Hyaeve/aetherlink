@@ -209,7 +209,7 @@ func Default() *Config {
 		Server: Server{
 			Listen:    ":5151",
 			LogLevel:  "info",
-			LogBuffer: 500,
+			LogBuffer: 5000,
 		},
 		Redirect: Redirect{
 			Mode:                    RedirectAlways,

@@ -815,12 +815,12 @@ func (a *API) mapperFor(upstreamName string) *pathmap.Mapper {
 }
 
 func (a *API) handleStats(writer http.ResponseWriter, request *http.Request) {
-	limit := intParam(request.URL.Query().Get("events"), 50, 1, 500)
+	limit := intParam(request.URL.Query().Get("events"), 50, 1, 5000)
 	writeJSON(writer, http.StatusOK, a.rt.Stats().Snapshot(limit))
 }
 
 func (a *API) handleLogs(writer http.ResponseWriter, request *http.Request) {
-	limit := intParam(request.URL.Query().Get("limit"), 200, 1, 1000)
+	limit := intParam(request.URL.Query().Get("limit"), 200, 1, 5000)
 	writeJSON(writer, http.StatusOK, map[string]any{"entries": logx.Recent(limit)})
 }
 

@@ -178,11 +178,6 @@ onMounted(load)
               <small>重复播放更快，保留必要的排障记录</small>
             </div>
             <div class="form-grid two">
-              <div class="field field-large">
-                <span>直链缓存策略</span>
-                <strong class="setting-value">Emby 按 t 动态缓存</strong>
-                <small>无有效 t 时固定 2 小时；ABS 固定 15 分钟</small>
-              </div>
               <label class="field field-large">
                 <span>缓存条目上限</span>
                 <input v-model.number="settings.cache.maxSize" type="number" min="1" />

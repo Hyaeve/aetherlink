@@ -61,7 +61,7 @@ type ringBuffer struct {
 
 var (
 	logger  = log.New(os.Stderr, "", 0)
-	buffer  = &ringBuffer{max: 500}
+	buffer  = &ringBuffer{max: 5000}
 	minimum = LevelInfo
 	levelMu sync.RWMutex
 )

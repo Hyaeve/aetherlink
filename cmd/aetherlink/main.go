@@ -88,7 +88,7 @@ func main() {
 	logx.SetLevel(logx.ParseLevel(cfg.Server.LogLevel))
 	logx.SetMaxEntries(cfg.Server.LogBuffer)
 
-	collector := stats.New(500)
+	collector := stats.New(cfg.Server.LogBuffer)
 	rt, err := runtime.New(cfg, collector)
 	if err != nil {
 		logx.Errorf("初始化运行时失败: %v", err)

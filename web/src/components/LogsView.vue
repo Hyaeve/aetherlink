@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api'
 
 // 这一页有两块：上半是「播放流水」，下半是「运行日志」。
@@ -11,6 +11,9 @@ const error = ref('')
 const levelFilter = ref('all')
 const outcomeFilter = ref('all')
 const autoRefresh = ref(true)
+const pageSize = 10
+const eventPage = ref(1)
+const logPage = ref(1)
 let timer = null
 
 const OUTCOME_LABELS = {
@@ -24,7 +27,7 @@ const OUTCOME_LABELS = {
 
 async function load() {
   try {
-    const [logPayload, statsPayload] = await Promise.all([api.logs(300), api.stats(150)])
+    const [logPayload, statsPayload] = await Promise.all([api.logs(5000), api.stats(5000)])
     entries.value = (logPayload.entries || []).slice().reverse()
     snapshot.value = statsPayload
     error.value = ''
@@ -41,6 +44,19 @@ const events = computed(() => {
 const visible = computed(() =>
   levelFilter.value === 'all' ? entries.value : entries.value.filter((entry) => entry.level === levelFilter.value)
 )
+
+const eventPageCount = computed(() => Math.max(1, Math.ceil(events.value.length / pageSize)))
+const logPageCount = computed(() => Math.max(1, Math.ceil(visible.value.length / pageSize)))
+const pagedEvents = computed(() => pageSlice(events.value, eventPage.value))
+const pagedVisible = computed(() => pageSlice(visible.value, logPage.value))
+
+watch(events, () => {
+  if (eventPage.value > eventPageCount.value) eventPage.value = eventPageCount.value
+})
+
+watch(visible, () => {
+  if (logPage.value > logPageCount.value) logPage.value = logPageCount.value
+})
 
 // 一眼能看出问题的诊断结论：有播放请求但一次都没跳转，就直接说清最可能的原因。
 const diagnosis = computed(() => {
@@ -93,6 +109,27 @@ function cacheTTL(seconds) {
   const hours = Math.floor(minutesTotal / 60)
   const minutes = minutesTotal % 60
   return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}min`
+}
+
+function pageSlice(items, page) {
+  const start = (page - 1) * pageSize
+  return items.slice(start, start + pageSize)
+}
+
+function previousEventPage() {
+  eventPage.value = Math.max(1, eventPage.value - 1)
+}
+
+function nextEventPage() {
+  eventPage.value = Math.min(eventPageCount.value, eventPage.value + 1)
+}
+
+function previousLogPage() {
+  logPage.value = Math.max(1, logPage.value - 1)
+}
+
+function nextLogPage() {
+  logPage.value = Math.min(logPageCount.value, logPage.value + 1)
 }
 
 function shorten(value, max = 64) {
@@ -157,7 +194,7 @@ onUnmounted(() => timer && clearInterval(timer))
             <tr><th>时间</th><th>上游</th><th>请求路径</th><th>结果</th><th>目标</th><th>缓存有效期</th><th>耗时</th></tr>
           </thead>
           <tbody>
-            <tr v-for="(event, index) in events" :key="index">
+            <tr v-for="(event, index) in pagedEvents" :key="index">
               <td>{{ clock(event.time) }}</td>
               <td>{{ event.upstream }}</td>
               <td class="mono">{{ shorten(event.path, 48) }}</td>
@@ -177,6 +214,11 @@ onUnmounted(() => timer && clearInterval(timer))
           <svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM8 9h8M8 13h5" /></svg>
           <span>还没有播放请求</span>
         </div>
+      </div>
+      <div class="pager" aria-label="播放流水分页">
+        <button class="pager-button" :disabled="eventPage <= 1" @click="previousEventPage">上一页</button>
+        <span>第 {{ eventPage }} / {{ eventPageCount }} 页 · 共 {{ events.length }} 条</span>
+        <button class="pager-button" :disabled="eventPage >= eventPageCount" @click="nextEventPage">下一页</button>
       </div>
     </section>
 
@@ -205,15 +247,20 @@ onUnmounted(() => timer && clearInterval(timer))
         </div>
       </div>
       <div class="log-stream">
-        <div v-for="(entry, index) in visible" :key="index" class="log-line">
+        <div v-for="(entry, index) in pagedVisible" :key="index" class="log-line">
           <span class="log-time">{{ stamp(entry.time) }}</span>
           <span :class="levelClass(entry.level)">{{ entry.level }}</span>
-          <span class="log-message">{{ entry.message }}</span>
+          <span class="log-message" :title="entry.message">{{ entry.message }}</span>
         </div>
         <div v-if="!visible.length" class="empty-inline">
           <svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM8 9h8M8 13h5" /></svg>
           <span>暂无日志</span>
         </div>
+      </div>
+      <div class="pager" aria-label="服务日志分页">
+        <button class="pager-button" :disabled="logPage <= 1" @click="previousLogPage">上一页</button>
+        <span>第 {{ logPage }} / {{ logPageCount }} 页 · 共 {{ visible.length }} 条</span>
+        <button class="pager-button" :disabled="logPage >= logPageCount" @click="nextLogPage">下一页</button>
       </div>
     </section>
   </section>

@@ -50,6 +50,9 @@ upstreams:
 	if cfg.Cache.TTL != 2*time.Hour {
 		t.Fatalf("cache ttl = %v, want 2h", cfg.Cache.TTL)
 	}
+	if cfg.Server.LogBuffer != 5000 {
+		t.Fatalf("log buffer = %d, want 5000", cfg.Server.LogBuffer)
+	}
 	upstream := cfg.Upstreams[0]
 	if upstream.BaseURL != "http://10.0.0.31:13378" {
 		t.Fatalf("base_url = %q, trailing slash should be trimmed", upstream.BaseURL)

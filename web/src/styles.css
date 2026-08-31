@@ -1272,15 +1272,70 @@ input:focus-visible + .toggle-control {
 }
 
 .table-wrap {
-  max-height: 420px;
-  overflow: auto;
+  height: 420px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-color: rgba(143, 137, 184, 0.3) transparent;
+  scrollbar-width: thin;
 }
 
 .log-stream {
-  max-height: 420px;
-  overflow: auto;
+  height: 420px;
+  overflow: hidden;
   padding: 6px 18px 14px;
   font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+}
+
+.table-wrap::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.table-wrap::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.table-wrap::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(143, 137, 184, 0.28);
+}
+
+.table-wrap::-webkit-scrollbar-thumb:hover {
+  background: rgba(143, 137, 184, 0.48);
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 52px;
+  padding: 8px 18px;
+  border-top: 1px solid var(--border);
+  background: rgba(242, 243, 245, 0.72);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pager-button {
+  min-width: 64px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.pager-button:not(:disabled):hover {
+  border-color: var(--accent);
+  background: var(--accent-wash);
+  color: var(--accent-ink);
+}
+
+.pager-button:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 .log-line {
@@ -1298,7 +1353,10 @@ input:focus-visible + .toggle-control {
 }
 
 .log-message {
-  word-break: break-word;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---------- 系统设置页 ---------- */
