@@ -226,7 +226,7 @@ onUnmounted(() => timer && clearInterval(timer))
           <svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM8 9h8M8 13h5" /></svg>
           <span>还没有播放请求</span>
         </div>
-        <div class="pager" aria-label="播放流水分页">
+        <div v-if="eventPageCount > 1" class="pager" aria-label="播放流水分页">
           <button class="pager-button" :disabled="eventPage <= 1" @click="previousEventPage">上一页</button>
           <span>第 {{ eventPage }} / {{ eventPageCount }} 页 · 共 {{ events.length }} 条</span>
           <button class="pager-button" :disabled="eventPage >= eventPageCount" @click="nextEventPage">下一页</button>
@@ -268,7 +268,7 @@ onUnmounted(() => timer && clearInterval(timer))
           <svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM8 9h8M8 13h5" /></svg>
           <span>暂无日志</span>
         </div>
-        <div class="pager" aria-label="服务日志分页">
+        <div v-if="logPageCount > 1" class="pager" aria-label="服务日志分页">
           <button class="pager-button" :disabled="logPage <= 1" @click="previousLogPage">上一页</button>
           <span>第 {{ logPage }} / {{ logPageCount }} 页 · 共 {{ visible.length }} 条</span>
           <button class="pager-button" :disabled="logPage >= logPageCount" @click="nextLogPage">下一页</button>
