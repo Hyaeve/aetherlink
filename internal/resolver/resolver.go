@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -109,12 +110,14 @@ func (r *Resolver) PurgeCache() int { return r.cache.purge() }
 
 // Resolve returns the target for ref, using the cache when possible. cacheHit
 // reports whether the result came from the cache.
-func (r *Resolver) Resolve(ctx context.Context, provider upstream.Provider, ref upstream.MediaRef, userAgent string) (resolution *Resolution, cacheHit bool, err error) {
-	key := ref.CacheKey(provider.Name())
-	ttl := r.cacheTTL(provider)
-	if cached, ok := r.cache.get(key, ttl); ok {
-		return cached, true, nil
+func (r *Resolver) Resolve(ctx context.Context, provider upstream.Provider, ref upstream.MediaRef, userAgent string) (resolution *Resolution, cacheHit bool, cacheTTL time.Duration, err error) {
+	effectiveUserAgent := r.effectiveUserAgent(userAgent)
+	ctx = upstream.WithUserAgent(ctx, effectiveUserAgent)
+	key := ref.CacheKey(provider.Name()) + "\x00ua=" + effectiveUserAgent
+	if cached, remaining, ok := r.cache.get(key); ok {
+		return cached, true, remaining, nil
 	}
+	ttl := r.cacheTTL(provider)
 
 	// Collapse concurrent requests for the same track. Players routinely open
 	// several ranged requests at once when seeking.
@@ -123,9 +126,12 @@ func (r *Resolver) Resolve(ctx context.Context, provider upstream.Provider, ref 
 		r.inflightMu.Unlock()
 		select {
 		case <-call.done:
-			return call.resolution, false, call.err
+			if call.err != nil {
+				return nil, false, 0, call.err
+			}
+			return call.resolution, false, r.cacheTTLFor(provider, call.resolution, ttl), nil
 		case <-ctx.Done():
-			return nil, false, ctx.Err()
+			return nil, false, 0, ctx.Err()
 		}
 	}
 	call := &inflightCall{done: make(chan struct{})}
@@ -139,10 +145,61 @@ func (r *Resolver) Resolve(ctx context.Context, provider upstream.Provider, ref 
 	delete(r.inflight, key)
 	r.inflightMu.Unlock()
 
+	resolvedTTL := time.Duration(0)
 	if call.err == nil {
-		r.cache.put(key, call.resolution, ttl)
+		resolvedTTL = r.cacheTTLFor(provider, call.resolution, ttl)
+		r.cache.put(key, call.resolution, resolvedTTL)
 	}
-	return call.resolution, false, call.err
+	return call.resolution, false, resolvedTTL, call.err
+}
+
+func (r *Resolver) cacheTTLFor(provider upstream.Provider, resolution *Resolution, fallback time.Duration) time.Duration {
+	if provider == nil || provider.Type() != config.UpstreamEmby || resolution == nil {
+		return fallback
+	}
+	if ttl, ok := directURLTTL(resolution); ok {
+		return ttl
+	}
+	return fallback
+}
+
+func directURLTTL(resolution *Resolution) (time.Duration, bool) {
+	var earliest time.Time
+	foundValid := false
+	now := time.Now()
+	candidates := []string{resolution.FinalURL}
+	if resolution.Target != nil {
+		candidates = append(candidates, resolution.Target.URL)
+	}
+	for _, candidate := range candidates {
+		parsed, err := urlx.Parse(candidate)
+		if err != nil {
+			continue
+		}
+		value := strings.TrimSpace(parsed.Query().Get("t"))
+		if value == "" {
+			continue
+		}
+		seconds, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			continue
+		}
+		foundValid = true
+		if seconds > 1_000_000_000_000 {
+			seconds /= 1000
+		}
+		expiry := time.Unix(seconds, 0)
+		if expiry.After(now) && (earliest.IsZero() || expiry.Before(earliest)) {
+			earliest = expiry
+		}
+	}
+	if !foundValid {
+		return 0, false
+	}
+	if earliest.IsZero() {
+		return 0, true
+	}
+	return time.Until(earliest), true
 }
 
 func (r *Resolver) cacheTTL(provider upstream.Provider) time.Duration {
@@ -299,11 +356,12 @@ func (r *Resolver) EffectiveUserAgent(clientUserAgent string) string {
 }
 
 func (r *Resolver) effectiveUserAgent(clientUserAgent string) string {
-	if r.config.ShouldForwardUserAgent() && strings.TrimSpace(clientUserAgent) != "" {
+	clientUserAgent = strings.TrimSpace(clientUserAgent)
+	if r.config.ShouldForwardUserAgent() && clientUserAgent != "" {
 		return clientUserAgent
 	}
-	if r.config.FallbackUserAgent != "" {
-		return r.config.FallbackUserAgent
+	if fallback := strings.TrimSpace(r.config.FallbackUserAgent); fallback != "" {
+		return fallback
 	}
 	return "AetherLink"
 }

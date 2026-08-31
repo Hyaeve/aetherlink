@@ -5,6 +5,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -89,6 +90,11 @@ func newReverseProxy(provider upstream.Provider) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Transport: provider.Transport(),
 		Rewrite: func(request *httputil.ProxyRequest) {
+			userAgent := strings.TrimSpace(request.In.UserAgent())
+			if userAgent == "" {
+				userAgent = "AetherLink"
+			}
+			request.Out.Header.Set("User-Agent", userAgent)
 			if canRewrite && rewriter.WantsResponseRewrite(request.In) {
 				// PlaybackInfo 必须以明文 JSON 返回，才能在交给 Emby 客户端前改写。
 				request.Out.Header.Set("Accept-Encoding", "identity")
@@ -217,8 +223,9 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 		return
 	}
 
-	resolution, cacheHit, err := s.resolver.Resolve(request.Context(), s.provider, ref, request.UserAgent())
+	resolution, cacheHit, cacheTTL, err := s.resolver.Resolve(request.Context(), s.provider, ref, request.UserAgent())
 	event.CacheHit = cacheHit
+	event.CacheTTLSeconds = cacheTTLSeconds(cacheTTL)
 	if err != nil {
 		if errors.Is(err, upstream.ErrDirectPlayUnsupported) {
 			event.Error = err.Error()
@@ -258,7 +265,7 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 	if resolution.Target != nil && resolution.Target.Type == strm.TargetLocal {
 		event.Target = resolution.Target.Path
 		event.StatusCode = http.StatusOK
-		finish(stats.OutcomeLocalFile, "指针指向本容器内的文件，直接读盘返回")
+		finish(stats.OutcomeLocalFile, cacheNote(event)+"；指针指向本容器内的文件，直接读盘返回")
 		s.serveLocalFile(writer, request, resolution.Target.Path)
 		return
 	}
@@ -268,7 +275,7 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 
 	if s.resolver.ShouldRedirectWith(resolution, s.redirect) {
 		event.StatusCode = http.StatusFound
-		finish(stats.OutcomeRedirect, "已 302 到真实地址")
+		finish(stats.OutcomeRedirect, cacheNote(event)+"；已 302 到真实地址")
 		// 302 keeps the request method for GET/HEAD and is what media players
 		// (Emby clients, ABS apps, browsers) handle most reliably.
 		writer.Header().Set("Location", playURL)
@@ -286,7 +293,7 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 		finish(stats.OutcomeError, "中继 strm 目标失败")
 		return
 	}
-	finish(stats.OutcomeProxyStream, "按 302 策略不跳转，改由 AetherLink 中继："+s.noRedirectReason(resolution))
+	finish(stats.OutcomeProxyStream, cacheNote(event)+"；按 302 策略不跳转，改由 AetherLink 中继："+s.noRedirectReason(resolution))
 }
 
 // noRedirectReason 说明为什么一个已经解析成功的目标没有被 302 出去。
@@ -313,7 +320,7 @@ func (s *Server) logOutcome(event stats.Event, note string) {
 	milliseconds := event.Duration.Milliseconds()
 	switch event.Outcome {
 	case stats.OutcomeRedirect:
-		logx.Infof("[%s] 302 %s -> %s（类型 %s，%dms，缓存 %s）", event.Upstream, event.Path, event.Target, displayKind(event.Kind), milliseconds, cacheWord(event.CacheHit))
+		logx.Infof("[%s] 302 %s -> %s（类型 %s，%dms，%s）", event.Upstream, event.Path, event.Target, displayKind(event.Kind), milliseconds, cacheNote(event))
 	case stats.OutcomeLocalFile:
 		logx.Infof("[%s] 本地直读 %s -> %s（%dms）：%s", event.Upstream, event.Path, event.Target, milliseconds, note)
 	case stats.OutcomeProxyStream:
@@ -338,9 +345,30 @@ func displayKind(kind string) string {
 
 func cacheWord(hit bool) string {
 	if hit {
-		return "命中"
+		return "命中缓存"
 	}
-	return "未命中"
+	return "首次获取"
+}
+
+func cacheTTLSeconds(value time.Duration) int64 {
+	if value <= 0 {
+		return 0
+	}
+	return int64((value + time.Second - 1) / time.Second)
+}
+
+func formatCacheTTL(seconds int64) string {
+	if seconds <= 0 {
+		return "不缓存"
+	}
+	hours := seconds / 3600
+	minutes := (seconds % 3600) / 60
+	remainingSeconds := seconds % 60
+	return fmt.Sprintf("%02d小时%02d分%02d秒", hours, minutes, remainingSeconds)
+}
+
+func cacheNote(event stats.Event) string {
+	return "直链" + cacheWord(event.CacheHit) + "，缓存有效期" + formatCacheTTL(event.CacheTTLSeconds)
 }
 
 // relayRemote streams the remote target through AetherLink, preserving Range

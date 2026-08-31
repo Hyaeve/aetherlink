@@ -85,6 +85,15 @@ function millis(duration) {
   return `${Math.round((Number(duration) || 0) / 1e6)} ms`
 }
 
+function cacheTTL(seconds) {
+  const total = Number(seconds) || 0
+  if (total <= 0) return '不缓存'
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  const remainingSeconds = total % 60
+  return `${String(hours).padStart(2, '0')}小时${String(minutes).padStart(2, '0')}分${String(remainingSeconds).padStart(2, '0')}秒`
+}
+
 function shorten(value, max = 64) {
   if (!value) return '—'
   return value.length > max ? `${value.slice(0, max)}…` : value
@@ -144,7 +153,7 @@ onUnmounted(() => timer && clearInterval(timer))
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>时间</th><th>上游</th><th>请求路径</th><th>结果</th><th>目标</th><th>耗时</th></tr>
+            <tr><th>时间</th><th>上游</th><th>请求路径</th><th>结果</th><th>目标</th><th>缓存有效期</th><th>耗时</th></tr>
           </thead>
           <tbody>
             <tr v-for="(event, index) in events" :key="index">
@@ -153,6 +162,7 @@ onUnmounted(() => timer && clearInterval(timer))
               <td class="mono">{{ shorten(event.path, 48) }}</td>
               <td><span :class="outcomeClass(event.outcome)">{{ outcomeLabel(event.outcome) }}</span></td>
               <td class="mono">{{ shorten(event.error || event.target || event.mediaPath) }}</td>
+              <td>{{ cacheTTL(event.cacheTtlSeconds) }}</td>
               <td>{{ millis(event.durationMs) }}</td>
             </tr>
           </tbody>

@@ -23,21 +23,22 @@ const (
 
 // Event is one recorded media request.
 type Event struct {
-	Time       time.Time     `json:"time"`
-	Upstream   string        `json:"upstream"`
-	Path       string        `json:"path"`
-	ItemID     string        `json:"itemId,omitempty"`
-	FileID     string        `json:"fileId,omitempty"`
-	MediaPath  string        `json:"mediaPath,omitempty"`
-	Target     string        `json:"target,omitempty"`
-	Kind       string        `json:"kind,omitempty"`
-	Outcome    Outcome       `json:"outcome"`
-	StatusCode int           `json:"statusCode"`
-	Duration   time.Duration `json:"durationMs"`
-	CacheHit   bool          `json:"cacheHit"`
-	Client     string        `json:"client,omitempty"`
-	UserAgent  string        `json:"userAgent,omitempty"`
-	Error      string        `json:"error,omitempty"`
+	Time            time.Time     `json:"time"`
+	Upstream        string        `json:"upstream"`
+	Path            string        `json:"path"`
+	ItemID          string        `json:"itemId,omitempty"`
+	FileID          string        `json:"fileId,omitempty"`
+	MediaPath       string        `json:"mediaPath,omitempty"`
+	Target          string        `json:"target,omitempty"`
+	Kind            string        `json:"kind,omitempty"`
+	Outcome         Outcome       `json:"outcome"`
+	StatusCode      int           `json:"statusCode"`
+	Duration        time.Duration `json:"durationMs"`
+	CacheHit        bool          `json:"cacheHit"`
+	CacheTTLSeconds int64         `json:"cacheTtlSeconds,omitempty"`
+	Client          string        `json:"client,omitempty"`
+	UserAgent       string        `json:"userAgent,omitempty"`
+	Error           string        `json:"error,omitempty"`
 }
 
 // Snapshot is the aggregated view returned by the admin API.

@@ -36,24 +36,22 @@ func newLRUCache(ttl time.Duration, maxSize int) *lruCache {
 	}
 }
 
-func (c *lruCache) get(key string, ttl time.Duration) (*Resolution, bool) {
-	if ttl <= 0 {
-		return nil, false
-	}
+func (c *lruCache) get(key string) (*Resolution, time.Duration, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	element, ok := c.entries[key]
 	if !ok {
-		return nil, false
+		return nil, 0, false
 	}
 	entry := element.Value.(*cacheEntry)
-	if time.Now().After(entry.expiresAt) {
+	remaining := time.Until(entry.expiresAt)
+	if remaining <= 0 {
 		c.order.Remove(element)
 		delete(c.entries, key)
-		return nil, false
+		return nil, 0, false
 	}
 	c.order.MoveToFront(element)
-	return entry.value, true
+	return entry.value, remaining, true
 }
 
 func (c *lruCache) put(key string, value *Resolution, ttl time.Duration) {

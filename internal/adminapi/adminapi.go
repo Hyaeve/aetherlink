@@ -749,7 +749,7 @@ func (a *API) handleResolve(writer http.ResponseWriter, request *http.Request) {
 	mediaResolver := a.rt.Resolver()
 	ctx, cancel := context.WithTimeout(request.Context(), 60*time.Second)
 	defer cancel()
-	resolution, cacheHit, err := mediaResolver.Resolve(ctx, provider, ref, request.UserAgent())
+	resolution, cacheHit, cacheTTL, err := mediaResolver.Resolve(ctx, provider, ref, request.UserAgent())
 	if err != nil {
 		if errors.Is(err, resolver.ErrNotStrm) {
 			writeJSON(writer, http.StatusOK, map[string]any{"isStrm": false, "message": err.Error()})
@@ -769,11 +769,12 @@ func (a *API) handleResolve(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{
-		"isStrm":       true,
-		"cacheHit":     cacheHit,
-		"resolution":   resolution,
-		"willRedirect": mediaResolver.ShouldRedirect(resolution),
-		"playUrl":      resolution.PlayURL(),
+		"isStrm":          true,
+		"cacheHit":        cacheHit,
+		"cacheTtlSeconds": int64((cacheTTL + time.Second - 1) / time.Second),
+		"resolution":      resolution,
+		"willRedirect":    mediaResolver.ShouldRedirect(resolution),
+		"playUrl":         resolution.PlayURL(),
 	})
 }
 

@@ -137,6 +137,26 @@ type Provider interface {
 	PlaybackPath(itemID, fileID string) string
 }
 
+type userAgentContextKey struct{}
+
+// WithUserAgent 将本次播放使用的 UA 放入上下文，供上游 API 请求复用。
+func WithUserAgent(ctx context.Context, userAgent string) context.Context {
+	userAgent = strings.TrimSpace(userAgent)
+	if userAgent == "" {
+		userAgent = "AetherLink"
+	}
+	return context.WithValue(ctx, userAgentContextKey{}, userAgent)
+}
+
+func contextUserAgent(ctx context.Context) string {
+	userAgent, _ := ctx.Value(userAgentContextKey{}).(string)
+	userAgent = strings.TrimSpace(userAgent)
+	if userAgent == "" {
+		return "AetherLink"
+	}
+	return userAgent
+}
+
 // ResponseRewriter 允许上游方言改写指定的反代响应。Emby 用它处理
 // PlaybackInfo：STRM 必须被标成可直放，否则客户端会选择 HLS 转码，之后再也
 // 不会请求能够跳转到指针目标的媒体路由。
@@ -263,6 +283,7 @@ func (c *apiClient) getJSON(ctx context.Context, endpoint string, query url.Valu
 		return err
 	}
 	request.Header.Set("Accept", "application/json")
+	request.Header.Set("User-Agent", contextUserAgent(ctx))
 	if c.authHeader != "" {
 		request.Header.Set(c.authHeader, c.authValue())
 	}
