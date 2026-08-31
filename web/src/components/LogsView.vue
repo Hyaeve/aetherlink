@@ -124,7 +124,7 @@ function targetText(event) {
 }
 
 function copyableTarget(event) {
-  return event.target || event.mediaPath || ''
+  return event.target || ''
 }
 
 async function copyTarget(event) {
@@ -132,22 +132,32 @@ async function copyTarget(event) {
   if (!target) return
 
   try {
-    await navigator.clipboard.writeText(target)
-    copiedTarget.value = target
-    if (copyTimer) clearTimeout(copyTimer)
-    copyTimer = setTimeout(() => {
-      copiedTarget.value = ''
-    }, 1600)
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(target)
+    } else {
+      legacyCopy(target)
+    }
   } catch {
+    legacyCopy(target)
+  }
+
+  copiedTarget.value = target
+  if (copyTimer) clearTimeout(copyTimer)
+  copyTimer = setTimeout(() => {
+    copiedTarget.value = ''
+  }, 1600)
+}
+
+function legacyCopy(target) {
     const textarea = document.createElement('textarea')
     textarea.value = target
     textarea.style.position = 'fixed'
     textarea.style.opacity = '0'
     document.body.appendChild(textarea)
     textarea.select()
-    document.execCommand('copy')
+    const copied = document.execCommand('copy')
     textarea.remove()
-  }
+    if (!copied) throw new Error('无法复制到剪贴板')
 }
 
 function pageSlice(items, page) {
@@ -245,15 +255,13 @@ onUnmounted(() => {
                 class="target-cell"
                 :data-tooltip="copiedTarget === copyableTarget(event) ? '已复制' : targetText(event)"
               >
-                <span
+                <button
+                  type="button"
                   class="target-box mono"
                   :class="{ 'is-copyable': copyableTarget(event) }"
-                  :role="copyableTarget(event) ? 'button' : undefined"
-                  :tabindex="copyableTarget(event) ? 0 : undefined"
+                  :disabled="!copyableTarget(event)"
                   @click="copyTarget(event)"
-                  @keydown.enter="copyTarget(event)"
-                  @keydown.space.prevent="copyTarget(event)"
-                >{{ shorten(targetText(event)) }}</span>
+                >{{ shorten(targetText(event)) }}</button>
               </td>
               <td class="target-cell" :data-tooltip="userAgentText(event)">
                 <span

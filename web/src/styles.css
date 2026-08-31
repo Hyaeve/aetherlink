@@ -1940,6 +1940,8 @@ th {
   background: var(--surface-2);
   color: var(--text-soft);
   cursor: default;
+  font: inherit;
+  text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
   transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
@@ -1947,6 +1949,10 @@ th {
 
 .target-box.is-copyable {
   cursor: copy;
+}
+
+.target-box:disabled {
+  opacity: 1;
 }
 
 .target-box:hover,
