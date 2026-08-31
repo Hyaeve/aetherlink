@@ -58,7 +58,7 @@ type responseRewriteContextKey struct{}
 func New(provider upstream.Provider, mediaResolver *resolver.Resolver, collector *stats.Collector, redirectCfg config.Redirect) *Server {
 	server := &Server{
 		provider: provider,
-		proxy:    newReverseProxy(provider),
+		proxy:    newReverseProxy(provider, mediaResolver),
 		resolver: mediaResolver,
 		stats:    collector,
 		redirect: redirectCfg,
@@ -83,17 +83,14 @@ func New(provider upstream.Provider, mediaResolver *resolver.Resolver, collector
 func (s *Server) Provider() upstream.Provider { return s.provider }
 
 // newReverseProxy builds the pass-through proxy for non-media requests.
-func newReverseProxy(provider upstream.Provider) *httputil.ReverseProxy {
+func newReverseProxy(provider upstream.Provider, mediaResolver *resolver.Resolver) *httputil.ReverseProxy {
 	target := provider.BaseURL()
 	rewriter, canRewrite := provider.(upstream.ResponseRewriter)
 
 	return &httputil.ReverseProxy{
 		Transport: provider.Transport(),
 		Rewrite: func(request *httputil.ProxyRequest) {
-			userAgent := strings.TrimSpace(request.In.UserAgent())
-			if userAgent == "" {
-				userAgent = "AetherLink"
-			}
+			userAgent := mediaResolver.EffectiveUserAgent(request.In.UserAgent())
 			request.Out.Header.Set("User-Agent", userAgent)
 			if canRewrite && rewriter.WantsResponseRewrite(request.In) {
 				// PlaybackInfo 必须以明文 JSON 返回，才能在交给 Emby 客户端前改写。
@@ -203,6 +200,7 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 		Client:    clientIP(request),
 		UserAgent: request.UserAgent(),
 	}
+	event.EffectiveUserAgent = s.resolver.EffectiveUserAgent(request.UserAgent())
 
 	// finish 是所有出口的唯一收尾：记录事件之后必定打一行日志。
 	// 之前只有 s.stats.Record，成功的 302 与透传一行日志都没有，
@@ -320,19 +318,19 @@ func (s *Server) logOutcome(event stats.Event, note string) {
 	milliseconds := event.Duration.Milliseconds()
 	switch event.Outcome {
 	case stats.OutcomeRedirect:
-		logx.Infof("[%s] 302 %s -> %s（类型 %s，%dms，%s）", event.Upstream, event.Path, event.Target, displayKind(event.Kind), milliseconds, cacheNote(event))
+		logx.Infof("[%s] 302 %s -> %s（类型 %s，%dms，%s，%s）", event.Upstream, event.Path, event.Target, displayKind(event.Kind), milliseconds, cacheNote(event), userAgentNote(event))
 	case stats.OutcomeLocalFile:
-		logx.Infof("[%s] 本地直读 %s -> %s（%dms）：%s", event.Upstream, event.Path, event.Target, milliseconds, note)
+		logx.Infof("[%s] 本地直读 %s -> %s（%dms）：%s；%s", event.Upstream, event.Path, event.Target, milliseconds, note, userAgentNote(event))
 	case stats.OutcomeProxyStream:
-		logx.Infof("[%s] 中继 %s -> %s（状态 %d，%dms）：%s", event.Upstream, event.Path, event.Target, event.StatusCode, milliseconds, note)
+		logx.Infof("[%s] 中继 %s -> %s（状态 %d，%dms）：%s；%s", event.Upstream, event.Path, event.Target, event.StatusCode, milliseconds, note, userAgentNote(event))
 	case stats.OutcomePassthrough:
 		if event.Error != "" {
-			logx.Warnf("[%s] 透传 %s（%dms）：%s；原因：%s", event.Upstream, event.Path, milliseconds, note, event.Error)
+			logx.Warnf("[%s] 透传 %s（%dms）：%s；UA：%s；原因：%s", event.Upstream, event.Path, milliseconds, note, userAgentNote(event), event.Error)
 			return
 		}
-		logx.Infof("[%s] 透传 %s（%dms）：%s", event.Upstream, event.Path, milliseconds, note)
+		logx.Infof("[%s] 透传 %s（%dms）：%s；UA：%s", event.Upstream, event.Path, milliseconds, note, userAgentNote(event))
 	default:
-		logx.Errorf("[%s] 失败 %s（%dms）：%s；原因：%s", event.Upstream, event.Path, milliseconds, note, event.Error)
+		logx.Errorf("[%s] 失败 %s（%dms）：%s；UA：%s；原因：%s", event.Upstream, event.Path, milliseconds, note, userAgentNote(event), event.Error)
 	}
 }
 
@@ -375,6 +373,17 @@ func formatCacheTTL(seconds int64) string {
 
 func cacheNote(event stats.Event) string {
 	return "直链" + cacheWord(event.CacheHit) + "，缓存有效期" + formatCacheTTL(event.CacheTTLSeconds)
+}
+
+func userAgentNote(event stats.Event) string {
+	clientUserAgent := event.UserAgent
+	if clientUserAgent == "" {
+		clientUserAgent = "空"
+	}
+	if event.EffectiveUserAgent == "" || event.EffectiveUserAgent == event.UserAgent {
+		return fmt.Sprintf("UA %q", event.EffectiveUserAgent)
+	}
+	return fmt.Sprintf("客户端 UA %q，实际 UA %q", clientUserAgent, event.EffectiveUserAgent)
 }
 
 // relayRemote streams the remote target through AetherLink, preserving Range

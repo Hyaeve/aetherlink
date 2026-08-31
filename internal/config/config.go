@@ -106,10 +106,12 @@ type Redirect struct {
 	// backend. Some cloud drives bind their signed URLs to the User-Agent.
 	// It is a pointer so a hand-written config that omits the key keeps the
 	// default (true) instead of silently turning the feature off.
-	ForwardUserAgent  *bool         `yaml:"forward_user_agent" json:"forwardUserAgent"`
-	FallbackUserAgent string        `yaml:"fallback_user_agent" json:"fallbackUserAgent"`
-	ProbeTimeout      time.Duration `yaml:"probe_timeout" json:"probeTimeout"`
-	StreamTimeout     time.Duration `yaml:"stream_timeout" json:"streamTimeout"`
+	ForwardUserAgent     *bool         `yaml:"forward_user_agent" json:"forwardUserAgent"`
+	FallbackUserAgent    string        `yaml:"fallback_user_agent" json:"fallbackUserAgent"`
+	BlockClientUserAgent *bool         `yaml:"block_client_user_agent" json:"blockClientUserAgent"`
+	BlockedUserAgents    []string      `yaml:"blocked_user_agents,omitempty" json:"blockedUserAgents,omitempty"`
+	ProbeTimeout         time.Duration `yaml:"probe_timeout" json:"probeTimeout"`
+	StreamTimeout        time.Duration `yaml:"stream_timeout" json:"streamTimeout"`
 	// AllowPublicTargets permits redirecting to non-private hosts.
 	AllowPublicTargets *bool `yaml:"allow_public_targets" json:"allowPublicTargets"`
 }
@@ -117,6 +119,27 @@ type Redirect struct {
 // ShouldForwardUserAgent reports the effective ForwardUserAgent value.
 func (r Redirect) ShouldForwardUserAgent() bool {
 	return r.ForwardUserAgent == nil || *r.ForwardUserAgent
+}
+
+func (r Redirect) ShouldBlockClientUserAgent() bool {
+	return r.BlockClientUserAgent != nil && *r.BlockClientUserAgent
+}
+
+func (r Redirect) IsBlockedClientUserAgent(userAgent string) bool {
+	if !r.ShouldBlockClientUserAgent() {
+		return false
+	}
+	userAgent = strings.ToLower(strings.TrimSpace(userAgent))
+	if userAgent == "" {
+		return false
+	}
+	for _, blocked := range r.BlockedUserAgents {
+		blocked = strings.ToLower(strings.TrimSpace(blocked))
+		if blocked != "" && strings.Contains(userAgent, blocked) {
+			return true
+		}
+	}
+	return false
 }
 
 // PublicTargetsAllowed reports the effective AllowPublicTargets value.
@@ -183,6 +206,8 @@ func (c *Config) SetPath(path string) { c.path = path }
 func (c *Config) Clone() *Config {
 	copied := *c
 	copied.Redirect.ForwardUserAgent = clonePointer(c.Redirect.ForwardUserAgent)
+	copied.Redirect.BlockClientUserAgent = clonePointer(c.Redirect.BlockClientUserAgent)
+	copied.Redirect.BlockedUserAgents = append([]string(nil), c.Redirect.BlockedUserAgents...)
 	copied.Redirect.AllowPublicTargets = clonePointer(c.Redirect.AllowPublicTargets)
 	copied.Upstreams = make([]Upstream, 0, len(c.Upstreams))
 	for _, upstream := range c.Upstreams {
@@ -217,6 +242,7 @@ func Default() *Config {
 			MaxFollowHops:           5,
 			ForwardUserAgent:        Bool(true),
 			FallbackUserAgent:       "AetherLink",
+			BlockClientUserAgent:    Bool(false),
 			ProbeTimeout:            15 * time.Second,
 			StreamTimeout:           0,
 			AllowPublicTargets:      Bool(true),
@@ -368,6 +394,12 @@ func merge(base, parsed *Config) {
 	if parsed.Redirect.ForwardUserAgent != nil {
 		base.Redirect.ForwardUserAgent = parsed.Redirect.ForwardUserAgent
 	}
+	if parsed.Redirect.BlockClientUserAgent != nil {
+		base.Redirect.BlockClientUserAgent = parsed.Redirect.BlockClientUserAgent
+	}
+	if parsed.Redirect.BlockedUserAgents != nil {
+		base.Redirect.BlockedUserAgents = append([]string(nil), parsed.Redirect.BlockedUserAgents...)
+	}
 	if parsed.Redirect.AllowPublicTargets != nil {
 		base.Redirect.AllowPublicTargets = parsed.Redirect.AllowPublicTargets
 	}
@@ -437,6 +469,13 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Redirect.FallbackUserAgent) == "" {
 		c.Redirect.FallbackUserAgent = "AetherLink"
 	}
+	blockedUserAgents := make([]string, 0, len(c.Redirect.BlockedUserAgents))
+	for _, blocked := range c.Redirect.BlockedUserAgents {
+		if blocked = strings.TrimSpace(blocked); blocked != "" {
+			blockedUserAgents = append(blockedUserAgents, blocked)
+		}
+	}
+	c.Redirect.BlockedUserAgents = blockedUserAgents
 	if c.Cache.TTL < 0 {
 		c.Cache.TTL = 0
 	}

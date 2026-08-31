@@ -17,11 +17,17 @@ const password = ref('')
 const accountError = ref('')
 const accountBusy = ref(false)
 const accountConfirm = ref(false)
+const blockedUserAgentText = ref('')
+
+function syncBlockedUserAgents(settingsPayload) {
+  blockedUserAgentText.value = (settingsPayload?.redirect?.blockedUserAgents || []).join('\n')
+}
 
 async function load() {
   try {
     const payload = await api.config()
     settings.value = payload.settings
+    syncBlockedUserAgents(settings.value)
     server.value = payload.server
     account.value = payload.account
     username.value = payload.account?.username || ''
@@ -36,8 +42,13 @@ async function save() {
   saved.value = false
   error.value = ''
   try {
+    settings.value.redirect.blockedUserAgents = blockedUserAgentText.value
+      .split(/\r?\n/)
+      .map((value) => value.trim())
+      .filter(Boolean)
     const payload = await api.saveSettings(settings.value)
     settings.value = payload.settings
+    syncBlockedUserAgents(settings.value)
     saved.value = true
     emit('saved')
   } catch (saveError) {
@@ -215,6 +226,33 @@ onMounted(load)
               {{ busy ? '保存中…' : '保存并生效' }}
             </button>
           </div>
+        </section>
+
+        <section class="settings-card security-card">
+          <div class="settings-card-head">
+            <div class="settings-icon violet" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M12 3 5 6v5c0 4.6 2.9 8.3 7 10 4.1-1.7 7-5.4 7-10V6z" />
+                <path d="m9 12 2 2 4-4" />
+              </svg>
+            </div>
+            <div>
+              <h2>安全与代理</h2>
+              <p>控制客户端 User-Agent 的转发</p>
+            </div>
+          </div>
+
+          <label class="setting-toggle security-toggle">
+            <input type="checkbox" v-model="settings.redirect.blockClientUserAgent" />
+            <span class="toggle-control"></span>
+            <span class="toggle-copy"><strong>屏蔽客户端 UA</strong><small>命中列表后使用回落 UA</small></span>
+          </label>
+
+          <label class="field security-field">
+            <span>屏蔽列表</span>
+            <textarea v-model="blockedUserAgentText" rows="5" :disabled="!settings.redirect.blockClientUserAgent" placeholder="Forward\nInfuse-Direct\nInfuse-Library"></textarea>
+            <small>每行一个匹配片段，大小写不敏感。</small>
+          </label>
         </section>
 
         <div class="settings-tip">

@@ -365,6 +365,9 @@ func (r *Resolver) EffectiveUserAgent(clientUserAgent string) string {
 
 func (r *Resolver) effectiveUserAgent(clientUserAgent string) string {
 	clientUserAgent = strings.TrimSpace(clientUserAgent)
+	if r.config.IsBlockedClientUserAgent(clientUserAgent) {
+		clientUserAgent = ""
+	}
 	if r.config.ShouldForwardUserAgent() && clientUserAgent != "" {
 		return clientUserAgent
 	}

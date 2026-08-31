@@ -287,14 +287,16 @@ type settingsPayload struct {
 }
 
 type redirectSettings struct {
-	Mode                    string `json:"mode"`
-	FollowUpstreamRedirects bool   `json:"followUpstreamRedirects"`
-	MaxFollowHops           int    `json:"maxFollowHops"`
-	ForwardUserAgent        bool   `json:"forwardUserAgent"`
-	FallbackUserAgent       string `json:"fallbackUserAgent"`
-	ProbeTimeout            string `json:"probeTimeout"`
-	StreamTimeout           string `json:"streamTimeout"`
-	AllowPublicTargets      bool   `json:"allowPublicTargets"`
+	Mode                    string   `json:"mode"`
+	FollowUpstreamRedirects bool     `json:"followUpstreamRedirects"`
+	MaxFollowHops           int      `json:"maxFollowHops"`
+	ForwardUserAgent        bool     `json:"forwardUserAgent"`
+	FallbackUserAgent       string   `json:"fallbackUserAgent"`
+	BlockClientUserAgent    bool     `json:"blockClientUserAgent"`
+	BlockedUserAgents       []string `json:"blockedUserAgents"`
+	ProbeTimeout            string   `json:"probeTimeout"`
+	StreamTimeout           string   `json:"streamTimeout"`
+	AllowPublicTargets      bool     `json:"allowPublicTargets"`
 }
 
 type cacheSettings struct {
@@ -312,6 +314,8 @@ func settingsFromConfig(cfg *config.Config) settingsPayload {
 			MaxFollowHops:           cfg.Redirect.MaxFollowHops,
 			ForwardUserAgent:        cfg.Redirect.ShouldForwardUserAgent(),
 			FallbackUserAgent:       cfg.Redirect.FallbackUserAgent,
+			BlockClientUserAgent:    cfg.Redirect.ShouldBlockClientUserAgent(),
+			BlockedUserAgents:       append([]string(nil), cfg.Redirect.BlockedUserAgents...),
 			ProbeTimeout:            cfg.Redirect.ProbeTimeout.String(),
 			StreamTimeout:           cfg.Redirect.StreamTimeout.String(),
 			AllowPublicTargets:      cfg.Redirect.PublicTargetsAllowed(),
@@ -375,6 +379,8 @@ func (a *API) handlePutSettings(writer http.ResponseWriter, request *http.Reques
 		draft.Redirect.FollowUpstreamRedirects = payload.Redirect.FollowUpstreamRedirects
 		draft.Redirect.MaxFollowHops = payload.Redirect.MaxFollowHops
 		draft.Redirect.ForwardUserAgent = &payload.Redirect.ForwardUserAgent
+		draft.Redirect.BlockClientUserAgent = &payload.Redirect.BlockClientUserAgent
+		draft.Redirect.BlockedUserAgents = append([]string(nil), payload.Redirect.BlockedUserAgents...)
 		draft.Redirect.AllowPublicTargets = &payload.Redirect.AllowPublicTargets
 		draft.Redirect.FallbackUserAgent = payload.Redirect.FallbackUserAgent
 		draft.Redirect.ProbeTimeout = probeTimeout

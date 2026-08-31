@@ -47,6 +47,9 @@ upstreams:
 	if !cfg.Redirect.ShouldForwardUserAgent() || !cfg.Redirect.PublicTargetsAllowed() {
 		t.Fatal("optional booleans must keep their true defaults when the key is absent")
 	}
+	if cfg.Redirect.ShouldBlockClientUserAgent() {
+		t.Fatal("client User-Agent blocking should be disabled by default")
+	}
 	if cfg.Cache.TTL != 2*time.Hour {
 		t.Fatalf("cache ttl = %v, want 2h", cfg.Cache.TTL)
 	}
@@ -82,6 +85,22 @@ func TestLoadKeepsExplicitFalseBooleans(t *testing.T) {
 	}
 	if cfg.Redirect.PublicTargetsAllowed() {
 		t.Fatal("allow_public_targets: false must survive the merge")
+	}
+}
+
+func TestBlockedClientUserAgentMatchesCaseInsensitiveFragments(t *testing.T) {
+	cfg := Default()
+	cfg.Redirect.BlockClientUserAgent = Bool(true)
+	cfg.Redirect.BlockedUserAgents = []string{"Forward", "Infuse-Library"}
+
+	if !cfg.Redirect.IsBlockedClientUserAgent("Player/Forward/1.0") {
+		t.Fatal("Forward fragment should be blocked")
+	}
+	if !cfg.Redirect.IsBlockedClientUserAgent("infuse-library/8.0") {
+		t.Fatal("matching should be case insensitive")
+	}
+	if cfg.Redirect.IsBlockedClientUserAgent("Emby/4.8") {
+		t.Fatal("unlisted User-Agent should not be blocked")
 	}
 }
 
@@ -293,11 +312,15 @@ func TestCloneIsDeep(t *testing.T) {
 	clone := cfg.Clone()
 	clone.Upstreams[0].StrmRoots[0] = "/changed"
 	clone.Redirect.ForwardUserAgent = Bool(false)
+	clone.Redirect.BlockedUserAgents = []string{"Infuse"}
 	if cfg.Upstreams[0].StrmRoots[0] != "/a" {
 		t.Fatal("clone shares the StrmRoots backing array")
 	}
 	if !cfg.Redirect.ShouldForwardUserAgent() {
 		t.Fatal("clone shares the ForwardUserAgent pointer")
+	}
+	if len(cfg.Redirect.BlockedUserAgents) != 0 {
+		t.Fatal("clone shares the BlockedUserAgents backing array")
 	}
 }
 

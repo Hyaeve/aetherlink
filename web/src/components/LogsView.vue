@@ -111,6 +111,12 @@ function cacheTTL(seconds) {
   return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}min`
 }
 
+function userAgentText(event) {
+  const clientUserAgent = event.userAgent || '空'
+  const effectiveUserAgent = event.effectiveUserAgent || 'AetherLink'
+  return clientUserAgent === effectiveUserAgent ? effectiveUserAgent : `${clientUserAgent} → ${effectiveUserAgent}`
+}
+
 function pageSlice(items, page) {
   const start = (page - 1) * pageSize
   return items.slice(start, start + pageSize)
@@ -191,7 +197,7 @@ onUnmounted(() => timer && clearInterval(timer))
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>时间</th><th>上游</th><th>请求路径</th><th>结果</th><th>目标</th><th>缓存有效期</th><th>耗时</th></tr>
+            <tr><th>时间</th><th>上游</th><th>请求路径</th><th>结果</th><th>目标</th><th>UA</th><th>缓存有效期</th><th>耗时</th></tr>
           </thead>
           <tbody>
             <tr v-for="(event, index) in pagedEvents" :key="index">
@@ -204,6 +210,12 @@ onUnmounted(() => timer && clearInterval(timer))
                   class="target-box mono"
                   :title="event.error || event.target || event.mediaPath || ''"
                 >{{ shorten(event.error || event.target || event.mediaPath) }}</span>
+              </td>
+              <td class="target-cell">
+                <span
+                  class="target-box mono"
+                  :title="userAgentText(event)"
+                >{{ userAgentText(event) }}</span>
               </td>
               <td>{{ cacheTTL(event.cacheTtlSeconds) }}</td>
               <td>{{ millis(event.durationMs) }}</td>

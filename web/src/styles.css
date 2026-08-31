@@ -1566,6 +1566,32 @@ input:focus-visible + .toggle-control {
   height: 0;
 }
 
+.security-card {
+  padding-bottom: 22px;
+}
+
+.security-toggle {
+  margin: 4px 0 18px;
+}
+
+.security-field {
+  margin-bottom: 0;
+}
+
+.security-field textarea {
+  min-height: 132px;
+  margin-top: 7px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+  line-height: 1.7;
+}
+
+.security-field textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
 .toggle-copy {
   display: flex;
   flex-direction: column;

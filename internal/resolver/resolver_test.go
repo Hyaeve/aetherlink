@@ -96,3 +96,18 @@ func TestEmbyCacheFallbackIsFixedAtTwoHours(t *testing.T) {
 		t.Fatalf("Emby fallback cache ttl = %v, want 2h", got)
 	}
 }
+
+func TestBlockedClientUserAgentUsesFallback(t *testing.T) {
+	resolver := New(config.Cache{TTL: time.Hour, MaxSize: 4}, config.Redirect{
+		ForwardUserAgent:     config.Bool(true),
+		FallbackUserAgent:    "AetherLink",
+		BlockClientUserAgent: config.Bool(true),
+		BlockedUserAgents:    []string{"Infuse-Direct"},
+	})
+	if got := resolver.EffectiveUserAgent("Infuse-Direct/8.0"); got != "AetherLink" {
+		t.Fatalf("blocked User-Agent = %q, want AetherLink", got)
+	}
+	if got := resolver.EffectiveUserAgent("Emby/4.8"); got != "Emby/4.8" {
+		t.Fatalf("unblocked User-Agent = %q, want client value", got)
+	}
+}
