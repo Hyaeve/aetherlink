@@ -110,7 +110,7 @@ docker inspect -f "{{.State.ExitCode}} {{.State.Error}}" AetherLink
 | `加载配置失败: ... permission denied` | 入口脚本会自动把 `/config` 的属主改好，用当前镜像不该再出现。仍出现说明你在 compose 里加了 `user:`（脚本没有改属主的权限），在宿主执行 `chown -R <那个uid>:<那个gid> ./config` 即可。 |
 | `[entrypoint] 错误：/config 必须可写` | 卷被挂成了只读。检查 compose 的 `volumes` 有没有多写结尾的 `:ro`。 |
 | `解析 /config/config.yaml 失败` | 手改过配置文件且 YAML 写坏了，或写了程序不认识的字段（配置是严格解析的）。改回去，或直接删掉该文件让程序重建。旧版的 `prefix` 字段会被自动升级成 `listen_port`，不会再报这个错。 |
-| `redirect.mode "xxx" 必须是 always、private 或 never` | 手改配置或环境变量 `AETHERLINK_REDIRECT_MODE` 填了非法值。 |
+| `redirect.mode "xxx" 必须是 always、public、private 或 never` | 手改配置或环境变量 `AETHERLINK_REDIRECT_MODE` 填了非法值。 |
 | `listen tcp :5151: bind: address already in use` | 管理端口被占，通常是某个上游的反代端口和它撞了。管理端口固定 5151，把上游端口改成别的。 |
 | `端口 xxxx 无法监听（可能已被其他程序占用）` | 该反代端口在容器内已被占用（多半是两个上游撞了端口，或与管理端口 5151 冲突）。在界面上改成别的端口保存即可，原有上游不受影响。 |
 | 播放端连不上反代端口 | 端口没在 compose 的 `ports` 里映射出去。加一条 `- 5152:5152` 再 `docker compose up -d`。 |
@@ -153,7 +153,7 @@ mkdir -p config && sudo chown -R 1000:1000 config
 
 | 项 | 说明 |
 | --- | --- |
-| 跳转模式 | 在上游卡片中设置：`always` 公网跳转；`private` 仅内网目标 302，公网目标中继；`never` 始终中继。新建上游默认是公网跳转。 |
+| 跳转模式 | 在上游卡片中设置：`always` 始终跳转；`public` 仅公网目标 302，内网目标中继；`private` 仅内网目标 302，公网目标中继；`never` 始终中继。新建上游默认始终跳转。 |
 | 先跟随上游 302 | 播放前把跳转链走完，把最终直链交给播放器。适合 115 这类二次跳转后端，代价是首次播放多一次预检。 |
 | 转发播放器 User-Agent | 部分网盘直链与 UA 绑定时必须开启；播放器未带 UA 时使用回落 UA。 |
 | 屏蔽客户端 UA | 在系统设置的「安全与代理」中开启后，可按行填写 UA 片段；命中后不转发客户端 UA，改用回落 UA。播放流水会同时显示客户端 UA 与实际使用 UA。 |

@@ -255,13 +255,18 @@ onUnmounted(() => {
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>时间</th><th>上游</th><th>请求路径</th><th>结果</th><th>目标</th><th>UA</th><th>缓存状态</th><th>缓存有效期</th><th>耗时</th></tr>
+            <tr><th>时间</th><th>上游</th><th>请求路径</th><th>UA</th><th>结果</th><th>目标</th><th>缓存状态</th><th>缓存有效期</th><th>耗时</th></tr>
           </thead>
           <tbody>
             <tr v-for="(event, index) in pagedEvents" :key="index">
               <td>{{ clock(event.time) }}</td>
               <td>{{ event.upstream }}</td>
               <td class="mono">{{ shorten(event.path, 48) }}</td>
+              <td class="target-cell" :data-tooltip="userAgentText(event)">
+                <span
+                  class="target-box mono"
+                >{{ userAgentText(event) }}</span>
+              </td>
               <td><span :class="outcomeClass(event.outcome)">{{ outcomeLabel(event.outcome) }}</span></td>
               <td
                 class="target-cell"
@@ -274,11 +279,6 @@ onUnmounted(() => {
                   :disabled="!copyableTarget(event)"
                   @click="copyTarget(event)"
                 >{{ shorten(targetText(event)) }}</button>
-              </td>
-              <td class="target-cell" :data-tooltip="userAgentText(event)">
-                <span
-                  class="target-box mono"
-                >{{ userAgentText(event) }}</span>
               </td>
               <td><span :class="cacheSourceClass(event)">{{ cacheSourceLabel(event) }}</span></td>
               <td>{{ cacheTTL(event.cacheTtlSeconds) }}</td>

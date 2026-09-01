@@ -306,10 +306,12 @@ func (s *Server) noRedirectReason(resolution *resolver.Resolution) string {
 	switch s.redirect.Mode {
 	case config.RedirectNever:
 		return "302 模式为 never"
+	case config.RedirectPublic:
+		return "302 模式为 public，而目标是内网地址"
 	case config.RedirectPrivate:
 		return "302 模式为 private，而目标不是内网地址"
 	default:
-		return "设置里关闭了「允许跳转到公网地址」，而目标不是内网地址"
+		return "302 模式未启用"
 	}
 }
 

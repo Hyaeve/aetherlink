@@ -416,13 +416,14 @@ func (r *Resolver) ShouldRedirectWith(resolution *Resolution, redirectCfg config
 	switch redirectCfg.Mode {
 	case config.RedirectNever:
 		return false
+	case config.RedirectPublic:
+		return !urlx.IsPrivateHost(playURL)
 	case config.RedirectPrivate:
 		return urlx.IsPrivateHost(playURL)
-	default:
-		if !redirectCfg.PublicTargetsAllowed() && !urlx.IsPrivateHost(playURL) {
-			return false
-		}
+	case config.RedirectAlways:
 		return true
+	default:
+		return false
 	}
 }
 

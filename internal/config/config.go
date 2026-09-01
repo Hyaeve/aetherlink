@@ -31,8 +31,10 @@ const (
 type RedirectMode string
 
 const (
-	// RedirectAlways answers every resolved media request with a 302.
+	// RedirectAlways answers every resolved remote media request with a 302.
 	RedirectAlways RedirectMode = "always"
+	// RedirectPublic only redirects to public targets and relays private ones.
+	RedirectPublic RedirectMode = "public"
 	// RedirectPrivate only redirects to RFC1918/loopback targets and streams
 	// public targets through the proxy.
 	RedirectPrivate RedirectMode = "private"
@@ -456,9 +458,9 @@ func (c *Config) Validate() error {
 		c.Server.LogBuffer = 50
 	}
 	switch c.Redirect.Mode {
-	case RedirectAlways, RedirectPrivate, RedirectNever:
+	case RedirectAlways, RedirectPublic, RedirectPrivate, RedirectNever:
 	default:
-		return fmt.Errorf("redirect.mode %q 必须是 always、private 或 never", c.Redirect.Mode)
+		return fmt.Errorf("redirect.mode %q 必须是 always、public、private 或 never", c.Redirect.Mode)
 	}
 	if c.Redirect.MaxFollowHops < 1 {
 		c.Redirect.MaxFollowHops = 1
@@ -551,7 +553,7 @@ func (u *Upstream) normalize() error {
 		u.RedirectMode = RedirectAlways
 	}
 	switch u.RedirectMode {
-	case RedirectAlways, RedirectPrivate, RedirectNever:
+	case RedirectAlways, RedirectPublic, RedirectPrivate, RedirectNever:
 	default:
 		return fmt.Errorf("上游 %s 的跳转模式 %q 无效", u.Name, u.RedirectMode)
 	}

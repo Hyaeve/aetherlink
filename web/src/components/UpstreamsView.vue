@@ -64,7 +64,7 @@ function typeLabel(type) {
 }
 
 function redirectLabel(mode) {
-  return { always: '公网跳转', private: '仅内网跳转', never: '始终中继' }[mode] || '公网跳转'
+  return { always: '始终跳转', public: '公网跳转', private: '内网跳转', never: '始终中继' }[mode] || '始终跳转'
 }
 
 function openProxy(upstream) {

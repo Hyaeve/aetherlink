@@ -139,6 +139,32 @@ func TestEmbyCacheFallbackIsFixedAtTwoHours(t *testing.T) {
 	}
 }
 
+func TestRedirectModesApplyToPublicAndPrivateTargets(t *testing.T) {
+	resolver := New(config.Cache{}, config.Redirect{})
+	publicResolution := &Resolution{Target: &strm.Target{Type: strm.TargetRemote, URL: "https://cdn.example/video.mkv"}}
+	privateResolution := &Resolution{Target: &strm.Target{Type: strm.TargetRemote, URL: "http://10.0.0.31:19527/d/video.mkv"}}
+
+	cases := []struct {
+		mode        config.RedirectMode
+		wantPublic  bool
+		wantPrivate bool
+	}{
+		{config.RedirectAlways, true, true},
+		{config.RedirectPublic, true, false},
+		{config.RedirectPrivate, false, true},
+		{config.RedirectNever, false, false},
+	}
+	for _, test := range cases {
+		redirect := config.Redirect{Mode: test.mode}
+		if got := resolver.ShouldRedirectWith(publicResolution, redirect); got != test.wantPublic {
+			t.Errorf("mode %s public target = %v, want %v", test.mode, got, test.wantPublic)
+		}
+		if got := resolver.ShouldRedirectWith(privateResolution, redirect); got != test.wantPrivate {
+			t.Errorf("mode %s private target = %v, want %v", test.mode, got, test.wantPrivate)
+		}
+	}
+}
+
 func TestBlockedClientUserAgentUsesFallback(t *testing.T) {
 	resolver := New(config.Cache{TTL: time.Hour, MaxSize: 4}, config.Redirect{
 		ForwardUserAgent:     config.Bool(true),

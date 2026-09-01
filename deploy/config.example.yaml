@@ -31,7 +31,8 @@ server:
 auth: {}
 
 redirect:
-  # always：所有 STRM 目标都回 302（推荐，最省带宽）
+  # always：所有 STRM 目标都回 302（默认，最省带宽）
+  # public：仅公网目标回 302，内网目标由 AetherLink 中继
   # private：仅内网目标回 302，公网目标由 AetherLink 中继
   # never：全部中继转发，不使用 302
   mode: always

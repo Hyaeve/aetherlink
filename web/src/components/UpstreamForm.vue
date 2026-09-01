@@ -169,8 +169,9 @@ async function save() {
             <label class="field">
               <span>播放跳转</span>
               <select v-model="form.redirectMode">
-                <option value="always">公网跳转</option>
-                <option value="private">仅内网跳转</option>
+                <option value="always">始终跳转</option>
+                <option value="public">公网跳转</option>
+                <option value="private">内网跳转</option>
                 <option value="never">始终中继</option>
               </select>
             </label>
