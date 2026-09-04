@@ -533,8 +533,8 @@ code {
 .main {
   flex: 1;
   min-width: 0;
+  width: 0;
   padding: 26px 32px 64px;
-  max-width: 1480px;
 }
 
 .page-head {
