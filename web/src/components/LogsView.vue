@@ -253,7 +253,18 @@ onUnmounted(() => {
         </div>
       </div>
       <div class="table-wrap">
-        <table>
+        <table class="playback-table">
+          <colgroup>
+            <col class="playback-time-column" />
+            <col class="playback-upstream-column" />
+            <col class="playback-path-column" />
+            <col class="playback-ua-column" />
+            <col class="playback-outcome-column" />
+            <col class="playback-target-column" />
+            <col class="playback-cache-column" />
+            <col class="playback-ttl-column" />
+            <col class="playback-duration-column" />
+          </colgroup>
           <thead>
             <tr><th>时间</th><th>上游</th><th>请求路径</th><th>UA</th><th>结果</th><th>目标</th><th>缓存状态</th><th>缓存有效期</th><th>耗时</th></tr>
           </thead>
@@ -261,11 +272,11 @@ onUnmounted(() => {
             <tr v-for="(event, index) in pagedEvents" :key="index">
               <td>{{ clock(event.time) }}</td>
               <td>{{ event.upstream }}</td>
-              <td class="mono">{{ shorten(event.path, 48) }}</td>
+              <td class="mono">{{ shorten(event.path, 42) }}</td>
               <td class="target-cell" :data-tooltip="userAgentText(event)">
                 <span
                   class="target-box mono"
-                >{{ userAgentText(event) }}</span>
+                >{{ shorten(userAgentText(event), 34) }}</span>
               </td>
               <td><span :class="outcomeClass(event.outcome)">{{ outcomeLabel(event.outcome) }}</span></td>
               <td
@@ -278,7 +289,7 @@ onUnmounted(() => {
                   :class="{ 'is-copyable': copyableTarget(event) }"
                   :disabled="!copyableTarget(event)"
                   @click="copyTarget(event)"
-                >{{ shorten(targetText(event)) }}</button>
+                >{{ shorten(targetText(event), 48) }}</button>
               </td>
               <td><span :class="cacheSourceClass(event)">{{ cacheSourceLabel(event) }}</span></td>
               <td>{{ cacheTTL(event.cacheTtlSeconds) }}</td>

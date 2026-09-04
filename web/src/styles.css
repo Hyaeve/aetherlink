@@ -1277,7 +1277,8 @@ input:focus-visible + .toggle-control {
 .table-wrap {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   scrollbar-color: rgba(143, 137, 184, 0.3) transparent;
   scrollbar-width: thin;
 }
@@ -1902,16 +1903,30 @@ input:focus-visible + .toggle-control {
 
 table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 12px;
 }
+
+.playback-time-column { width: 7%; }
+.playback-upstream-column { width: 8%; }
+.playback-path-column { width: 15%; }
+.playback-ua-column { width: 17%; }
+.playback-outcome-column { width: 9%; }
+.playback-target-column { width: 22%; }
+.playback-cache-column { width: 8%; }
+.playback-ttl-column { width: 8%; }
+.playback-duration-column { width: 6%; }
 
 th,
 td {
   text-align: left;
-  padding: 9px 18px;
+  padding: 8px;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 th {
@@ -1926,18 +1941,19 @@ th {
 
 .target-cell {
   position: relative;
-  min-width: 220px;
-  max-width: 440px;
+  min-width: 0;
 }
 
 .target-box {
   display: block;
-  max-width: min(42vw, 420px);
+  width: 100%;
+  min-width: 0;
+  max-width: none;
   overflow: hidden;
-  padding: 6px 9px;
+  padding: 4px 7px;
   border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface-2);
+  border-radius: 8px;
+  background: transparent;
   color: var(--text-soft);
   cursor: default;
   font: inherit;
@@ -1960,6 +1976,13 @@ th {
   border-color: var(--accent);
   background: var(--accent-wash);
   color: var(--text);
+}
+
+.playback-table .tag {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: top;
 }
 
 .target-cell::after {
@@ -2172,6 +2195,18 @@ label.inline input[type='checkbox'] {
   .log-line {
     grid-template-columns: 1fr;
     gap: 2px;
+  }
+
+  .playback-path-column,
+  .playback-cache-column,
+  .playback-ttl-column,
+  .playback-table th:nth-child(3),
+  .playback-table td:nth-child(3),
+  .playback-table th:nth-child(7),
+  .playback-table td:nth-child(7),
+  .playback-table th:nth-child(8),
+  .playback-table td:nth-child(8) {
+    display: none;
   }
 
   .runtime-list > div {
