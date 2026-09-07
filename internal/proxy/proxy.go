@@ -5,6 +5,8 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,6 +58,7 @@ type Server struct {
 	// streamClient relays bytes when a 302 is not appropriate.
 	streamClient *http.Client
 	ffmpegPath   string
+	audioCache   *audioCache
 }
 
 type responseRewriteContextKey struct{}
@@ -85,6 +89,7 @@ func New(provider upstream.Provider, mediaResolver *resolver.Resolver, collector
 			},
 		},
 		ffmpegPath: ffmpegPath,
+		audioCache: newAudioCache(),
 	}
 	return server
 }
@@ -274,14 +279,14 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 	if resolution.Target != nil && resolution.Target.Type == strm.TargetLocal {
 		if s.shouldTranscode(request, resolution) {
 			event.Target = resolution.Target.Path
-			status, err := s.relayTranscoded(writer, request, resolution.Target.Path, resolution)
+			status, cacheHit, err := s.relayTranscoded(writer, request, resolution.Target.Path, resolution)
 			event.StatusCode = status
 			if err != nil {
 				event.Error = err.Error()
 				finish(stats.OutcomeError, "Apple 客户端音频格式不兼容，FFmpeg 音频适配失败")
 				return
 			}
-			finish(stats.OutcomeTranscode, "Apple 客户端音频格式不兼容，已适配为 M4A 中继")
+			finish(stats.OutcomeTranscode, audioAdaptationNote(cacheHit))
 			return
 		}
 		event.Target = resolution.Target.Path
@@ -294,14 +299,14 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 	playURL := resolution.PlayURL()
 	event.Target = playURL
 	if s.shouldTranscode(request, resolution) {
-		status, err := s.relayTranscoded(writer, request, playURL, resolution)
+		status, cacheHit, err := s.relayTranscoded(writer, request, playURL, resolution)
 		event.StatusCode = status
 		if err != nil {
 			event.Error = err.Error()
 			finish(stats.OutcomeError, "Apple 客户端音频格式不兼容，FFmpeg 音频适配失败")
 			return
 		}
-		finish(stats.OutcomeTranscode, "Apple 客户端音频格式不兼容，已适配为 M4A 中继")
+		finish(stats.OutcomeTranscode, audioAdaptationNote(cacheHit))
 		return
 	}
 
@@ -397,85 +402,229 @@ func isIncompatibleAudio(resolution *resolver.Resolution) bool {
 	return extension == ".wma" || extension == ".aac"
 }
 
-func (s *Server) relayTranscoded(writer http.ResponseWriter, request *http.Request, source string, resolution *resolver.Resolution) (int, error) {
-	ctx := request.Context()
+func (s *Server) relayTranscoded(writer http.ResponseWriter, request *http.Request, source string, resolution *resolver.Resolution) (int, bool, error) {
+	mode := audioAdaptationMode(resolution, source)
+	key := audioCacheKey(source, mode, s.resolver.EffectiveUserAgent(request.UserAgent()))
+	buildContext := context.WithoutCancel(request.Context())
 	if s.redirect.StreamTimeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, s.redirect.StreamTimeout)
+		buildContext, cancel = context.WithTimeout(buildContext, s.redirect.StreamTimeout)
 		defer cancel()
 	}
 
+	cachePath, cacheHit, err := s.audioCache.getOrCreate(buildContext, key, func(destination string) error {
+		return s.transcodeToFile(buildContext, request, source, resolution, destination)
+	})
+	if err != nil {
+		return http.StatusBadGateway, cacheHit, err
+	}
+
+	status, err := s.serveCachedAudio(writer, request, cachePath)
+	if err != nil {
+		return status, cacheHit, err
+	}
+	if cacheHit {
+		logx.Infof("[%s] 音频适配缓存命中 %s：已通过本地 M4A 文件中继", s.provider.Name(), request.URL.Path)
+	} else {
+		logx.Infof("[%s] 音频适配缓存首次生成 %s：已通过本地 M4A 文件中继", s.provider.Name(), request.URL.Path)
+	}
+	return status, cacheHit, nil
+}
+
+func (s *Server) transcodeToFile(ctx context.Context, request *http.Request, source string, resolution *resolver.Resolution, destination string) error {
 	inputFormat := transcodeInputFormat(resolution, source)
 	mode := audioAdaptationMode(resolution, source)
 	codecArgs, label := audioAdaptationArgs(mode)
-	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-stats_period", "5", "-progress", "pipe:2", "-analyzeduration", "1M", "-probesize", "1M"}
+	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-stats_period", "5", "-progress", "pipe:2", "-analyzeduration", "1M", "-probesize", "1M", "-y"}
 	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
 		args = append(args, "-user_agent", s.resolver.EffectiveUserAgent(request.UserAgent()))
 	}
 	if inputFormat != "" {
 		args = append(args, "-f", inputFormat)
 	}
-	args = append(args,
-		"-i", source,
-		"-map", "0:a:0",
-		"-vn",
-	)
+	args = append(args, "-i", source, "-map", "0:a:0", "-vn")
 	args = append(args, codecArgs...)
-	args = append(args,
-		"-f", "mp4",
-		"-movflags", "frag_keyframe+empty_moov+default_base_moof",
-		"-flush_packets", "1",
-		"-muxdelay", "0",
-		"-max_delay", "0",
-		"pipe:1",
-	)
+	args = append(args, "-f", "mp4", "-movflags", "+faststart", destination)
 
 	command := exec.CommandContext(ctx, s.ffmpegPath, args...)
 	progress := newTranscodeProgress(s.provider.Name(), request.URL.Path)
 	command.Stderr = progress
-	command.Stdout = nil
-
-	if request.Method == http.MethodHead {
-		writer.Header().Set("Content-Type", "audio/mp4")
-		writer.Header().Set("Content-Disposition", `inline; filename="aetherlink.m4a"`)
-		writer.Header().Set("Cache-Control", "no-store")
-		writer.Header().Set("Accept-Ranges", "none")
-		writer.WriteHeader(http.StatusOK)
-		logx.Infof("[%s] FFmpeg 音频适配预检 %s：%s，输入格式 %s；UA：%s", s.provider.Name(), request.URL.Path, label, displayInputFormat(inputFormat), s.resolver.EffectiveUserAgent(request.UserAgent()))
-		return http.StatusOK, nil
+	logx.Infof("[%s] FFmpeg 音频适配开始 %s：%s，输入格式 %s；临时文件缓存中；UA：%s", s.provider.Name(), request.URL.Path, label, displayInputFormat(inputFormat), s.resolver.EffectiveUserAgent(request.UserAgent()))
+	if err := command.Run(); err != nil {
+		return progress.errorWith(err)
 	}
+	info, err := os.Stat(destination)
+	if err != nil {
+		return fmt.Errorf("ffmpeg output unavailable: %w", err)
+	}
+	if info.Size() == 0 {
+		return errors.New("ffmpeg output is empty")
+	}
+	progress.finish()
+	return nil
+}
 
-	stdout, err := command.StdoutPipe()
+func (s *Server) serveCachedAudio(writer http.ResponseWriter, request *http.Request, filename string) (int, error) {
+	file, err := os.Open(filename)
 	if err != nil {
 		return http.StatusBadGateway, err
 	}
-	if err := command.Start(); err != nil {
-		return http.StatusBadGateway, fmt.Errorf("ffmpeg start: %w", err)
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || info.IsDir() {
+		if err == nil {
+			err = errors.New("audio cache path is a directory")
+		}
+		return http.StatusBadGateway, err
 	}
-	logx.Infof("[%s] FFmpeg 音频适配开始 %s：%s，输入格式 %s；UA：%s", s.provider.Name(), request.URL.Path, label, displayInputFormat(inputFormat), s.resolver.EffectiveUserAgent(request.UserAgent()))
-
 	writer.Header().Set("Content-Type", "audio/mp4")
 	writer.Header().Set("Content-Disposition", `inline; filename="aetherlink.m4a"`)
-	writer.Header().Set("Cache-Control", "no-store")
-	writer.Header().Set("Accept-Ranges", "none")
-	writer.WriteHeader(http.StatusOK)
-	if flusher, ok := writer.(http.Flusher); ok {
-		flusher.Flush()
-	}
-	logx.Infof("[%s] FFmpeg 音频适配响应已建立 %s：等待首个 M4A 分片", s.provider.Name(), request.URL.Path)
-	if _, copyErr := io.Copy(writer, stdout); copyErr != nil {
-		_ = command.Process.Kill()
-		_ = command.Wait()
-		if errors.Is(copyErr, context.Canceled) {
-			return http.StatusOK, nil
-		}
-		return http.StatusOK, copyErr
-	}
-	if waitErr := command.Wait(); waitErr != nil {
-		return http.StatusBadGateway, progress.errorWith(waitErr)
-	}
-	progress.finish()
+	writer.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+	http.ServeContent(writer, request, "aetherlink.m4a", info.ModTime(), file)
 	return http.StatusOK, nil
+}
+
+func audioAdaptationNote(cacheHit bool) string {
+	if cacheHit {
+		return "Apple 客户端强制中继，命中本地 M4A 缓存"
+	}
+	return "Apple 客户端强制中继，首次生成本地 M4A 缓存"
+}
+
+const audioCacheIdle = 2 * time.Hour
+
+type audioCache struct {
+	mu      sync.Mutex
+	dir     string
+	entries map[string]*audioCacheEntry
+}
+
+type audioCacheEntry struct {
+	path     string
+	ready    chan struct{}
+	err      error
+	lastUsed time.Time
+}
+
+func newAudioCache() *audioCache {
+	cache := &audioCache{
+		dir:     filepath.Join(os.TempDir(), "aetherlink-audio-cache"),
+		entries: make(map[string]*audioCacheEntry),
+	}
+	go cache.cleanupLoop()
+	return cache
+}
+
+func audioCacheKey(source, mode, userAgent string) string {
+	sum := sha256.Sum256([]byte(source + "\x00" + mode + "\x00" + userAgent))
+	return hex.EncodeToString(sum[:])
+}
+
+func (c *audioCache) getOrCreate(ctx context.Context, key string, build func(string) error) (string, bool, error) {
+	now := time.Now()
+	if err := os.MkdirAll(c.dir, 0o755); err != nil {
+		return "", false, fmt.Errorf("create audio cache directory: %w", err)
+	}
+
+	c.mu.Lock()
+	c.cleanupLocked(now)
+	if entry, ok := c.entries[key]; ok {
+		ready := entry.ready
+		c.mu.Unlock()
+		select {
+		case <-ready:
+			if entry.err != nil {
+				return "", true, entry.err
+			}
+			c.mu.Lock()
+			entry.lastUsed = time.Now()
+			c.mu.Unlock()
+			return entry.path, true, nil
+		case <-ctx.Done():
+			return "", true, ctx.Err()
+		}
+	}
+
+	temporary, err := os.CreateTemp(c.dir, key+"-*.part")
+	if err != nil {
+		c.mu.Unlock()
+		return "", false, fmt.Errorf("create audio cache file: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	if err := temporary.Close(); err != nil {
+		c.mu.Unlock()
+		_ = os.Remove(temporaryPath)
+		return "", false, fmt.Errorf("close audio cache file: %w", err)
+	}
+	finalPath := strings.TrimSuffix(temporaryPath, ".part") + ".m4a"
+	entry := &audioCacheEntry{path: finalPath, ready: make(chan struct{}), lastUsed: now}
+	c.entries[key] = entry
+	c.mu.Unlock()
+
+	buildErr := build(temporaryPath)
+	if buildErr == nil {
+		buildErr = os.Rename(temporaryPath, finalPath)
+	}
+	if buildErr != nil {
+		_ = os.Remove(temporaryPath)
+		_ = os.Remove(finalPath)
+	}
+
+	c.mu.Lock()
+	entry.err = buildErr
+	if buildErr != nil {
+		delete(c.entries, key)
+	}
+	close(entry.ready)
+	c.mu.Unlock()
+	if buildErr != nil {
+		return "", false, buildErr
+	}
+	return finalPath, false, nil
+}
+
+func (c *audioCache) cleanupLoop() {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		c.cleanup()
+	}
+}
+
+func (c *audioCache) cleanup() {
+	now := time.Now()
+	c.mu.Lock()
+	c.cleanupLocked(now)
+	c.mu.Unlock()
+
+	entries, err := os.ReadDir(c.dir)
+	if err != nil {
+		return
+	}
+	cutoff := now.Add(-audioCacheIdle)
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".m4a") && !strings.HasSuffix(entry.Name(), ".part") {
+			continue
+		}
+		info, err := entry.Info()
+		if err == nil && info.ModTime().Before(cutoff) {
+			_ = os.Remove(filepath.Join(c.dir, entry.Name()))
+		}
+	}
+}
+
+func (c *audioCache) cleanupLocked(now time.Time) {
+	cutoff := now.Add(-audioCacheIdle)
+	for key, entry := range c.entries {
+		select {
+		case <-entry.ready:
+			if entry.err == nil && entry.lastUsed.Before(cutoff) {
+				_ = os.Remove(entry.path)
+				delete(c.entries, key)
+			}
+		default:
+		}
+	}
 }
 
 type transcodeProgress struct {

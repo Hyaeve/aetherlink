@@ -55,6 +55,16 @@ func TestAppleAudioTranscodeDetection(t *testing.T) {
 	if isIncompatibleAudio(compatible) {
 		t.Fatal("M4A target should keep the normal 302 path")
 	}
+
+	if got := audioCacheKey("https://example.test/a.aac", "aac-remux", "Komic-iOS"); got == "" {
+		t.Fatal("audio cache key should not be empty")
+	}
+	if note := audioAdaptationNote(false); !strings.Contains(note, "首次") {
+		t.Fatalf("first audio cache note = %q", note)
+	}
+	if note := audioAdaptationNote(true); !strings.Contains(note, "命中") {
+		t.Fatalf("hit audio cache note = %q", note)
+	}
 }
 
 // fakeABS stands in for an Audiobookshelf server. It serves the item metadata
