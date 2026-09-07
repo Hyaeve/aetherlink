@@ -407,6 +407,7 @@ func (s *Server) relayTranscoded(writer http.ResponseWriter, request *http.Reque
 	mode := audioAdaptationMode(resolution, source)
 	key := audioCacheKey(source, mode, s.resolver.EffectiveUserAgent(request.UserAgent()))
 	bookName := audioCacheBookName(resolution, source)
+	filename := audioCacheFilename(resolution, source)
 	buildContext := context.WithoutCancel(request.Context())
 	if s.redirect.StreamTimeout > 0 {
 		var cancel context.CancelFunc
@@ -414,7 +415,7 @@ func (s *Server) relayTranscoded(writer http.ResponseWriter, request *http.Reque
 		defer cancel()
 	}
 
-	cachePath, cacheHit, err := s.audioCache.getOrCreate(buildContext, bookName, key, func(destination string) error {
+	cachePath, cacheHit, err := s.audioCache.getOrCreate(buildContext, bookName, key, filename, func(destination string) error {
 		return s.transcodeToFile(buildContext, request, source, resolution, destination)
 	})
 	if err != nil {
@@ -556,6 +557,28 @@ func audioCacheBookName(resolution *resolver.Resolution, source string) string {
 	return "未命名"
 }
 
+func audioCacheFilename(resolution *resolver.Resolution, source string) string {
+	name := ""
+	if resolution != nil && resolution.Target != nil {
+		name = resolution.Target.Filename
+		if resolution.Target.Type == strm.TargetLocal && resolution.Target.Path != "" {
+			name = path.Base(resolution.Target.Path)
+		}
+	}
+	if name == "" {
+		if parsed, err := url.Parse(source); err == nil {
+			name = path.Base(parsed.Path)
+		}
+	}
+	name = strings.TrimSpace(name)
+	if name == "" || name == "." || name == "/" {
+		name = "audio"
+	}
+	name = strings.TrimSuffix(name, path.Ext(name))
+	name = sanitizeAudioCacheName(name)
+	return name + ".m4a"
+}
+
 func sanitizeAudioCacheName(name string) string {
 	name = strings.TrimSpace(name)
 	if name == "" || name == "." || name == ".." {
@@ -581,14 +604,15 @@ func (c *audioCache) cacheDirectory(bookName string) string {
 	return filepath.Join(c.dir, sanitizeAudioCacheName(bookName))
 }
 
-func (c *audioCache) cachePath(bookName, key string) string {
-	return filepath.Join(c.cacheDirectory(bookName), key+".m4a")
+func (c *audioCache) cachePath(bookName, key, filename string) string {
+	return filepath.Join(c.cacheDirectory(bookName), key, filename)
 }
 
-func (c *audioCache) getOrCreate(ctx context.Context, bookName, key string, build func(string) error) (string, bool, error) {
+func (c *audioCache) getOrCreate(ctx context.Context, bookName, key, filename string, build func(string) error) (string, bool, error) {
 	now := time.Now()
 	bookDirectory := c.cacheDirectory(bookName)
-	if err := os.MkdirAll(bookDirectory, 0o755); err != nil {
+	variantDirectory := filepath.Join(bookDirectory, key)
+	if err := os.MkdirAll(variantDirectory, 0o755); err != nil {
 		return "", false, fmt.Errorf("create audio cache directory: %w", err)
 	}
 
@@ -612,7 +636,7 @@ func (c *audioCache) getOrCreate(ctx context.Context, bookName, key string, buil
 		}
 	}
 
-	finalPath := c.cachePath(bookName, key)
+	finalPath := c.cachePath(bookName, key, filename)
 	if info, err := os.Stat(finalPath); err == nil && !info.IsDir() && info.Size() > 0 {
 		entry := &audioCacheEntry{path: finalPath, ready: make(chan struct{}), lastUsed: now}
 		close(entry.ready)
@@ -622,7 +646,7 @@ func (c *audioCache) getOrCreate(ctx context.Context, bookName, key string, buil
 		return finalPath, true, nil
 	}
 
-	temporary, err := os.CreateTemp(bookDirectory, key+"-*.part")
+	temporary, err := os.CreateTemp(variantDirectory, ".aetherlink-*.part")
 	if err != nil {
 		c.mu.Unlock()
 		return "", false, fmt.Errorf("create audio cache file: %w", err)
