@@ -21,7 +21,7 @@ RUN go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/aethe
 
 FROM alpine:3.21
 # su-exec 用于入口脚本修正 /config 属主后降权，比 gosu 小得多。
-RUN apk add --no-cache ca-certificates tzdata wget su-exec && \
+RUN apk add --no-cache ca-certificates tzdata wget su-exec ffmpeg && \
     addgroup -g 10001 aetherlink && \
     adduser -D -H -u 10001 -G aetherlink aetherlink && \
     mkdir -p /config && chown 10001:10001 /config

@@ -3,6 +3,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"os/exec"
 	"path"
 	"strings"
 	"time"
@@ -50,12 +52,17 @@ type Server struct {
 
 	// streamClient relays bytes when a 302 is not appropriate.
 	streamClient *http.Client
+	ffmpegPath   string
 }
 
 type responseRewriteContextKey struct{}
 
 // New builds the proxy serving one upstream.
 func New(provider upstream.Provider, mediaResolver *resolver.Resolver, collector *stats.Collector, redirectCfg config.Redirect) *Server {
+	ffmpegPath, _ := exec.LookPath("ffmpeg")
+	if ffmpegPath == "" {
+		logx.Warnf("[%s] 未找到 FFmpeg，Apple 客户端播放 WMA/AAC 时将继续使用原有 302 或中继逻辑", provider.Name())
+	}
 	server := &Server{
 		provider: provider,
 		proxy:    newReverseProxy(provider, mediaResolver),
@@ -75,6 +82,7 @@ func New(provider upstream.Provider, mediaResolver *resolver.Resolver, collector
 				ExpectContinueTimeout: 1 * time.Second,
 			},
 		},
+		ffmpegPath: ffmpegPath,
 	}
 	return server
 }
@@ -262,6 +270,20 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 	}
 
 	if resolution.Target != nil && resolution.Target.Type == strm.TargetLocal {
+		if s.shouldTranscode(request, resolution) {
+			event.Target = resolution.Target.Path
+			event.StatusCode = http.StatusOK
+			event.Outcome = stats.OutcomeTranscode
+			status, err := s.relayTranscoded(writer, request, resolution.Target.Path)
+			event.StatusCode = status
+			if err != nil {
+				event.Error = err.Error()
+				finish(stats.OutcomeError, "Apple 客户端音频格式不兼容，FFmpeg 转码失败")
+				return
+			}
+			finish(stats.OutcomeTranscode, "Apple 客户端音频格式不兼容，已转为 AAC-M4A 中继")
+			return
+		}
 		event.Target = resolution.Target.Path
 		event.StatusCode = http.StatusOK
 		finish(stats.OutcomeLocalFile, cacheNote(event)+"；指针指向本容器内的文件，直接读盘返回")
@@ -271,6 +293,18 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 
 	playURL := resolution.PlayURL()
 	event.Target = playURL
+	if s.shouldTranscode(request, resolution) {
+		event.StatusCode = http.StatusOK
+		status, err := s.relayTranscoded(writer, request, playURL)
+		event.StatusCode = status
+		if err != nil {
+			event.Error = err.Error()
+			finish(stats.OutcomeError, "Apple 客户端音频格式不兼容，FFmpeg 转码失败")
+			return
+		}
+		finish(stats.OutcomeTranscode, "Apple 客户端音频格式不兼容，已转为 AAC-M4A 中继")
+		return
+	}
 
 	if s.resolver.ShouldRedirectWith(resolution, s.redirect) {
 		event.StatusCode = http.StatusFound
@@ -326,6 +360,8 @@ func (s *Server) logOutcome(event stats.Event, note string) {
 		logx.Infof("[%s] 本地直读 %s -> %s（%dms）：%s；%s", event.Upstream, event.Path, event.Target, milliseconds, note, userAgentNote(event))
 	case stats.OutcomeProxyStream:
 		logx.Infof("[%s] 中继 %s -> %s（状态 %d，%dms）：%s；%s", event.Upstream, event.Path, event.Target, event.StatusCode, milliseconds, note, userAgentNote(event))
+	case stats.OutcomeTranscode:
+		logx.Infof("[%s] 转码中继 %s -> %s（状态 %d，%dms）：%s；%s", event.Upstream, event.Path, event.Target, event.StatusCode, milliseconds, note, userAgentNote(event))
 	case stats.OutcomePassthrough:
 		if event.Error != "" {
 			logx.Warnf("[%s] 透传 %s（%dms）：%s；UA：%s；原因：%s", event.Upstream, event.Path, milliseconds, note, userAgentNote(event), event.Error)
@@ -335,6 +371,78 @@ func (s *Server) logOutcome(event stats.Event, note string) {
 	default:
 		logx.Errorf("[%s] 失败 %s（%dms）：%s；UA：%s；原因：%s", event.Upstream, event.Path, milliseconds, note, userAgentNote(event), event.Error)
 	}
+}
+
+func (s *Server) shouldTranscode(request *http.Request, resolution *resolver.Resolution) bool {
+	return s.ffmpegPath != "" && request.Method != http.MethodHead && isAppleAudioClient(request.UserAgent()) && isIncompatibleAudio(resolution)
+}
+
+func isAppleAudioClient(userAgent string) bool {
+	lowered := strings.ToLower(userAgent)
+	return strings.Contains(lowered, "iphone") || strings.Contains(lowered, "ipad") ||
+		strings.Contains(lowered, "ipod") || strings.Contains(lowered, "applecoremedia") ||
+		strings.Contains(lowered, "ios")
+}
+
+func isIncompatibleAudio(resolution *resolver.Resolution) bool {
+	if resolution == nil || resolution.Target == nil {
+		return false
+	}
+	name := resolution.Target.Filename
+	if resolution.Target.Type == strm.TargetLocal {
+		name = resolution.Target.Path
+	} else if resolution.Target.URL != "" {
+		name = resolution.Target.URL + " " + name
+	}
+	extension := strings.ToLower(path.Ext(name))
+	return extension == ".wma" || extension == ".aac"
+}
+
+func (s *Server) relayTranscoded(writer http.ResponseWriter, request *http.Request, source string) (int, error) {
+	ctx := request.Context()
+	if s.redirect.StreamTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.redirect.StreamTimeout)
+		defer cancel()
+	}
+
+	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin"}
+	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
+		args = append(args, "-user_agent", s.resolver.EffectiveUserAgent(request.UserAgent()))
+	}
+	args = append(args,
+		"-i", source,
+		"-map", "0:a:0",
+		"-vn",
+		"-c:a", "aac",
+		"-b:a", "128k",
+		"-f", "mp4",
+		"-movflags", "frag_keyframe+empty_moov+default_base_moof",
+		"pipe:1",
+	)
+
+	command := exec.CommandContext(ctx, s.ffmpegPath, args...)
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	command.Stdout = writer
+	writer.Header().Set("Content-Type", "audio/mp4")
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("Accept-Ranges", "none")
+	writer.WriteHeader(http.StatusOK)
+	if flusher, ok := writer.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	if request.Method == http.MethodHead {
+		return http.StatusOK, nil
+	}
+	if err := command.Run(); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message != "" {
+			return http.StatusBadGateway, fmt.Errorf("ffmpeg: %s: %w", message, err)
+		}
+		return http.StatusBadGateway, fmt.Errorf("ffmpeg: %w", err)
+	}
+	return http.StatusOK, nil
 }
 
 func displayKind(kind string) string {

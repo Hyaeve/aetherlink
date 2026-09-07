@@ -15,8 +15,47 @@ import (
 	"github.com/aetherlink/aetherlink/internal/pathmap"
 	"github.com/aetherlink/aetherlink/internal/resolver"
 	"github.com/aetherlink/aetherlink/internal/stats"
+	"github.com/aetherlink/aetherlink/internal/strm"
 	"github.com/aetherlink/aetherlink/internal/upstream"
 )
+
+func TestAppleAudioTranscodeDetection(t *testing.T) {
+	if !isAppleAudioClient("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1") {
+		t.Fatal("iPhone User-Agent should be recognized")
+	}
+	if !isAppleAudioClient("Player/1.0 iOS") {
+		t.Fatal("iOS User-Agent should be recognized")
+	}
+	if isAppleAudioClient("Mozilla/5.0 (X11; Linux x86_64) Chrome/130") {
+		t.Fatal("Linux User-Agent should not be recognized as Apple")
+	}
+
+	remote := &resolver.Resolution{Target: &strm.Target{
+		Type:     strm.TargetRemote,
+		URL:      "https://example.test/audio/track.bin?filename=book.wma",
+		Filename: "book.wma",
+	}}
+	if !isIncompatibleAudio(remote) {
+		t.Fatal("WMA remote target should require transcode")
+	}
+
+	local := &resolver.Resolution{Target: &strm.Target{
+		Type: strm.TargetLocal,
+		Path: "/media/chapter.aac",
+	}}
+	if !isIncompatibleAudio(local) {
+		t.Fatal("AAC local target should require transcode")
+	}
+
+	compatible := &resolver.Resolution{Target: &strm.Target{
+		Type:     strm.TargetRemote,
+		URL:      "https://example.test/audio/chapter.m4a",
+		Filename: "chapter.m4a",
+	}}
+	if isIncompatibleAudio(compatible) {
+		t.Fatal("M4A target should keep the normal 302 path")
+	}
+}
 
 // fakeABS stands in for an Audiobookshelf server. It serves the item metadata
 // used to locate media on disk plus a plain UI route for pass-through checks.

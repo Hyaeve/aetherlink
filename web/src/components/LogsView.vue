@@ -22,6 +22,7 @@ const OUTCOME_LABELS = {
   redirect: '302 跳转',
   passthrough: '透传上游',
   proxy: 'AetherLink 中继',
+  transcode: 'AAC 转码中继',
   local: '本地直读',
   error: '失败',
   unauthorized: '未授权'
@@ -79,7 +80,7 @@ function outcomeLabel(outcome) {
 
 function outcomeClass(outcome) {
   if (outcome === 'redirect' || outcome === 'local') return 'tag ok'
-  if (outcome === 'passthrough' || outcome === 'proxy') return 'tag warn'
+  if (outcome === 'passthrough' || outcome === 'proxy' || outcome === 'transcode') return 'tag warn'
   return 'tag bad'
 }
 
@@ -244,6 +245,7 @@ onUnmounted(() => {
             <option value="redirect">302 跳转</option>
             <option value="passthrough">透传上游</option>
             <option value="proxy">AetherLink 中继</option>
+            <option value="transcode">AAC 转码中继</option>
             <option value="local">本地直读</option>
             <option value="error">失败</option>
           </select>

@@ -17,6 +17,7 @@ const (
 	OutcomeProxyStream  Outcome = "proxy"
 	OutcomeLocalFile    Outcome = "local"
 	OutcomePassthrough  Outcome = "passthrough"
+	OutcomeTranscode    Outcome = "transcode"
 	OutcomeError        Outcome = "error"
 	OutcomeUnauthorized Outcome = "unauthorized"
 )
@@ -50,6 +51,7 @@ type Snapshot struct {
 	TotalRequests uint64            `json:"totalRequests"`
 	Redirects     uint64            `json:"redirects"`
 	ProxyStreams  uint64            `json:"proxyStreams"`
+	Transcodes    uint64            `json:"transcodes"`
 	LocalFiles    uint64            `json:"localFiles"`
 	Passthroughs  uint64            `json:"passthroughs"`
 	Errors        uint64            `json:"errors"`
@@ -138,6 +140,7 @@ func (c *Collector) Snapshot(eventLimit int) Snapshot {
 		TotalRequests: c.total,
 		Redirects:     c.counts[OutcomeRedirect],
 		ProxyStreams:  c.counts[OutcomeProxyStream],
+		Transcodes:    c.counts[OutcomeTranscode],
 		LocalFiles:    c.counts[OutcomeLocalFile],
 		Passthroughs:  c.counts[OutcomePassthrough],
 		Errors:        c.counts[OutcomeError],
