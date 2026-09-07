@@ -424,6 +424,9 @@ func (s *Server) relayTranscoded(writer http.ResponseWriter, request *http.Reque
 	args = append(args,
 		"-f", "mp4",
 		"-movflags", "frag_keyframe+empty_moov+default_base_moof",
+		"-flush_packets", "1",
+		"-muxdelay", "0",
+		"-max_delay", "0",
 		"pipe:1",
 	)
 
@@ -434,6 +437,7 @@ func (s *Server) relayTranscoded(writer http.ResponseWriter, request *http.Reque
 
 	if request.Method == http.MethodHead {
 		writer.Header().Set("Content-Type", "audio/mp4")
+		writer.Header().Set("Content-Disposition", `inline; filename="aetherlink.m4a"`)
 		writer.Header().Set("Cache-Control", "no-store")
 		writer.Header().Set("Accept-Ranges", "none")
 		writer.WriteHeader(http.StatusOK)
@@ -450,30 +454,15 @@ func (s *Server) relayTranscoded(writer http.ResponseWriter, request *http.Reque
 	}
 	logx.Infof("[%s] FFmpeg 音频适配开始 %s：%s，输入格式 %s；UA：%s", s.provider.Name(), request.URL.Path, label, displayInputFormat(inputFormat), s.resolver.EffectiveUserAgent(request.UserAgent()))
 
-	firstChunk := make([]byte, 32*1024)
-	readCount, readErr := stdout.Read(firstChunk)
-	if readCount == 0 && readErr != nil {
-		waitErr := command.Wait()
-		if waitErr != nil {
-			return http.StatusBadGateway, progress.errorWith(waitErr)
-		}
-		return http.StatusBadGateway, progress.errorWith(readErr)
-	}
-
 	writer.Header().Set("Content-Type", "audio/mp4")
+	writer.Header().Set("Content-Disposition", `inline; filename="aetherlink.m4a"`)
 	writer.Header().Set("Cache-Control", "no-store")
 	writer.Header().Set("Accept-Ranges", "none")
 	writer.WriteHeader(http.StatusOK)
 	if flusher, ok := writer.(http.Flusher); ok {
 		flusher.Flush()
 	}
-	if readCount > 0 {
-		if _, err := writer.Write(firstChunk[:readCount]); err != nil {
-			_ = command.Process.Kill()
-			_ = command.Wait()
-			return http.StatusOK, nil
-		}
-	}
+	logx.Infof("[%s] FFmpeg 音频适配响应已建立 %s：等待首个 M4A 分片", s.provider.Name(), request.URL.Path)
 	if _, copyErr := io.Copy(writer, stdout); copyErr != nil {
 		_ = command.Process.Kill()
 		_ = command.Wait()
