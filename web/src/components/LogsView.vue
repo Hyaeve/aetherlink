@@ -22,7 +22,7 @@ const OUTCOME_LABELS = {
   redirect: '302 跳转',
   passthrough: '透传上游',
   proxy: 'AetherLink 中继',
-  transcode: 'AAC 转码中继',
+  transcode: '音频兼容中继',
   local: '本地直读',
   error: '失败',
   unauthorized: '未授权'
@@ -245,7 +245,7 @@ onUnmounted(() => {
             <option value="redirect">302 跳转</option>
             <option value="passthrough">透传上游</option>
             <option value="proxy">AetherLink 中继</option>
-            <option value="transcode">AAC 转码中继</option>
+            <option value="transcode">音频兼容中继</option>
             <option value="local">本地直读</option>
             <option value="error">失败</option>
           </select>

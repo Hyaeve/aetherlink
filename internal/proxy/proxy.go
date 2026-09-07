@@ -15,7 +15,9 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aetherlink/aetherlink/internal/config"
@@ -272,16 +274,14 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 	if resolution.Target != nil && resolution.Target.Type == strm.TargetLocal {
 		if s.shouldTranscode(request, resolution) {
 			event.Target = resolution.Target.Path
-			event.StatusCode = http.StatusOK
-			event.Outcome = stats.OutcomeTranscode
-			status, err := s.relayTranscoded(writer, request, resolution.Target.Path)
+			status, err := s.relayTranscoded(writer, request, resolution.Target.Path, resolution)
 			event.StatusCode = status
 			if err != nil {
 				event.Error = err.Error()
-				finish(stats.OutcomeError, "Apple 客户端音频格式不兼容，FFmpeg 转码失败")
+				finish(stats.OutcomeError, "Apple 客户端音频格式不兼容，FFmpeg 音频适配失败")
 				return
 			}
-			finish(stats.OutcomeTranscode, "Apple 客户端音频格式不兼容，已转为 AAC-M4A 中继")
+			finish(stats.OutcomeTranscode, "Apple 客户端音频格式不兼容，已适配为 M4A 中继")
 			return
 		}
 		event.Target = resolution.Target.Path
@@ -294,15 +294,14 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 	playURL := resolution.PlayURL()
 	event.Target = playURL
 	if s.shouldTranscode(request, resolution) {
-		event.StatusCode = http.StatusOK
-		status, err := s.relayTranscoded(writer, request, playURL)
+		status, err := s.relayTranscoded(writer, request, playURL, resolution)
 		event.StatusCode = status
 		if err != nil {
 			event.Error = err.Error()
-			finish(stats.OutcomeError, "Apple 客户端音频格式不兼容，FFmpeg 转码失败")
+			finish(stats.OutcomeError, "Apple 客户端音频格式不兼容，FFmpeg 音频适配失败")
 			return
 		}
-		finish(stats.OutcomeTranscode, "Apple 客户端音频格式不兼容，已转为 AAC-M4A 中继")
+		finish(stats.OutcomeTranscode, "Apple 客户端音频格式不兼容，已适配为 M4A 中继")
 		return
 	}
 
@@ -374,7 +373,7 @@ func (s *Server) logOutcome(event stats.Event, note string) {
 }
 
 func (s *Server) shouldTranscode(request *http.Request, resolution *resolver.Resolution) bool {
-	return s.ffmpegPath != "" && request.Method != http.MethodHead && isAppleAudioClient(request.UserAgent()) && isIncompatibleAudio(resolution)
+	return s.ffmpegPath != "" && isAppleAudioClient(request.UserAgent()) && isIncompatibleAudio(resolution)
 }
 
 func isAppleAudioClient(userAgent string) bool {
@@ -398,7 +397,7 @@ func isIncompatibleAudio(resolution *resolver.Resolution) bool {
 	return extension == ".wma" || extension == ".aac"
 }
 
-func (s *Server) relayTranscoded(writer http.ResponseWriter, request *http.Request, source string) (int, error) {
+func (s *Server) relayTranscoded(writer http.ResponseWriter, request *http.Request, source string, resolution *resolver.Resolution) (int, error) {
 	ctx := request.Context()
 	if s.redirect.StreamTimeout > 0 {
 		var cancel context.CancelFunc
@@ -406,25 +405,61 @@ func (s *Server) relayTranscoded(writer http.ResponseWriter, request *http.Reque
 		defer cancel()
 	}
 
-	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin"}
+	inputFormat := transcodeInputFormat(resolution, source)
+	mode := audioAdaptationMode(resolution, source)
+	codecArgs, label := audioAdaptationArgs(mode)
+	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-stats_period", "5", "-progress", "pipe:2", "-analyzeduration", "1M", "-probesize", "1M"}
 	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
 		args = append(args, "-user_agent", s.resolver.EffectiveUserAgent(request.UserAgent()))
+	}
+	if inputFormat != "" {
+		args = append(args, "-f", inputFormat)
 	}
 	args = append(args,
 		"-i", source,
 		"-map", "0:a:0",
 		"-vn",
-		"-c:a", "aac",
-		"-b:a", "128k",
+	)
+	args = append(args, codecArgs...)
+	args = append(args,
 		"-f", "mp4",
 		"-movflags", "frag_keyframe+empty_moov+default_base_moof",
 		"pipe:1",
 	)
 
 	command := exec.CommandContext(ctx, s.ffmpegPath, args...)
-	var stderr bytes.Buffer
-	command.Stderr = &stderr
-	command.Stdout = writer
+	progress := newTranscodeProgress(s.provider.Name(), request.URL.Path)
+	command.Stderr = progress
+	command.Stdout = nil
+
+	if request.Method == http.MethodHead {
+		writer.Header().Set("Content-Type", "audio/mp4")
+		writer.Header().Set("Cache-Control", "no-store")
+		writer.Header().Set("Accept-Ranges", "none")
+		writer.WriteHeader(http.StatusOK)
+		logx.Infof("[%s] FFmpeg 音频适配预检 %s：%s，输入格式 %s；UA：%s", s.provider.Name(), request.URL.Path, label, displayInputFormat(inputFormat), s.resolver.EffectiveUserAgent(request.UserAgent()))
+		return http.StatusOK, nil
+	}
+
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return http.StatusBadGateway, err
+	}
+	if err := command.Start(); err != nil {
+		return http.StatusBadGateway, fmt.Errorf("ffmpeg start: %w", err)
+	}
+	logx.Infof("[%s] FFmpeg 音频适配开始 %s：%s，输入格式 %s；UA：%s", s.provider.Name(), request.URL.Path, label, displayInputFormat(inputFormat), s.resolver.EffectiveUserAgent(request.UserAgent()))
+
+	firstChunk := make([]byte, 32*1024)
+	readCount, readErr := stdout.Read(firstChunk)
+	if readCount == 0 && readErr != nil {
+		waitErr := command.Wait()
+		if waitErr != nil {
+			return http.StatusBadGateway, progress.errorWith(waitErr)
+		}
+		return http.StatusBadGateway, progress.errorWith(readErr)
+	}
+
 	writer.Header().Set("Content-Type", "audio/mp4")
 	writer.Header().Set("Cache-Control", "no-store")
 	writer.Header().Set("Accept-Ranges", "none")
@@ -432,17 +467,183 @@ func (s *Server) relayTranscoded(writer http.ResponseWriter, request *http.Reque
 	if flusher, ok := writer.(http.Flusher); ok {
 		flusher.Flush()
 	}
-	if request.Method == http.MethodHead {
-		return http.StatusOK, nil
-	}
-	if err := command.Run(); err != nil {
-		message := strings.TrimSpace(stderr.String())
-		if message != "" {
-			return http.StatusBadGateway, fmt.Errorf("ffmpeg: %s: %w", message, err)
+	if readCount > 0 {
+		if _, err := writer.Write(firstChunk[:readCount]); err != nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+			return http.StatusOK, nil
 		}
-		return http.StatusBadGateway, fmt.Errorf("ffmpeg: %w", err)
 	}
+	if _, copyErr := io.Copy(writer, stdout); copyErr != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		if errors.Is(copyErr, context.Canceled) {
+			return http.StatusOK, nil
+		}
+		return http.StatusOK, copyErr
+	}
+	if waitErr := command.Wait(); waitErr != nil {
+		return http.StatusBadGateway, progress.errorWith(waitErr)
+	}
+	progress.finish()
 	return http.StatusOK, nil
+}
+
+type transcodeProgress struct {
+	mu          sync.Mutex
+	diagnostics bytes.Buffer
+	pending     string
+	upstream    string
+	path        string
+	started     time.Time
+	lastLog     time.Time
+	outTime     time.Duration
+	speed       string
+}
+
+func newTranscodeProgress(upstreamName, requestPath string) *transcodeProgress {
+	return &transcodeProgress{
+		upstream: upstreamName,
+		path:     requestPath,
+		started:  time.Now(),
+	}
+}
+
+func (p *transcodeProgress) Write(data []byte) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.pending += string(data)
+	for {
+		index := strings.IndexByte(p.pending, '\n')
+		if index < 0 {
+			break
+		}
+		line := strings.TrimSpace(p.pending[:index])
+		p.pending = p.pending[index+1:]
+		p.consume(line)
+	}
+	return len(data), nil
+}
+
+func (p *transcodeProgress) consume(line string) {
+	if !isProgressLine(line) {
+		p.diagnostics.WriteString(line)
+		p.diagnostics.WriteByte('\n')
+	}
+	if strings.HasPrefix(line, "out_time_ms=") {
+		value, err := strconv.ParseInt(strings.TrimPrefix(line, "out_time_ms="), 10, 64)
+		if err == nil {
+			p.outTime = time.Duration(value) * time.Microsecond
+		}
+	}
+	if strings.HasPrefix(line, "speed=") {
+		p.speed = strings.TrimPrefix(line, "speed=")
+	}
+	if line == "progress=continue" && time.Since(p.lastLog) >= 5*time.Second {
+		p.lastLog = time.Now()
+		logx.Infof("[%s] FFmpeg 转码进度 %s：已输出 %s，速度 %s，已运行 %s", p.upstream, p.path, formatDuration(p.outTime), displaySpeed(p.speed), formatDuration(time.Since(p.started)))
+	}
+}
+
+func (p *transcodeProgress) finish() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	logx.Infof("[%s] FFmpeg 转码完成 %s：输出 %s，耗时 %s", p.upstream, p.path, formatDuration(p.outTime), formatDuration(time.Since(p.started)))
+}
+
+func (p *transcodeProgress) errorWith(commandErr error) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	message := strings.TrimSpace(p.diagnostics.String())
+	if message != "" {
+		return fmt.Errorf("ffmpeg: %s: %w", message, commandErr)
+	}
+	return fmt.Errorf("ffmpeg: %w", commandErr)
+}
+
+func isProgressLine(line string) bool {
+	for _, prefix := range []string{
+		"frame=", "fps=", "stream_", "bitrate=", "total_size=", "out_time_us=",
+		"out_time_ms=", "out_time=", "dup_frames=", "drop_frames=", "speed=", "progress=",
+	} {
+		if strings.HasPrefix(line, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func transcodeInputFormat(resolution *resolver.Resolution, source string) string {
+	name := source
+	if resolution != nil && resolution.Target != nil {
+		if resolution.Target.Filename != "" {
+			name = resolution.Target.Filename
+		}
+		if resolution.Target.Type == strm.TargetLocal && resolution.Target.Path != "" {
+			name = resolution.Target.Path
+		}
+	}
+	switch strings.ToLower(path.Ext(name)) {
+	case ".aac":
+		return "aac"
+	case ".wma":
+		return "asf"
+	default:
+		return ""
+	}
+}
+
+func audioAdaptationMode(resolution *resolver.Resolution, source string) string {
+	name := source
+	if resolution != nil && resolution.Target != nil {
+		if resolution.Target.Filename != "" {
+			name = resolution.Target.Filename
+		}
+		if resolution.Target.Type == strm.TargetLocal && resolution.Target.Path != "" {
+			name = resolution.Target.Path
+		}
+	}
+	switch strings.ToLower(path.Ext(name)) {
+	case ".aac":
+		return "aac-remux"
+	case ".wma":
+		return "wma-transcode"
+	default:
+		return ""
+	}
+}
+
+func audioAdaptationArgs(mode string) ([]string, string) {
+	if mode == "aac-remux" {
+		return []string{"-c:a", "copy", "-bsf:a", "aac_adtstoasc"}, "AAC 重新封装为 M4A"
+	}
+	return []string{"-c:a", "aac", "-profile:a", "aac_low", "-b:a", "128k"}, "WMA 转 AAC-LC M4A"
+}
+
+func displayInputFormat(format string) string {
+	if format == "" {
+		return "自动识别"
+	}
+	return format
+}
+
+func displaySpeed(speed string) string {
+	if speed == "" || speed == "N/A" {
+		return "计算中"
+	}
+	return speed
+}
+
+func formatDuration(value time.Duration) string {
+	if value < time.Second {
+		return value.Round(time.Millisecond).String()
+	}
+	minutes := int(value / time.Minute)
+	seconds := int((value % time.Minute) / time.Second)
+	if minutes > 0 {
+		return fmt.Sprintf("%dm%02ds", minutes, seconds)
+	}
+	return fmt.Sprintf("%ds", seconds)
 }
 
 func displayKind(kind string) string {
