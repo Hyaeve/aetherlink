@@ -9,6 +9,7 @@ services:
       - 5152:5152
     volumes:
       - ./config:/config
+      - ./cache:/cache
     environment:
       - TZ=Asia/Shanghai
     restart: always

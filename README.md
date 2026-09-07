@@ -63,6 +63,7 @@ docker compose up -d
 ```yaml
 volumes:
   - ./config:/config
+  - ./cache:/cache
 ```
 
 要不要额外挂媒体目录，**取决于上游是哪一种**。两种媒体服务器处理 `.strm` 的方式根本不同：
@@ -85,7 +86,7 @@ volumes:
 
 容器以非 root 用户（uid 10001）运行，被挂载的目录需对该用户可读。
 
-关于 Audiobookshelf 那份 compose 里的 `./podcasts:/podcasts`：那是 Audiobookshelf 的播客库目录，用来存它自己下载的播客音频。AetherLink 不需要它——播客是真实文件，走透传交给上游处理。
+`./cache:/cache` 用于持久化 iOS 音频适配缓存。AAC 重新封装或 WMA 转码后的文件会按书名放在 `/cache/<书名>/` 下；连续 2 小时没有再次获取请求后，AetherLink 会自动删除。关于 Audiobookshelf 那份 compose 里的 `./podcasts:/podcasts`：那是 Audiobookshelf 的播客库目录，用来存它自己下载的播客音频。AetherLink 不需要它——播客是真实文件，走透传交给上游处理。
 
 本地开发：
 

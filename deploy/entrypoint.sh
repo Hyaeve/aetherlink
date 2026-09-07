@@ -12,6 +12,7 @@ set -e
 
 config_path="${AETHERLINK_CONFIG:-/config/config.yaml}"
 config_dir=$(dirname "$config_path")
+cache_dir="${AETHERLINK_AUDIO_CACHE_DIR:-/cache}"
 puid="${PUID:-10001}"
 pgid="${PGID:-10001}"
 
@@ -23,28 +24,35 @@ can_write() {
     return 0
 }
 
+can_write_dir() {
+    su-exec "$1:$2" touch "$3/.aetherlink-write-probe" 2>/dev/null || return 1
+    rm -f "$3/.aetherlink-write-probe"
+    return 0
+}
+
 if [ "$(id -u)" != "0" ]; then
     # compose 里指定了 user:，没有改属主的权限，只能提示后照常启动。
-    if [ ! -w "$config_dir" ]; then
-        echo "[entrypoint] 警告：$config_dir 对当前用户 $(id -u):$(id -g) 不可写"
-        echo "[entrypoint] 请在宿主上执行 chown -R $(id -u):$(id -g) 映射到 $config_dir 的目录，"
+    if ! can_write_dir "$(id -u)" "$(id -g)" "$config_dir" || ! can_write_dir "$(id -u)" "$(id -g)" "$cache_dir"; then
+        echo "[entrypoint] 警告：$config_dir 或 $cache_dir 对当前用户 $(id -u):$(id -g) 不可写"
+        echo "[entrypoint] 请在宿主上执行 chown -R $(id -u):$(id -g) 映射到这些目录的目录，"
         echo "[entrypoint] 或去掉 compose 里的 user: 让入口脚本自动处理"
     fi
     exec /aetherlink "$@"
 fi
 
 mkdir -p "$config_dir" 2>/dev/null || true
-# 无条件 chown：目录里只有配置文件，代价可以忽略。
+# 无条件 chown：配置与音频适配缓存都需要持久化写入。
 # 这同时修好了历史遗留的 root 属主配置文件（早期版本以 root 跑过的情况）。
-chown -R "$puid:$pgid" "$config_dir" 2>/dev/null || true
+mkdir -p "$cache_dir" 2>/dev/null || true
+chown -R "$puid:$pgid" "$config_dir" "$cache_dir" 2>/dev/null || true
 
-if can_write "$puid" "$pgid"; then
+if can_write "$puid" "$pgid" && can_write_dir "$puid" "$pgid" "$cache_dir"; then
     exec su-exec "$puid:$pgid" /aetherlink "$@"
 fi
 
 # 属主改不动但 root 写得进去：部分 NAS 的 SMB/NFS 挂载、带强制 ACL 的存储池会这样。
 # 这时宁可以 root 跑也不要陷入重启循环——至少界面能打开、配置能保存。
-if can_write 0 0; then
+if can_write 0 0 && can_write_dir 0 0 "$cache_dir"; then
     echo "[entrypoint] 警告：$puid:$pgid 无法写入 $config_dir，改以 root 运行"
     echo "[entrypoint] 这会让配置文件归 root 所有。想以普通用户运行，请在宿主上执行："
     echo "[entrypoint]   chown -R $puid:$pgid <宿主上映射到 $config_dir 的目录>"
@@ -53,9 +61,10 @@ fi
 
 # 连 root 都写不进去，通常是把 /config 挂成了只读。继续启动只会反复失败退出，
 # 不如把原因一次说清楚。
-echo "[entrypoint] 错误：$config_dir 必须可写，但连 root 都写不进去"
-echo "[entrypoint] AetherLink 把管理口令与上游配置保存在 $config_path，没有可写目录无法运行。"
+echo "[entrypoint] 错误：$config_dir 与 $cache_dir 必须可写，但连 root 都写不进去"
+echo "[entrypoint] AetherLink 把管理口令与上游配置保存在 $config_path，并将 iOS 音频适配缓存保存在 $cache_dir。"
 echo "[entrypoint] 请检查 compose 的卷定义有没有写成只读（结尾的 :ro），例如应当是："
 echo "[entrypoint]   volumes:"
 echo "[entrypoint]     - ./config:/config"
+echo "[entrypoint]     - ./cache:/cache"
 exit 1

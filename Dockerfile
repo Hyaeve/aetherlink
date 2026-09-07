@@ -24,7 +24,7 @@ FROM alpine:3.21
 RUN apk add --no-cache ca-certificates tzdata wget su-exec ffmpeg && \
     addgroup -g 10001 aetherlink && \
     adduser -D -H -u 10001 -G aetherlink aetherlink && \
-    mkdir -p /config && chown 10001:10001 /config
+    mkdir -p /config /cache && chown 10001:10001 /config /cache
 COPY --from=backend /out/aetherlink /aetherlink
 COPY deploy/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
@@ -35,7 +35,7 @@ ENV AETHERLINK_CONFIG=/config/config.yaml \
     PUID=10001 \
     PGID=10001
 EXPOSE 5151
-VOLUME ["/config"]
+VOLUME ["/config", "/cache"]
 # 健康检查用免鉴权的存活探针，不会暴露任何配置。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD wget -qO- http://127.0.0.1:5151/aetherlink/api/health >/dev/null || exit 1

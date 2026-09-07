@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -64,6 +65,31 @@ func TestAppleAudioTranscodeDetection(t *testing.T) {
 	}
 	if note := audioAdaptationNote(true); !strings.Contains(note, "命中") {
 		t.Fatalf("hit audio cache note = %q", note)
+	}
+}
+
+func TestAudioCachePersistsByBookAndRefreshesIdleTime(t *testing.T) {
+	directory := t.TempDir()
+	cache := &audioCache{dir: directory, entries: make(map[string]*audioCacheEntry)}
+	key := audioCacheKey("https://example.test/book.aac", "aac-remux", "Komic-iOS")
+
+	filename, hit, err := cache.getOrCreate(context.Background(), "测试书", key, func(destination string) error {
+		return os.WriteFile(destination, []byte("m4a"), 0o600)
+	})
+	if err != nil || hit {
+		t.Fatalf("first cache request = filename %q hit %v err %v", filename, hit, err)
+	}
+	if filepath.Base(filepath.Dir(filename)) != "测试书" {
+		t.Fatalf("cache directory = %q, want book name", filepath.Base(filepath.Dir(filename)))
+	}
+
+	restarted := &audioCache{dir: directory, entries: make(map[string]*audioCacheEntry)}
+	restored, hit, err := restarted.getOrCreate(context.Background(), "测试书", key, func(string) error {
+		t.Fatal("cache rebuild should not run after restart")
+		return nil
+	})
+	if err != nil || !hit || restored != filename {
+		t.Fatalf("restored cache = filename %q hit %v err %v", restored, hit, err)
 	}
 }
 

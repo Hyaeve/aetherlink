@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/aetherlink/aetherlink/internal/config"
 	"github.com/aetherlink/aetherlink/internal/logx"
@@ -405,6 +406,7 @@ func isIncompatibleAudio(resolution *resolver.Resolution) bool {
 func (s *Server) relayTranscoded(writer http.ResponseWriter, request *http.Request, source string, resolution *resolver.Resolution) (int, bool, error) {
 	mode := audioAdaptationMode(resolution, source)
 	key := audioCacheKey(source, mode, s.resolver.EffectiveUserAgent(request.UserAgent()))
+	bookName := audioCacheBookName(resolution, source)
 	buildContext := context.WithoutCancel(request.Context())
 	if s.redirect.StreamTimeout > 0 {
 		var cancel context.CancelFunc
@@ -412,7 +414,7 @@ func (s *Server) relayTranscoded(writer http.ResponseWriter, request *http.Reque
 		defer cancel()
 	}
 
-	cachePath, cacheHit, err := s.audioCache.getOrCreate(buildContext, key, func(destination string) error {
+	cachePath, cacheHit, err := s.audioCache.getOrCreate(buildContext, bookName, key, func(destination string) error {
 		return s.transcodeToFile(buildContext, request, source, resolution, destination)
 	})
 	if err != nil {
@@ -492,6 +494,7 @@ func audioAdaptationNote(cacheHit bool) string {
 }
 
 const audioCacheIdle = 2 * time.Hour
+const defaultAudioCacheDir = "/cache"
 
 type audioCache struct {
 	mu      sync.Mutex
@@ -507,8 +510,12 @@ type audioCacheEntry struct {
 }
 
 func newAudioCache() *audioCache {
+	directory := strings.TrimSpace(os.Getenv("AETHERLINK_AUDIO_CACHE_DIR"))
+	if directory == "" {
+		directory = defaultAudioCacheDir
+	}
 	cache := &audioCache{
-		dir:     filepath.Join(os.TempDir(), "aetherlink-audio-cache"),
+		dir:     directory,
 		entries: make(map[string]*audioCacheEntry),
 	}
 	go cache.cleanupLoop()
@@ -520,9 +527,68 @@ func audioCacheKey(source, mode, userAgent string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (c *audioCache) getOrCreate(ctx context.Context, key string, build func(string) error) (string, bool, error) {
+func audioCacheBookName(resolution *resolver.Resolution, source string) string {
+	candidates := make([]string, 0, 4)
+	if resolution != nil {
+		candidates = append(candidates, resolution.ContainerPath)
+		if resolution.Target != nil {
+			candidates = append(candidates, resolution.Target.Path, resolution.Target.URL)
+		}
+	}
+	candidates = append(candidates, source)
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		if parsed, err := url.Parse(candidate); err == nil && parsed.Path != "" {
+			candidate = parsed.Path
+		}
+		candidate = path.Clean(candidate)
+		book := path.Base(path.Dir(candidate))
+		if book != "." && book != "/" && book != "" {
+			return sanitizeAudioCacheName(book)
+		}
+	}
+	if resolution != nil && resolution.Target != nil && resolution.Target.Filename != "" {
+		return sanitizeAudioCacheName(strings.TrimSuffix(resolution.Target.Filename, path.Ext(resolution.Target.Filename)))
+	}
+	return "未命名"
+}
+
+func sanitizeAudioCacheName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || name == "." || name == ".." {
+		return "未命名"
+	}
+	name = strings.Map(func(character rune) rune {
+		if unicode.IsControl(character) || strings.ContainsRune(`<>:"/\\|?*`, character) {
+			return '_'
+		}
+		return character
+	}, name)
+	name = strings.Trim(name, " .")
+	if name == "" || name == "." || name == ".." {
+		return "未命名"
+	}
+	if len([]rune(name)) > 96 {
+		name = string([]rune(name)[:96])
+	}
+	return name
+}
+
+func (c *audioCache) cacheDirectory(bookName string) string {
+	return filepath.Join(c.dir, sanitizeAudioCacheName(bookName))
+}
+
+func (c *audioCache) cachePath(bookName, key string) string {
+	return filepath.Join(c.cacheDirectory(bookName), key+".m4a")
+}
+
+func (c *audioCache) getOrCreate(ctx context.Context, bookName, key string, build func(string) error) (string, bool, error) {
 	now := time.Now()
-	if err := os.MkdirAll(c.dir, 0o755); err != nil {
+	bookDirectory := c.cacheDirectory(bookName)
+	if err := os.MkdirAll(bookDirectory, 0o755); err != nil {
 		return "", false, fmt.Errorf("create audio cache directory: %w", err)
 	}
 
@@ -539,13 +605,24 @@ func (c *audioCache) getOrCreate(ctx context.Context, key string, build func(str
 			c.mu.Lock()
 			entry.lastUsed = time.Now()
 			c.mu.Unlock()
+			_ = touchAudioCacheFile(entry.path)
 			return entry.path, true, nil
 		case <-ctx.Done():
 			return "", true, ctx.Err()
 		}
 	}
 
-	temporary, err := os.CreateTemp(c.dir, key+"-*.part")
+	finalPath := c.cachePath(bookName, key)
+	if info, err := os.Stat(finalPath); err == nil && !info.IsDir() && info.Size() > 0 {
+		entry := &audioCacheEntry{path: finalPath, ready: make(chan struct{}), lastUsed: now}
+		close(entry.ready)
+		c.entries[key] = entry
+		c.mu.Unlock()
+		_ = touchAudioCacheFile(finalPath)
+		return finalPath, true, nil
+	}
+
+	temporary, err := os.CreateTemp(bookDirectory, key+"-*.part")
 	if err != nil {
 		c.mu.Unlock()
 		return "", false, fmt.Errorf("create audio cache file: %w", err)
@@ -556,7 +633,6 @@ func (c *audioCache) getOrCreate(ctx context.Context, key string, build func(str
 		_ = os.Remove(temporaryPath)
 		return "", false, fmt.Errorf("close audio cache file: %w", err)
 	}
-	finalPath := strings.TrimSuffix(temporaryPath, ".part") + ".m4a"
 	entry := &audioCacheEntry{path: finalPath, ready: make(chan struct{}), lastUsed: now}
 	c.entries[key] = entry
 	c.mu.Unlock()
@@ -580,7 +656,13 @@ func (c *audioCache) getOrCreate(ctx context.Context, key string, build func(str
 	if buildErr != nil {
 		return "", false, buildErr
 	}
+	_ = touchAudioCacheFile(finalPath)
 	return finalPath, false, nil
+}
+
+func touchAudioCacheFile(filename string) error {
+	now := time.Now()
+	return os.Chtimes(filename, now, now)
 }
 
 func (c *audioCache) cleanupLoop() {
@@ -597,20 +679,20 @@ func (c *audioCache) cleanup() {
 	c.cleanupLocked(now)
 	c.mu.Unlock()
 
-	entries, err := os.ReadDir(c.dir)
-	if err != nil {
-		return
-	}
 	cutoff := now.Add(-audioCacheIdle)
-	for _, entry := range entries {
+	_ = filepath.WalkDir(c.dir, func(filename string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return nil
+		}
 		if !strings.HasSuffix(entry.Name(), ".m4a") && !strings.HasSuffix(entry.Name(), ".part") {
-			continue
+			return nil
 		}
-		info, err := entry.Info()
-		if err == nil && info.ModTime().Before(cutoff) {
-			_ = os.Remove(filepath.Join(c.dir, entry.Name()))
+		info, infoErr := entry.Info()
+		if infoErr == nil && info.ModTime().Before(cutoff) {
+			_ = os.Remove(filename)
 		}
-	}
+		return nil
+	})
 }
 
 func (c *audioCache) cleanupLocked(now time.Time) {
