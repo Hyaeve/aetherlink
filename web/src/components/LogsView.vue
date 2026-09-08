@@ -15,7 +15,7 @@ const pageSize = 25
 const eventPage = ref(1)
 const logPage = ref(1)
 const copiedTarget = ref('')
-const hoverTooltip = ref('')
+const hoverTooltip = ref(null)
 let timer = null
 let copyTimer = null
 
@@ -201,12 +201,26 @@ function shorten(value, max = 64) {
   return value.length > max ? `${value.slice(0, max)}…` : value
 }
 
-function showTooltip(value) {
-  hoverTooltip.value = value || ''
+function showTooltip(value, event) {
+  if (!value) {
+    hoverTooltip.value = null
+    return
+  }
+  const rect = event.currentTarget.getBoundingClientRect()
+  const maxWidth = Math.min(760, window.innerWidth - 32)
+  const left = Math.min(Math.max(16, rect.left), Math.max(16, window.innerWidth - maxWidth - 16))
+  hoverTooltip.value = {
+    text: value,
+    style: {
+      left: `${left}px`,
+      top: `${Math.min(window.innerHeight - 24, rect.bottom + 8)}px`,
+      maxWidth: `${maxWidth}px`
+    }
+  }
 }
 
 function hideTooltip() {
-  hoverTooltip.value = ''
+  hoverTooltip.value = null
 }
 
 onMounted(() => {
@@ -221,7 +235,7 @@ onUnmounted(() => {
 
 <template>
   <section class="logs-page">
-    <div v-if="hoverTooltip" class="log-floating-tooltip">{{ hoverTooltip }}</div>
+    <div v-if="hoverTooltip" class="log-floating-tooltip" :style="hoverTooltip.style">{{ hoverTooltip.text }}</div>
     <p v-if="error" class="error page-error">{{ error }}</p>
     <div v-if="diagnosis" class="notice page-notice">{{ diagnosis }}</div>
 
@@ -290,9 +304,9 @@ onUnmounted(() => {
               <td class="cell-tooltip" :data-tooltip="event.upstream">{{ event.upstream }}</td>
               <td
                 class="target-cell"
-                @mouseenter="showTooltip(userAgentText(event))"
+                @mouseenter="showTooltip(userAgentText(event), $event)"
                 @mouseleave="hideTooltip"
-                @focusin="showTooltip(userAgentText(event))"
+                @focusin="showTooltip(userAgentText(event), $event)"
                 @focusout="hideTooltip"
               >
                 <span
@@ -302,9 +316,9 @@ onUnmounted(() => {
               <td class="cell-tooltip" :data-tooltip="outcomeLabel(event.outcome)"><span :class="outcomeClass(event.outcome)">{{ outcomeLabel(event.outcome) }}</span></td>
               <td
                 class="target-cell"
-                @mouseenter="showTooltip(copiedTarget === copyableTarget(event) ? '已复制' : targetText(event))"
+                @mouseenter="showTooltip(copiedTarget === copyableTarget(event) ? '已复制' : targetText(event), $event)"
                 @mouseleave="hideTooltip"
-                @focusin="showTooltip(copiedTarget === copyableTarget(event) ? '已复制' : targetText(event))"
+                @focusin="showTooltip(copiedTarget === copyableTarget(event) ? '已复制' : targetText(event), $event)"
                 @focusout="hideTooltip"
               >
                 <button
@@ -363,9 +377,9 @@ onUnmounted(() => {
           <span :class="levelClass(entry.level)">{{ entry.level }}</span>
           <span
             class="log-message"
-            @mouseenter="showTooltip(entry.message)"
+            @mouseenter="showTooltip(entry.message, $event)"
             @mouseleave="hideTooltip"
-            @focusin="showTooltip(entry.message)"
+            @focusin="showTooltip(entry.message, $event)"
             @focusout="hideTooltip"
           >{{ entry.message }}</span>
         </div>

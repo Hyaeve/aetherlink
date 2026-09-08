@@ -1422,10 +1422,8 @@ input:focus-visible + .toggle-control {
 
 .log-floating-tooltip {
   position: fixed;
-  top: 18px;
-  right: 22px;
   z-index: 3000;
-  width: min(760px, calc(100vw - 44px));
+  width: min(760px, calc(100vw - 32px));
   max-height: min(42vh, 360px);
   overflow: auto;
   padding: 11px 14px;
@@ -1438,6 +1436,7 @@ input:focus-visible + .toggle-control {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   pointer-events: none;
+  transform: translateY(0);
 }
 
 .log-message-tooltip {
@@ -1742,6 +1741,88 @@ td.target-cell {
   border: 1px dashed var(--border-strong);
   border-radius: 12px;
   background: rgba(253, 253, 252, 0.66);
+}
+
+.candidate-picker {
+  position: relative;
+}
+
+.candidate-picker summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text-soft);
+  font-size: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.candidate-picker summary::-webkit-details-marker {
+  display: none;
+}
+
+.candidate-picker summary::after {
+  content: '⌄';
+  color: var(--muted);
+  font-size: 15px;
+  transition: transform 0.15s ease;
+}
+
+.candidate-picker[open] summary::after {
+  transform: rotate(180deg);
+}
+
+.candidate-picker summary b {
+  margin-left: auto;
+  min-width: 22px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--accent-wash);
+  color: var(--accent-ink);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.candidate-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 7px);
+  z-index: 20;
+  display: grid;
+  gap: 4px;
+  max-height: 190px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: rgba(253, 253, 252, 0.98);
+  box-shadow: var(--shadow-lg);
+}
+
+.selected-candidates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.selected-candidates span {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--accent-wash);
+  color: var(--accent-ink);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .candidate-title {
