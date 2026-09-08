@@ -1571,6 +1571,24 @@ td.target-cell {
   margin-left: auto;
 }
 
+/* 缓存与日志卡片保持更紧凑的纵向节奏，和左侧登录账号卡片底部对齐。 */
+.system-card {
+  padding-top: 18px;
+  padding-bottom: 16px;
+}
+
+.system-card .settings-card-head {
+  margin-bottom: 12px;
+}
+
+.system-card .settings-section-title {
+  margin-bottom: 10px;
+}
+
+.system-card .form-grid {
+  gap: 10px;
+}
+
 .setting-alert {
   display: flex;
   align-items: center;
