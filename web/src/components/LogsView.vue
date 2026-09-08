@@ -202,12 +202,13 @@ function shorten(value, max = 64) {
   return value.length > max ? `${value.slice(0, max)}…` : value
 }
 
-function isTruncated(target) {
+function isTruncated(target, value, maxLength) {
+  if (maxLength && value.length > maxLength) return true
   const content = target.querySelector?.('.target-box') || target
   return content.scrollWidth > content.clientWidth + 1 || content.scrollHeight > content.clientHeight + 1
 }
 
-function showTooltip(value, event) {
+function showTooltip(value, event, maxLength = 0) {
   if (tooltipTimer) clearTimeout(tooltipTimer)
   const target = event.currentTarget
   if (!value) {
@@ -215,7 +216,7 @@ function showTooltip(value, event) {
     return
   }
   tooltipTimer = setTimeout(() => {
-    if (!target.isConnected || !isTruncated(target)) return
+    if (!target.isConnected || !isTruncated(target, value, maxLength)) return
     const rect = target.getBoundingClientRect()
     const maxWidth = Math.min(760, window.innerWidth - 32)
     const left = Math.min(Math.max(16, rect.left), Math.max(16, window.innerWidth - maxWidth - 16))
@@ -319,18 +320,18 @@ onUnmounted(() => {
               <td>{{ clock(event.time) }}</td>
               <td
                 class="target-cell"
-                @mouseenter="showTooltip(event.upstream, $event)"
+                @mouseenter="showTooltip(event.upstream, $event, 20)"
                 @mouseleave="hideTooltip"
-                @focusin="showTooltip(event.upstream, $event)"
+                @focusin="showTooltip(event.upstream, $event, 20)"
                 @focusout="hideTooltip"
               >
                 <span class="target-box">{{ shorten(event.upstream, 20) }}</span>
               </td>
               <td
                 class="target-cell"
-                @mouseenter="showTooltip(userAgentText(event), $event)"
+                @mouseenter="showTooltip(userAgentText(event), $event, 34)"
                 @mouseleave="hideTooltip"
-                @focusin="showTooltip(userAgentText(event), $event)"
+                @focusin="showTooltip(userAgentText(event), $event, 34)"
                 @focusout="hideTooltip"
               >
                 <span
@@ -340,9 +341,9 @@ onUnmounted(() => {
               <td><span :class="outcomeClass(event.outcome)">{{ outcomeLabel(event.outcome) }}</span></td>
               <td
                 class="target-cell"
-                @mouseenter="showTooltip(copiedTarget === copyableTarget(event) ? '已复制' : targetText(event), $event)"
+                @mouseenter="showTooltip(copiedTarget === copyableTarget(event) ? '已复制' : targetText(event), $event, 48)"
                 @mouseleave="hideTooltip"
-                @focusin="showTooltip(copiedTarget === copyableTarget(event) ? '已复制' : targetText(event), $event)"
+                @focusin="showTooltip(copiedTarget === copyableTarget(event) ? '已复制' : targetText(event), $event, 48)"
                 @focusout="hideTooltip"
               >
                 <button
