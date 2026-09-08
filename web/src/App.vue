@@ -38,6 +38,8 @@ const tabs = [
 const RAIL_KEY = 'aetherlink.rail'
 const APP_BASE = '/aetherlink/'
 const TAB_IDS = new Set(tabs.map((tab) => tab.id))
+const primaryTabs = tabs.filter((tab) => tab.id !== 'settings')
+const settingsTab = tabs.find((tab) => tab.id === 'settings')
 
 function tabFromPath(pathname) {
   const suffix = pathname.replace(APP_BASE, '').split('/')[0]
@@ -53,6 +55,7 @@ const gate = ref('loading')
 const activeTab = ref(tabFromPath(window.location.pathname))
 // 侧栏展开状态记在 localStorage，刷新后保持上次的选择。
 const railOpen = ref(localStorage.getItem(RAIL_KEY) === 'open')
+const accountMenuOpen = ref(false)
 
 const username = ref('')
 const password = ref('')
@@ -70,6 +73,7 @@ watch(railOpen, (open) => localStorage.setItem(RAIL_KEY, open ? 'open' : 'closed
 
 function navigateTo(tab) {
   if (!TAB_IDS.has(tab) || activeTab.value === tab) return
+  accountMenuOpen.value = false
   activeTab.value = tab
   window.history.pushState({ tab }, '', pathForTab(tab))
 }
@@ -138,6 +142,7 @@ async function submitLogin() {
 }
 
 async function logout() {
+  accountMenuOpen.value = false
   try {
     await api.logout()
   } catch {
@@ -169,12 +174,22 @@ onMounted(() => {
     window.history.replaceState({ tab: activeTab.value }, '', pathForTab(activeTab.value))
   }
   window.addEventListener('popstate', handlePopState)
+  document.addEventListener('click', closeAccountMenu)
   bootstrap()
 })
 onUnmounted(() => {
   window.removeEventListener('popstate', handlePopState)
+  document.removeEventListener('click', closeAccountMenu)
   if (statusTimer) clearInterval(statusTimer)
 })
+
+function closeAccountMenu() {
+  accountMenuOpen.value = false
+}
+
+function toggleAccountMenu() {
+  accountMenuOpen.value = !accountMenuOpen.value
+}
 </script>
 
 <template>
@@ -207,17 +222,35 @@ onUnmounted(() => {
 
   <div v-else class="shell" :class="{ 'rail-open': railOpen }">
     <nav class="rail" aria-label="主导航">
-      <div class="rail-top">
-        <div class="brand" aria-hidden="true">
+      <div class="rail-top rail-account" @click.stop>
+        <button
+          class="brand"
+          type="button"
+          title="打开账号菜单"
+          aria-label="打开账号菜单"
+          :aria-expanded="accountMenuOpen"
+          @click="toggleAccountMenu"
+        >
           <svg viewBox="0 0 24 24">
             <path d="M8.5 15.5 15.5 8.5" />
             <path d="M10 13a4 4 0 0 0 5.7 0l2-2a4 4 0 0 0-5.7-5.7l-1 1" />
             <path d="M14 11a4 4 0 0 0-5.7 0l-2 2A4 4 0 0 0 12 18.7l1-1" />
           </svg>
-        </div>
+        </button>
         <div class="rail-brand-copy">
           <strong>AetherLink</strong>
           <span>以太链接</span>
+        </div>
+        <div v-if="accountMenuOpen" class="rail-account-menu">
+          <strong>账号菜单</strong>
+          <button type="button" @click="logout">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M15 5H7a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h8" />
+              <path d="M17 8l4 4-4 4" />
+              <path d="M21 12h-8" />
+            </svg>
+            退出登录
+          </button>
         </div>
       </div>
 
@@ -225,7 +258,7 @@ onUnmounted(() => {
 
       <div class="rail-nav">
         <button
-          v-for="tab in tabs"
+          v-for="tab in primaryTabs"
           :key="tab.id"
           :class="{ active: activeTab === tab.id }"
           :title="tab.label"
@@ -242,19 +275,21 @@ onUnmounted(() => {
 
       <div class="spacer"></div>
 
-      <div class="rail-health" v-if="status">
-        <span class="health-dot"></span>
-        <span class="rail-label">服务运行中</span>
+      <div class="rail-nav rail-nav-bottom">
+        <button
+          v-if="settingsTab"
+          :class="{ active: activeTab === settingsTab.id }"
+          :title="settingsTab.label"
+          :aria-label="settingsTab.label"
+          :aria-current="activeTab === settingsTab.id ? 'page' : undefined"
+          @click="navigateTo(settingsTab.id)"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path v-for="(path, index) in settingsTab.paths" :key="index" :d="path" />
+          </svg>
+          <span class="rail-label">{{ settingsTab.label }}</span>
+        </button>
       </div>
-
-      <button class="rail-logout" title="退出登录" aria-label="退出登录" @click="logout">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M15 5H7a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h8" />
-          <path d="M17 8l4 4-4 4" />
-          <path d="M21 12h-8" />
-        </svg>
-        <span class="rail-label">退出登录</span>
-      </button>
 
       <button
         class="rail-edge-toggle"

@@ -268,6 +268,7 @@ code {
 }
 
 .rail-top {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 11px;
@@ -286,6 +287,63 @@ code {
   place-items: center;
   color: #fdfdfc;
   box-shadow: 0 8px 18px rgba(111, 105, 155, 0.26);
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.rail .brand:hover:not(:disabled) {
+  color: #fdfdfc;
+  border-color: transparent;
+  transform: translateY(-1px);
+}
+
+.rail-account-menu {
+  position: absolute;
+  top: 52px;
+  left: 0;
+  z-index: 30;
+  display: grid;
+  gap: 8px;
+  width: 172px;
+  padding: 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background: rgba(253, 253, 252, 0.98);
+  box-shadow: var(--shadow-lg);
+}
+
+.rail-account-menu strong {
+  padding: 2px 8px 4px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.rail-account-menu button {
+  width: 100%;
+  justify-content: flex-start;
+  padding: 8px 9px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 12.5px;
+}
+
+.rail-account-menu button:hover:not(:disabled) {
+  background: var(--danger-wash);
+  border-color: transparent;
+  color: var(--danger);
+}
+
+.rail-account-menu button svg {
+  width: 17px;
+  height: 17px;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .rail .brand svg {
@@ -333,8 +391,7 @@ code {
   gap: 6px;
 }
 
-.rail-nav button,
-.rail-logout {
+.rail-nav button {
   width: 46px;
   height: 46px;
   padding: 0;
@@ -346,8 +403,7 @@ code {
   border-radius: 14px;
 }
 
-.rail-nav button svg,
-.rail-logout svg {
+.rail-nav button svg {
   width: 20px;
   height: 20px;
   flex: 0 0 20px;
@@ -360,8 +416,7 @@ code {
   white-space: nowrap;
 }
 
-.rail-nav button:hover:not(:disabled),
-.rail-logout:hover:not(:disabled) {
+.rail-nav button:hover:not(:disabled) {
   background: var(--surface-2);
   border-color: transparent;
   color: var(--text-soft);
@@ -393,29 +448,8 @@ code {
   flex: 1;
 }
 
-.rail-health {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 9px;
-  width: 100%;
-  min-height: 34px;
-  color: var(--muted);
-  font-size: 12.5px;
-}
-
-.health-dot {
-  width: 8px;
-  height: 8px;
-  flex: 0 0 8px;
-  border-radius: 50%;
-  background: var(--ok);
-  box-shadow: 0 0 0 3px rgba(125, 155, 138, 0.18);
-  animation: pulse-soft 2.8s ease-in-out infinite;
-}
-
-.rail-logout {
-  margin-top: 6px;
+.rail-nav-bottom {
+  margin-top: auto;
 }
 
 /* 侧栏右边缘的竖线按钮：常态是一条细竖线，悬停时浮出箭头。 */
@@ -513,18 +547,12 @@ code {
   align-items: stretch;
 }
 
-.shell.rail-open .rail-nav button,
-.shell.rail-open .rail-logout {
+.shell.rail-open .rail-nav button {
   width: 100%;
   display: flex;
   align-items: center;
   justify-content: flex-start;
   gap: 12px;
-  padding: 0 13px;
-}
-
-.shell.rail-open .rail-health {
-  justify-content: flex-start;
   padding: 0 13px;
 }
 
