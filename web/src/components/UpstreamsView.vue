@@ -188,10 +188,10 @@ onMounted(load)
       >
         <div class="proxy-card-top">
           <span class="service-mark" :class="upstream.type">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path v-if="upstream.type === 'emby'" d="m12 4 7 4v8l-7 4-7-4V8zM8 10l4 2 4-2M12 12v8" />
-              <path v-else d="M6 5h8l4 4v10H6zM9 5v5h6M9 15h6M9 18h4" />
-            </svg>
+            <img
+              :src="upstream.type === 'emby' ? '/aetherlink/icons/emby.png' : '/aetherlink/icons/abs.png'"
+              :alt="typeLabel(upstream.type)"
+            />
           </span>
           <span class="proxy-status" :class="upstream.enabled && upstream.listening ? 'online' : 'offline'">
             <i></i>{{ upstream.enabled && upstream.listening ? '运行中' : '未运行' }}

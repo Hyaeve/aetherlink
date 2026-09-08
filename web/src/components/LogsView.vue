@@ -52,6 +52,7 @@ const eventPageCount = computed(() => Math.max(1, Math.ceil(events.value.length 
 const logPageCount = computed(() => Math.max(1, Math.ceil(visible.value.length / pageSize)))
 const pagedEvents = computed(() => pageSlice(events.value, eventPage.value))
 const pagedVisible = computed(() => pageSlice(visible.value, logPage.value))
+const relayCount = computed(() => (snapshot.value?.proxyStreams || 0) + (snapshot.value?.transcodes || 0) + (snapshot.value?.localFiles || 0))
 
 watch(events, () => {
   if (eventPage.value > eventPageCount.value) eventPage.value = eventPageCount.value
@@ -217,19 +218,23 @@ onUnmounted(() => {
     <div class="log-metrics">
       <div class="log-metric violet">
         <span class="metric-icon"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6" /></svg></span>
-        <span><small>302 跳转</small><strong>{{ snapshot?.redirects ?? 0 }}</strong></span>
+        <span><small>播放请求</small><strong>{{ snapshot?.totalRequests ?? 0 }}</strong></span>
       </div>
       <div class="log-metric amber">
-        <span class="metric-icon"><svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM9 9h6M9 13h4" /></svg></span>
-        <span><small>透传上游</small><strong>{{ snapshot?.passthroughs ?? 0 }}</strong></span>
+        <span class="metric-icon"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6" /></svg></span>
+        <span><small>302 跳转</small><strong>{{ snapshot?.redirects ?? 0 }}</strong></span>
       </div>
       <div class="log-metric blue">
         <span class="metric-icon"><svg viewBox="0 0 24 24"><path d="M4 12h16M12 4v16" /><circle cx="12" cy="12" r="8" /></svg></span>
-        <span><small>中继 / 本地</small><strong>{{ (snapshot?.proxyStreams ?? 0) + (snapshot?.localFiles ?? 0) }}</strong></span>
+        <span><small>中继 / 转码</small><strong>{{ relayCount }}</strong></span>
       </div>
       <div class="log-metric rose">
         <span class="metric-icon"><svg viewBox="0 0 24 24"><path d="M12 4 21 20H3zM12 9v5M12 17h.01" /></svg></span>
         <span><small>失败</small><strong>{{ snapshot?.errors ?? 0 }}</strong></span>
+      </div>
+      <div class="log-metric green">
+        <span class="metric-icon"><svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM8 9h8M8 13h6M8 17h4" /></svg></span>
+        <span><small>服务日志</small><strong>{{ entries.length }}</strong></span>
       </div>
     </div>
 
@@ -273,14 +278,14 @@ onUnmounted(() => {
           <tbody>
             <tr v-for="(event, index) in pagedEvents" :key="index">
               <td>{{ clock(event.time) }}</td>
-              <td>{{ event.upstream }}</td>
-              <td class="mono">{{ shorten(event.path, 42) }}</td>
+              <td class="cell-tooltip" :data-tooltip="event.upstream">{{ event.upstream }}</td>
+              <td class="target-cell mono" :data-tooltip="event.path">{{ shorten(event.path, 42) }}</td>
               <td class="target-cell" :data-tooltip="userAgentText(event)">
                 <span
                   class="target-box mono"
                 >{{ shorten(userAgentText(event), 34) }}</span>
               </td>
-              <td><span :class="outcomeClass(event.outcome)">{{ outcomeLabel(event.outcome) }}</span></td>
+              <td class="cell-tooltip" :data-tooltip="outcomeLabel(event.outcome)"><span :class="outcomeClass(event.outcome)">{{ outcomeLabel(event.outcome) }}</span></td>
               <td
                 class="target-cell"
                 :data-tooltip="copiedTarget === copyableTarget(event) ? '已复制' : targetText(event)"
@@ -293,9 +298,9 @@ onUnmounted(() => {
                   @click="copyTarget(event)"
                 >{{ shorten(targetText(event), 48) }}</button>
               </td>
-              <td><span :class="cacheSourceClass(event)">{{ cacheSourceLabel(event) }}</span></td>
-              <td>{{ cacheTTL(event.cacheTtlSeconds) }}</td>
-              <td>{{ millis(event.durationMs) }}</td>
+              <td class="cell-tooltip" :data-tooltip="cacheSourceLabel(event)"><span :class="cacheSourceClass(event)">{{ cacheSourceLabel(event) }}</span></td>
+              <td class="cell-tooltip" :data-tooltip="cacheTTL(event.cacheTtlSeconds)">{{ cacheTTL(event.cacheTtlSeconds) }}</td>
+              <td class="cell-tooltip" :data-tooltip="millis(event.durationMs)">{{ millis(event.durationMs) }}</td>
             </tr>
           </tbody>
         </table>
@@ -339,7 +344,7 @@ onUnmounted(() => {
         <div v-for="(entry, index) in pagedVisible" :key="index" class="log-line">
           <span class="log-time">{{ stamp(entry.time) }}</span>
           <span :class="levelClass(entry.level)">{{ entry.level }}</span>
-          <span class="log-message">{{ entry.message }}</span>
+           <span class="log-message log-message-tooltip" :data-tooltip="entry.message">{{ entry.message }}</span>
         </div>
         <div v-if="!visible.length" class="empty-inline">
           <svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM8 9h8M8 13h5" /></svg>

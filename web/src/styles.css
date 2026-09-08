@@ -854,6 +854,13 @@ code {
   stroke-linejoin: round;
 }
 
+.service-mark img {
+  width: 27px;
+  height: 27px;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
 .proxy-status {
   display: inline-flex;
   align-items: center;
@@ -1163,6 +1170,7 @@ code {
 .log-metric.amber .metric-icon { background: var(--warn-wash); color: #8b7549; }
 .log-metric.blue .metric-icon { background: var(--info-wash); color: #5f7796; }
 .log-metric.rose .metric-icon { background: var(--danger-wash); color: #99666c; }
+.log-metric.green .metric-icon { background: var(--ok-wash); color: #5d7c6b; }
 
 .activity-card {
   display: flex;
@@ -1379,6 +1387,45 @@ input:focus-visible + .toggle-control {
   min-width: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.log-message-tooltip {
+  position: relative;
+  padding: 3px 7px;
+  border-radius: 8px;
+}
+
+.log-message-tooltip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  z-index: 7;
+  width: max-content;
+  max-width: min(68vw, 760px);
+  padding: 9px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: rgba(253, 253, 252, 0.98);
+  box-shadow: var(--shadow-md);
+  color: var(--text-soft);
+  font: 12px/1.6 "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+
+.log-message-tooltip:hover::after,
+.log-message-tooltip:focus-visible::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+td.target-cell {
+  overflow: visible;
 }
 
 /* ---------- 系统设置页 ---------- */
@@ -1612,6 +1659,30 @@ input:focus-visible + .toggle-control {
 .security-field textarea:disabled {
   cursor: not-allowed;
   opacity: 0.58;
+}
+
+.ua-block-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.backup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
 }
 
 .toggle-copy {
@@ -1944,6 +2015,40 @@ th {
   min-width: 0;
 }
 
+.cell-tooltip {
+  position: relative;
+  overflow: visible;
+}
+
+.cell-tooltip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 8px;
+  bottom: calc(100% + 8px);
+  z-index: 6;
+  width: max-content;
+  max-width: min(52vw, 620px);
+  padding: 8px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: 11px;
+  background: rgba(253, 253, 252, 0.98);
+  box-shadow: var(--shadow-md);
+  color: var(--text-soft);
+  font: 12px/1.5 "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+
+.cell-tooltip[data-tooltip]:not([data-tooltip=""]):hover::after,
+.cell-tooltip[data-tooltip]:not([data-tooltip=""]):focus-within::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 .target-box {
   display: block;
   width: 100%;
@@ -2217,6 +2322,10 @@ label.inline input[type='checkbox'] {
 
   .runtime-list dd {
     text-align: left;
+  }
+
+  .ua-block-grid {
+    grid-template-columns: 1fr;
   }
 }
 

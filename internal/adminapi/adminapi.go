@@ -13,6 +13,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -61,6 +63,8 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET "+BasePath+"/status", a.protected(a.handleStatus))
 	mux.HandleFunc("GET "+BasePath+"/config", a.protected(a.handleGetConfig))
 	mux.HandleFunc("PUT "+BasePath+"/settings", a.protected(a.handlePutSettings))
+	mux.HandleFunc("GET "+BasePath+"/settings/backup", a.protected(a.handleBackupSettings))
+	mux.HandleFunc("POST "+BasePath+"/settings/restore", a.protected(a.handleRestoreSettings))
 	mux.HandleFunc("POST "+BasePath+"/account", a.protected(a.handleUpdateAccount))
 
 	mux.HandleFunc("GET "+BasePath+"/upstreams", a.protected(a.handleUpstreams))
@@ -287,16 +291,18 @@ type settingsPayload struct {
 }
 
 type redirectSettings struct {
-	Mode                    string   `json:"mode"`
-	FollowUpstreamRedirects bool     `json:"followUpstreamRedirects"`
-	MaxFollowHops           int      `json:"maxFollowHops"`
-	ForwardUserAgent        bool     `json:"forwardUserAgent"`
-	FallbackUserAgent       string   `json:"fallbackUserAgent"`
-	BlockClientUserAgent    bool     `json:"blockClientUserAgent"`
-	BlockedUserAgents       []string `json:"blockedUserAgents"`
-	ProbeTimeout            string   `json:"probeTimeout"`
-	StreamTimeout           string   `json:"streamTimeout"`
-	AllowPublicTargets      bool     `json:"allowPublicTargets"`
+	Mode                            string   `json:"mode"`
+	FollowUpstreamRedirects         bool     `json:"followUpstreamRedirects"`
+	MaxFollowHops                   int      `json:"maxFollowHops"`
+	ForwardUserAgent                bool     `json:"forwardUserAgent"`
+	FallbackUserAgent               string   `json:"fallbackUserAgent"`
+	BlockClientUserAgent            bool     `json:"blockClientUserAgent"`
+	BlockedUserAgents               []string `json:"blockedUserAgents"`
+	BlockedUserAgentsEmby           []string `json:"blockedUserAgentsEmby"`
+	BlockedUserAgentsAudiobookshelf []string `json:"blockedUserAgentsAudiobookshelf"`
+	ProbeTimeout                    string   `json:"probeTimeout"`
+	StreamTimeout                   string   `json:"streamTimeout"`
+	AllowPublicTargets              bool     `json:"allowPublicTargets"`
 }
 
 type cacheSettings struct {
@@ -309,16 +315,18 @@ func settingsFromConfig(cfg *config.Config) settingsPayload {
 		LogLevel:  cfg.Server.LogLevel,
 		LogBuffer: cfg.Server.LogBuffer,
 		Redirect: redirectSettings{
-			Mode:                    string(cfg.Redirect.Mode),
-			FollowUpstreamRedirects: cfg.Redirect.FollowUpstreamRedirects,
-			MaxFollowHops:           cfg.Redirect.MaxFollowHops,
-			ForwardUserAgent:        cfg.Redirect.ShouldForwardUserAgent(),
-			FallbackUserAgent:       cfg.Redirect.FallbackUserAgent,
-			BlockClientUserAgent:    cfg.Redirect.ShouldBlockClientUserAgent(),
-			BlockedUserAgents:       append([]string(nil), cfg.Redirect.BlockedUserAgents...),
-			ProbeTimeout:            cfg.Redirect.ProbeTimeout.String(),
-			StreamTimeout:           cfg.Redirect.StreamTimeout.String(),
-			AllowPublicTargets:      cfg.Redirect.PublicTargetsAllowed(),
+			Mode:                            string(cfg.Redirect.Mode),
+			FollowUpstreamRedirects:         cfg.Redirect.FollowUpstreamRedirects,
+			MaxFollowHops:                   cfg.Redirect.MaxFollowHops,
+			ForwardUserAgent:                cfg.Redirect.ShouldForwardUserAgent(),
+			FallbackUserAgent:               cfg.Redirect.FallbackUserAgent,
+			BlockClientUserAgent:            cfg.Redirect.ShouldBlockClientUserAgent(),
+			BlockedUserAgents:               append([]string(nil), cfg.Redirect.BlockedUserAgents...),
+			BlockedUserAgentsEmby:           append([]string(nil), cfg.Redirect.BlockedUserAgentsEmby...),
+			BlockedUserAgentsAudiobookshelf: append([]string(nil), cfg.Redirect.BlockedUserAgentsAudiobookshelf...),
+			ProbeTimeout:                    cfg.Redirect.ProbeTimeout.String(),
+			StreamTimeout:                   cfg.Redirect.StreamTimeout.String(),
+			AllowPublicTargets:              cfg.Redirect.PublicTargetsAllowed(),
 		},
 		Cache: cacheSettings{TTL: cfg.Cache.TTL.String(), MaxSize: cfg.Cache.MaxSize},
 	}
@@ -381,6 +389,8 @@ func (a *API) handlePutSettings(writer http.ResponseWriter, request *http.Reques
 		draft.Redirect.ForwardUserAgent = &payload.Redirect.ForwardUserAgent
 		draft.Redirect.BlockClientUserAgent = &payload.Redirect.BlockClientUserAgent
 		draft.Redirect.BlockedUserAgents = append([]string(nil), payload.Redirect.BlockedUserAgents...)
+		draft.Redirect.BlockedUserAgentsEmby = append([]string(nil), payload.Redirect.BlockedUserAgentsEmby...)
+		draft.Redirect.BlockedUserAgentsAudiobookshelf = append([]string(nil), payload.Redirect.BlockedUserAgentsAudiobookshelf...)
 		draft.Redirect.AllowPublicTargets = &payload.Redirect.AllowPublicTargets
 		draft.Redirect.FallbackUserAgent = payload.Redirect.FallbackUserAgent
 		draft.Redirect.ProbeTimeout = probeTimeout
@@ -392,6 +402,64 @@ func (a *API) handlePutSettings(writer http.ResponseWriter, request *http.Reques
 		writeError(writer, http.StatusBadRequest, err.Error())
 		return
 	}
+	writeJSON(writer, http.StatusOK, map[string]any{"ok": true, "settings": settingsFromConfig(a.rt.Config())})
+}
+
+func (a *API) handleBackupSettings(writer http.ResponseWriter, request *http.Request) {
+	data, err := os.ReadFile(a.rt.ConfigPath())
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, "读取配置备份失败: "+err.Error())
+		return
+	}
+	writer.Header().Set("Content-Type", "application/x-yaml; charset=utf-8")
+	writer.Header().Set("Content-Disposition", `attachment; filename="aetherlink-config.yaml"`)
+	writer.WriteHeader(http.StatusOK)
+	_, _ = writer.Write(data)
+}
+
+type restoreSettingsPayload struct {
+	Content string `json:"content"`
+}
+
+func (a *API) handleRestoreSettings(writer http.ResponseWriter, request *http.Request) {
+	var payload restoreSettingsPayload
+	if !decodeJSON(writer, request, &payload) {
+		return
+	}
+	if strings.TrimSpace(payload.Content) == "" {
+		writeError(writer, http.StatusBadRequest, "备份文件内容不能为空")
+		return
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(a.rt.ConfigPath()), ".aetherlink-restore-*.yaml")
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, "创建还原临时文件失败: "+err.Error())
+		return
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if _, err := temporary.WriteString(payload.Content); err != nil {
+		_ = temporary.Close()
+		writeError(writer, http.StatusBadRequest, "写入备份内容失败: "+err.Error())
+		return
+	}
+	if err := temporary.Close(); err != nil {
+		writeError(writer, http.StatusBadRequest, "读取备份内容失败: "+err.Error())
+		return
+	}
+	candidate, err := config.Load(temporaryPath)
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, "备份配置无效: "+err.Error())
+		return
+	}
+	candidate.SetPath(a.rt.ConfigPath())
+	if err := a.rt.Apply(func(draft *config.Config) error {
+		*draft = *candidate
+		return nil
+	}); err != nil {
+		writeError(writer, http.StatusBadRequest, "还原配置失败: "+err.Error())
+		return
+	}
+	logx.Infof("[adminapi] 已还原配置备份")
 	writeJSON(writer, http.StatusOK, map[string]any{"ok": true, "settings": settingsFromConfig(a.rt.Config())})
 }
 

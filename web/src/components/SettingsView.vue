@@ -18,9 +18,15 @@ const accountError = ref('')
 const accountBusy = ref(false)
 const accountConfirm = ref(false)
 const blockedUserAgentText = ref('')
+const blockedEmbyUserAgentText = ref('')
+const blockedAudiobookshelfUserAgentText = ref('')
+const restoreInput = ref(null)
+const backupBusy = ref(false)
 
 function syncBlockedUserAgents(settingsPayload) {
   blockedUserAgentText.value = (settingsPayload?.redirect?.blockedUserAgents || []).join('\n')
+  blockedEmbyUserAgentText.value = (settingsPayload?.redirect?.blockedUserAgentsEmby || []).join('\n')
+  blockedAudiobookshelfUserAgentText.value = (settingsPayload?.redirect?.blockedUserAgentsAudiobookshelf || []).join('\n')
 }
 
 async function load() {
@@ -46,6 +52,14 @@ async function save() {
       .split(/\r?\n/)
       .map((value) => value.trim())
       .filter(Boolean)
+    settings.value.redirect.blockedUserAgentsEmby = blockedEmbyUserAgentText.value
+      .split(/\r?\n/)
+      .map((value) => value.trim())
+      .filter(Boolean)
+    settings.value.redirect.blockedUserAgentsAudiobookshelf = blockedAudiobookshelfUserAgentText.value
+      .split(/\r?\n/)
+      .map((value) => value.trim())
+      .filter(Boolean)
     const payload = await api.saveSettings(settings.value)
     settings.value = payload.settings
     syncBlockedUserAgents(settings.value)
@@ -55,6 +69,48 @@ async function save() {
     error.value = saveError.message
   } finally {
     busy.value = false
+  }
+}
+
+async function downloadBackup() {
+  backupBusy.value = true
+  error.value = ''
+  try {
+    const blob = await api.backupSettings()
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = 'aetherlink-config.yaml'
+    anchor.click()
+    URL.revokeObjectURL(url)
+  } catch (backupError) {
+    error.value = backupError.message
+  } finally {
+    backupBusy.value = false
+  }
+}
+
+function selectRestoreFile() {
+  restoreInput.value?.click()
+}
+
+async function restoreBackup(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (!file) return
+  if (!window.confirm(`确认还原配置文件“${file.name}”？当前配置会被覆盖。`)) return
+  backupBusy.value = true
+  error.value = ''
+  try {
+    const content = await file.text()
+    await api.restoreSettings(content)
+    saved.value = true
+    await load()
+    emit('saved')
+  } catch (restoreError) {
+    error.value = restoreError.message
+  } finally {
+    backupBusy.value = false
   }
 }
 
@@ -165,6 +221,23 @@ onMounted(load)
             <span class="tag bad" v-if="server.restartRequired">需要重启</span>
           </div>
         </section>
+
+        <section class="settings-card backup-card">
+          <div class="settings-card-head compact">
+            <div class="settings-icon blue" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M4 7h16v13H4z" /><path d="M8 7V4h8v3M8 12h8M8 16h5" /></svg>
+            </div>
+            <div>
+              <h2>备份配置</h2>
+              <p>保存或还原 AetherLink 配置</p>
+            </div>
+          </div>
+          <div class="backup-actions">
+            <button class="secondary" :disabled="backupBusy" @click="downloadBackup">下载备份</button>
+            <button class="secondary" :disabled="backupBusy" @click="selectRestoreFile">选择文件还原</button>
+            <input ref="restoreInput" class="visually-hidden" type="file" accept=".yaml,.yml,text/yaml" @change="restoreBackup" />
+          </div>
+        </section>
       </aside>
 
       <div class="settings-main">
@@ -248,11 +321,18 @@ onMounted(load)
             <span class="toggle-copy"><strong>屏蔽客户端 UA</strong><small>命中列表后使用回落 UA</small></span>
           </label>
 
-          <label class="field security-field">
-            <span>屏蔽列表</span>
-            <textarea v-model="blockedUserAgentText" rows="5" :disabled="!settings.redirect.blockClientUserAgent" placeholder="Forward\nInfuse-Direct\nInfuse-Library"></textarea>
-            <small>每行一个匹配片段，大小写不敏感。</small>
-          </label>
+          <div class="ua-block-grid">
+            <label class="field security-field">
+              <span>Emby 屏蔽 UA</span>
+              <textarea v-model="blockedEmbyUserAgentText" rows="5" :disabled="!settings.redirect.blockClientUserAgent" placeholder="/Infuse/\nForward\nEmby Theater"></textarea>
+              <small>每行一个片段，大小写不敏感；可用 /xxx/ 包裹。</small>
+            </label>
+            <label class="field security-field">
+              <span>AudioBookShelf 屏蔽 UA</span>
+              <textarea v-model="blockedAudiobookshelfUserAgentText" rows="5" :disabled="!settings.redirect.blockClientUserAgent" placeholder="/Komic-iOS/\nListenAudiobook"></textarea>
+              <small>每行一个片段，匹配后使用回落 UA。</small>
+            </label>
+          </div>
         </section>
 
         <div class="settings-tip">

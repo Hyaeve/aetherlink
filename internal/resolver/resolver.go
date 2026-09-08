@@ -133,7 +133,7 @@ func (r *Resolver) Resolve(ctx context.Context, provider upstream.Provider, ref 
 }
 
 func (r *Resolver) ResolveWithSource(ctx context.Context, provider upstream.Provider, ref upstream.MediaRef, userAgent string) (resolution *Resolution, source CacheSource, cacheTTL time.Duration, err error) {
-	effectiveUserAgent := r.effectiveUserAgent(userAgent)
+	effectiveUserAgent := r.effectiveUserAgentFor(provider.Type(), userAgent)
 	ctx = upstream.WithUserAgent(ctx, effectiveUserAgent)
 	key := ref.CacheKey(provider.Name()) + "\x00ua=" + effectiveUserAgent
 	if cached, remaining, restored, ok := r.cache.getWithSource(key); ok {
@@ -385,9 +385,19 @@ func (r *Resolver) EffectiveUserAgent(clientUserAgent string) string {
 	return r.effectiveUserAgent(clientUserAgent)
 }
 
+// EffectiveUserAgentFor applies the provider-specific block list before
+// forwarding the client UA to the media backend.
+func (r *Resolver) EffectiveUserAgentFor(providerType config.UpstreamType, clientUserAgent string) string {
+	return r.effectiveUserAgentFor(providerType, clientUserAgent)
+}
+
 func (r *Resolver) effectiveUserAgent(clientUserAgent string) string {
+	return r.effectiveUserAgentFor("", clientUserAgent)
+}
+
+func (r *Resolver) effectiveUserAgentFor(providerType config.UpstreamType, clientUserAgent string) string {
 	clientUserAgent = strings.TrimSpace(clientUserAgent)
-	if r.config.IsBlockedClientUserAgent(clientUserAgent) {
+	if r.config.IsBlockedClientUserAgentFor(providerType, clientUserAgent) {
 		clientUserAgent = ""
 	}
 	if r.config.ShouldForwardUserAgent() && clientUserAgent != "" {

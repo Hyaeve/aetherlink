@@ -60,6 +60,14 @@ export const api = {
   status: () => request('/status'),
   config: () => request('/config'),
   saveSettings: (settings) => request('/settings', { method: 'PUT', ...jsonBody(settings) }),
+  backupSettings: async () => {
+    const response = await fetch(`${BASE}/settings/backup`, {
+      headers: { Authorization: `Bearer ${getToken()}` }
+    })
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
+    return response.blob()
+  },
+  restoreSettings: (content) => request('/settings/restore', { method: 'POST', ...jsonBody({ content }) }),
 
   upstreams: () => request('/upstreams'),
   createUpstream: (payload) => request('/upstreams', { method: 'POST', ...jsonBody(payload) }),

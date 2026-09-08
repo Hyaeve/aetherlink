@@ -13,7 +13,7 @@ server:
   # 反代不走这个端口——每个上游各有自己的 listen_port（见文件末尾）。
   listen: ":5151"
   log_level: info
-  log_buffer: 500
+  log_buffer: 5000
   # 应急令牌：可绕过账号登录，仅在忘记密码时通过环境变量
   # AETHERLINK_ADMIN_TOKEN 临时注入，平时应保持缺省（不写这一行）。
   # admin_token: ""
@@ -47,6 +47,12 @@ redirect:
   # 中继模式下单次传输上限，0 表示不限制（长音频建议保持 0）。
   stream_timeout: 0s
   allow_public_targets: true
+  # 可选：分别为 Emby 与 Audiobookshelf 配置客户端 UA 屏蔽片段，每行一个。
+  # 片段支持 /xxx/ 形式，匹配时不区分大小写。
+  # blocked_user_agents_emby:
+  #   - /Infuse/
+  # blocked_user_agents_audiobookshelf:
+  #   - /Komic-iOS/
 
 cache:
   # 解析结果缓存时间。播放器 seek 时会重复请求同一轨道，缓存可显著减少上游 API 调用。

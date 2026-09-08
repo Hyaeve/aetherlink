@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -88,7 +89,7 @@ func main() {
 	logx.SetLevel(logx.ParseLevel(cfg.Server.LogLevel))
 	logx.SetMaxEntries(cfg.Server.LogBuffer)
 
-	collector := stats.New(cfg.Server.LogBuffer)
+	collector := stats.NewWithPersistence(cfg.Server.LogBuffer, filepath.Join(filepath.Dir(*configPath), "playback-stats.json"))
 	rt, err := runtime.New(cfg, collector)
 	if err != nil {
 		logx.Errorf("初始化运行时失败: %v", err)

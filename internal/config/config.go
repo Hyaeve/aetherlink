@@ -108,12 +108,14 @@ type Redirect struct {
 	// backend. Some cloud drives bind their signed URLs to the User-Agent.
 	// It is a pointer so a hand-written config that omits the key keeps the
 	// default (true) instead of silently turning the feature off.
-	ForwardUserAgent     *bool         `yaml:"forward_user_agent" json:"forwardUserAgent"`
-	FallbackUserAgent    string        `yaml:"fallback_user_agent" json:"fallbackUserAgent"`
-	BlockClientUserAgent *bool         `yaml:"block_client_user_agent" json:"blockClientUserAgent"`
-	BlockedUserAgents    []string      `yaml:"blocked_user_agents,omitempty" json:"blockedUserAgents,omitempty"`
-	ProbeTimeout         time.Duration `yaml:"probe_timeout" json:"probeTimeout"`
-	StreamTimeout        time.Duration `yaml:"stream_timeout" json:"streamTimeout"`
+	ForwardUserAgent                *bool         `yaml:"forward_user_agent" json:"forwardUserAgent"`
+	FallbackUserAgent               string        `yaml:"fallback_user_agent" json:"fallbackUserAgent"`
+	BlockClientUserAgent            *bool         `yaml:"block_client_user_agent" json:"blockClientUserAgent"`
+	BlockedUserAgents               []string      `yaml:"blocked_user_agents,omitempty" json:"blockedUserAgents,omitempty"`
+	BlockedUserAgentsEmby           []string      `yaml:"blocked_user_agents_emby,omitempty" json:"blockedUserAgentsEmby,omitempty"`
+	BlockedUserAgentsAudiobookshelf []string      `yaml:"blocked_user_agents_audiobookshelf,omitempty" json:"blockedUserAgentsAudiobookshelf,omitempty"`
+	ProbeTimeout                    time.Duration `yaml:"probe_timeout" json:"probeTimeout"`
+	StreamTimeout                   time.Duration `yaml:"stream_timeout" json:"streamTimeout"`
 	// AllowPublicTargets permits redirecting to non-private hosts.
 	AllowPublicTargets *bool `yaml:"allow_public_targets" json:"allowPublicTargets"`
 }
@@ -128,6 +130,13 @@ func (r Redirect) ShouldBlockClientUserAgent() bool {
 }
 
 func (r Redirect) IsBlockedClientUserAgent(userAgent string) bool {
+	return r.IsBlockedClientUserAgentFor("", userAgent)
+}
+
+// IsBlockedClientUserAgentFor applies provider-specific keyword lists. A
+// legacy shared list remains active for configurations created before the
+// provider split was introduced.
+func (r Redirect) IsBlockedClientUserAgentFor(provider UpstreamType, userAgent string) bool {
 	if !r.ShouldBlockClientUserAgent() {
 		return false
 	}
@@ -135,13 +144,40 @@ func (r Redirect) IsBlockedClientUserAgent(userAgent string) bool {
 	if userAgent == "" {
 		return false
 	}
-	for _, blocked := range r.BlockedUserAgents {
-		blocked = strings.ToLower(strings.TrimSpace(blocked))
-		if blocked != "" && strings.Contains(userAgent, blocked) {
-			return true
+	blockedLists := [][]string{r.BlockedUserAgents}
+	switch provider {
+	case UpstreamEmby:
+		blockedLists = append(blockedLists, r.BlockedUserAgentsEmby)
+	case UpstreamAudiobookshelf:
+		blockedLists = append(blockedLists, r.BlockedUserAgentsAudiobookshelf)
+	}
+	for _, blockedList := range blockedLists {
+		for _, blocked := range blockedList {
+			blocked = normalizeUserAgentFragment(blocked)
+			if blocked != "" && strings.Contains(userAgent, blocked) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+func normalizeUserAgentFragment(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if len(value) >= 2 && strings.HasPrefix(value, "/") && strings.HasSuffix(value, "/") {
+		value = strings.TrimSpace(value[1 : len(value)-1])
+	}
+	return value
+}
+
+func normalizeUserAgentList(values []string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(normalizeUserAgentFragment(value)) != "" {
+			result = append(result, strings.TrimSpace(value))
+		}
+	}
+	return result
 }
 
 // PublicTargetsAllowed reports the effective AllowPublicTargets value.
@@ -210,6 +246,8 @@ func (c *Config) Clone() *Config {
 	copied.Redirect.ForwardUserAgent = clonePointer(c.Redirect.ForwardUserAgent)
 	copied.Redirect.BlockClientUserAgent = clonePointer(c.Redirect.BlockClientUserAgent)
 	copied.Redirect.BlockedUserAgents = append([]string(nil), c.Redirect.BlockedUserAgents...)
+	copied.Redirect.BlockedUserAgentsEmby = append([]string(nil), c.Redirect.BlockedUserAgentsEmby...)
+	copied.Redirect.BlockedUserAgentsAudiobookshelf = append([]string(nil), c.Redirect.BlockedUserAgentsAudiobookshelf...)
 	copied.Redirect.AllowPublicTargets = clonePointer(c.Redirect.AllowPublicTargets)
 	copied.Upstreams = make([]Upstream, 0, len(c.Upstreams))
 	for _, upstream := range c.Upstreams {
@@ -402,6 +440,12 @@ func merge(base, parsed *Config) {
 	if parsed.Redirect.BlockedUserAgents != nil {
 		base.Redirect.BlockedUserAgents = append([]string(nil), parsed.Redirect.BlockedUserAgents...)
 	}
+	if parsed.Redirect.BlockedUserAgentsEmby != nil {
+		base.Redirect.BlockedUserAgentsEmby = append([]string(nil), parsed.Redirect.BlockedUserAgentsEmby...)
+	}
+	if parsed.Redirect.BlockedUserAgentsAudiobookshelf != nil {
+		base.Redirect.BlockedUserAgentsAudiobookshelf = append([]string(nil), parsed.Redirect.BlockedUserAgentsAudiobookshelf...)
+	}
 	if parsed.Redirect.AllowPublicTargets != nil {
 		base.Redirect.AllowPublicTargets = parsed.Redirect.AllowPublicTargets
 	}
@@ -478,6 +522,8 @@ func (c *Config) Validate() error {
 		}
 	}
 	c.Redirect.BlockedUserAgents = blockedUserAgents
+	c.Redirect.BlockedUserAgentsEmby = normalizeUserAgentList(c.Redirect.BlockedUserAgentsEmby)
+	c.Redirect.BlockedUserAgentsAudiobookshelf = normalizeUserAgentList(c.Redirect.BlockedUserAgentsAudiobookshelf)
 	if c.Cache.TTL < 0 {
 		c.Cache.TTL = 0
 	}

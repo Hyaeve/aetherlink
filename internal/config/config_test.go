@@ -104,6 +104,23 @@ func TestBlockedClientUserAgentMatchesCaseInsensitiveFragments(t *testing.T) {
 	}
 }
 
+func TestProviderBlockedClientUserAgent(t *testing.T) {
+	redirect := Redirect{
+		BlockClientUserAgent:            Bool(true),
+		BlockedUserAgentsEmby:           []string{"/Infuse/"},
+		BlockedUserAgentsAudiobookshelf: []string{"Komic-iOS"},
+	}
+	if !redirect.IsBlockedClientUserAgentFor(UpstreamEmby, "Infuse/8.0") {
+		t.Fatal("Emby slash-wrapped fragment should match")
+	}
+	if redirect.IsBlockedClientUserAgentFor(UpstreamAudiobookshelf, "Infuse/8.0") {
+		t.Fatal("Emby fragment should not match Audiobookshelf")
+	}
+	if !redirect.IsBlockedClientUserAgentFor(UpstreamAudiobookshelf, "Komic-iOS/1.0") {
+		t.Fatal("Audiobookshelf fragment should match")
+	}
+}
+
 func TestLoadRejectsInvalidValues(t *testing.T) {
 	cases := map[string]string{
 		"bad redirect mode": "redirect:\n  mode: sometimes\nupstreams:\n  - name: a\n    type: emby\n    base_url: http://x:1\n    listen_port: 8096\n",
