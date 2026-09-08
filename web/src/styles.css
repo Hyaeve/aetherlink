@@ -1591,9 +1591,6 @@ td.target-cell {
 .wide-action {
   width: 100%;
   justify-content: center;
-  padding: 11px 16px;
-  border-radius: 12px;
-  font-weight: 500;
 }
 
 .form-error {
@@ -1723,11 +1720,8 @@ td.target-cell {
 }
 
 .compact-save-button {
-  min-width: 70px;
+  min-width: 68px;
   justify-content: center;
-  padding: 7px 13px;
-  border-radius: 10px;
-  font-size: 12px;
 }
 
 .settings-sidebar .account-card { order: 0; }
@@ -1904,9 +1898,6 @@ td.target-cell {
 .backup-actions button {
   flex: 1 1 132px;
   justify-content: center;
-  min-height: 42px;
-  border-radius: 13px;
-  font-weight: 600;
 }
 
 .backup-actions button:first-child {
@@ -1991,9 +1982,17 @@ td.target-cell {
 }
 
 .action-button {
-  padding: 11px 20px;
-  border-radius: 12px;
-  font-weight: 500;
+  min-width: 112px;
+  justify-content: center;
+}
+
+/* 设置页的操作按钮统一采用略小于常规表单按钮的尺寸。 */
+.settings-save-button {
+  min-height: 40px;
+  padding: 8px 15px;
+  border-radius: 11px;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .runtime-state {

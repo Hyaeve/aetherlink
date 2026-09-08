@@ -223,7 +223,7 @@ onMounted(load)
               </svg>
             </div>
             <div>
-              <h2>管理账号</h2>
+              <h2>登录账号</h2>
               <p>更新登录身份与访问口令</p>
             </div>
           </div>
@@ -244,7 +244,7 @@ onMounted(load)
             </label>
           </div>
 
-          <button class="primary wide-action" :disabled="accountBusy" @click="saveAccount">
+          <button class="primary settings-save-button wide-action" :disabled="accountBusy" @click="saveAccount">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M5 4h11l3 3v13H5z" />
               <path d="M8 4v6h8V4" />
@@ -294,8 +294,8 @@ onMounted(load)
             </div>
           </div>
           <div class="backup-actions">
-            <button class="secondary" :disabled="backupBusy" @click="downloadBackup">备份</button>
-            <button class="secondary" :disabled="backupBusy" @click="selectRestoreFile">还原</button>
+            <button class="secondary settings-save-button" :disabled="backupBusy" @click="downloadBackup">备份</button>
+            <button class="secondary settings-save-button" :disabled="backupBusy" @click="selectRestoreFile">还原</button>
             <input ref="restoreInput" class="visually-hidden" type="file" accept=".yaml,.yml,text/yaml" @change="restoreBackup" />
           </div>
         </section>
@@ -351,13 +351,13 @@ onMounted(load)
               <strong>保存系统设置</strong>
               <span v-if="saved" class="save-confirm"><i></i>已保存，立即生效</span>
             </div>
-            <button class="primary action-button" :disabled="busy" @click="save">
+            <button class="primary settings-save-button action-button" :disabled="busy" @click="save">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M5 4h11l3 3v13H5z" />
                 <path d="M8 4v6h8V4" />
                 <path d="M8 20v-6h8v6" />
               </svg>
-              {{ busy ? '保存中…' : '保存并生效' }}
+              {{ busy ? '保存中…' : '保存' }}
             </button>
           </div>
         </section>
@@ -376,7 +376,7 @@ onMounted(load)
             </div>
             <div class="security-head-actions">
               <span v-if="securitySaved" class="save-confirm"><i></i>已保存</span>
-              <button class="primary compact-save-button" :disabled="securityBusy" @click="saveSecurity">
+              <button class="primary settings-save-button compact-save-button" :disabled="securityBusy" @click="saveSecurity">
                 {{ securityBusy ? '保存中…' : '保存' }}
               </button>
             </div>

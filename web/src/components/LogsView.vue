@@ -18,6 +18,7 @@ const copiedTarget = ref('')
 const hoverTooltip = ref(null)
 let timer = null
 let copyTimer = null
+let tooltipTimer = null
 
 const OUTCOME_LABELS = {
   redirect: '302 跳转',
@@ -201,25 +202,39 @@ function shorten(value, max = 64) {
   return value.length > max ? `${value.slice(0, max)}…` : value
 }
 
+function isTruncated(target) {
+  const content = target.querySelector?.('.target-box') || target
+  return content.scrollWidth > content.clientWidth + 1 || content.scrollHeight > content.clientHeight + 1
+}
+
 function showTooltip(value, event) {
+  if (tooltipTimer) clearTimeout(tooltipTimer)
+  const target = event.currentTarget
   if (!value) {
     hoverTooltip.value = null
     return
   }
-  const rect = event.currentTarget.getBoundingClientRect()
-  const maxWidth = Math.min(760, window.innerWidth - 32)
-  const left = Math.min(Math.max(16, rect.left), Math.max(16, window.innerWidth - maxWidth - 16))
-  hoverTooltip.value = {
-    text: value,
-    style: {
-      left: `${left}px`,
-      top: `${Math.min(window.innerHeight - 24, rect.bottom + 8)}px`,
-      maxWidth: `${maxWidth}px`
+  tooltipTimer = setTimeout(() => {
+    if (!target.isConnected || !isTruncated(target)) return
+    const rect = target.getBoundingClientRect()
+    const maxWidth = Math.min(760, window.innerWidth - 32)
+    const left = Math.min(Math.max(16, rect.left), Math.max(16, window.innerWidth - maxWidth - 16))
+    hoverTooltip.value = {
+      text: value,
+      style: {
+        left: `${left}px`,
+        top: `${Math.min(window.innerHeight - 24, rect.bottom + 8)}px`,
+        maxWidth: `${maxWidth}px`
+      }
     }
-  }
+  }, 600)
 }
 
 function hideTooltip() {
+  if (tooltipTimer) {
+    clearTimeout(tooltipTimer)
+    tooltipTimer = null
+  }
   hoverTooltip.value = null
 }
 
@@ -230,6 +245,7 @@ onMounted(() => {
 onUnmounted(() => {
   if (timer) clearInterval(timer)
   if (copyTimer) clearTimeout(copyTimer)
+  if (tooltipTimer) clearTimeout(tooltipTimer)
 })
 </script>
 
@@ -301,7 +317,15 @@ onUnmounted(() => {
           <tbody>
             <tr v-for="(event, index) in pagedEvents" :key="index">
               <td>{{ clock(event.time) }}</td>
-              <td class="cell-tooltip" :data-tooltip="event.upstream">{{ event.upstream }}</td>
+              <td
+                class="target-cell"
+                @mouseenter="showTooltip(event.upstream, $event)"
+                @mouseleave="hideTooltip"
+                @focusin="showTooltip(event.upstream, $event)"
+                @focusout="hideTooltip"
+              >
+                <span class="target-box">{{ shorten(event.upstream, 20) }}</span>
+              </td>
               <td
                 class="target-cell"
                 @mouseenter="showTooltip(userAgentText(event), $event)"
@@ -313,7 +337,7 @@ onUnmounted(() => {
                   class="target-box mono"
                 >{{ shorten(userAgentText(event), 34) }}</span>
               </td>
-              <td class="cell-tooltip" :data-tooltip="outcomeLabel(event.outcome)"><span :class="outcomeClass(event.outcome)">{{ outcomeLabel(event.outcome) }}</span></td>
+              <td><span :class="outcomeClass(event.outcome)">{{ outcomeLabel(event.outcome) }}</span></td>
               <td
                 class="target-cell"
                 @mouseenter="showTooltip(copiedTarget === copyableTarget(event) ? '已复制' : targetText(event), $event)"
@@ -329,9 +353,9 @@ onUnmounted(() => {
                   @click="copyTarget(event)"
                 >{{ shorten(targetText(event), 48) }}</button>
               </td>
-              <td class="cell-tooltip" :data-tooltip="cacheSourceLabel(event)"><span :class="cacheSourceClass(event)">{{ cacheSourceLabel(event) }}</span></td>
-              <td class="cell-tooltip" :data-tooltip="cacheTTL(event.cacheTtlSeconds)">{{ cacheTTL(event.cacheTtlSeconds) }}</td>
-              <td class="cell-tooltip" :data-tooltip="millis(event.durationMs)">{{ millis(event.durationMs) }}</td>
+              <td><span :class="cacheSourceClass(event)">{{ cacheSourceLabel(event) }}</span></td>
+              <td>{{ cacheTTL(event.cacheTtlSeconds) }}</td>
+              <td>{{ millis(event.durationMs) }}</td>
             </tr>
           </tbody>
         </table>
