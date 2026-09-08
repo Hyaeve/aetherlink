@@ -133,7 +133,7 @@ func (r *Resolver) Resolve(ctx context.Context, provider upstream.Provider, ref 
 }
 
 func (r *Resolver) ResolveWithSource(ctx context.Context, provider upstream.Provider, ref upstream.MediaRef, userAgent string) (resolution *Resolution, source CacheSource, cacheTTL time.Duration, err error) {
-	effectiveUserAgent := r.effectiveUserAgentFor(provider.Type(), userAgent)
+	effectiveUserAgent := r.effectiveUserAgentFor(provider.Type(), provider.Name(), userAgent)
 	ctx = upstream.WithUserAgent(ctx, effectiveUserAgent)
 	key := ref.CacheKey(provider.Name()) + "\x00ua=" + effectiveUserAgent
 	if cached, remaining, restored, ok := r.cache.getWithSource(key); ok {
@@ -388,16 +388,22 @@ func (r *Resolver) EffectiveUserAgent(clientUserAgent string) string {
 // EffectiveUserAgentFor applies the provider-specific block list before
 // forwarding the client UA to the media backend.
 func (r *Resolver) EffectiveUserAgentFor(providerType config.UpstreamType, clientUserAgent string) string {
-	return r.effectiveUserAgentFor(providerType, clientUserAgent)
+	return r.effectiveUserAgentFor(providerType, "", clientUserAgent)
+}
+
+// EffectiveUserAgentForUpstream applies the selected provider's UA policy to
+// one named upstream.
+func (r *Resolver) EffectiveUserAgentForUpstream(providerType config.UpstreamType, upstreamName, clientUserAgent string) string {
+	return r.effectiveUserAgentFor(providerType, upstreamName, clientUserAgent)
 }
 
 func (r *Resolver) effectiveUserAgent(clientUserAgent string) string {
-	return r.effectiveUserAgentFor("", clientUserAgent)
+	return r.effectiveUserAgentFor("", "", clientUserAgent)
 }
 
-func (r *Resolver) effectiveUserAgentFor(providerType config.UpstreamType, clientUserAgent string) string {
+func (r *Resolver) effectiveUserAgentFor(providerType config.UpstreamType, upstreamName, clientUserAgent string) string {
 	clientUserAgent = strings.TrimSpace(clientUserAgent)
-	if r.config.IsBlockedClientUserAgentFor(providerType, clientUserAgent) {
+	if r.config.IsBlockedClientUserAgentForUpstream(providerType, upstreamName, clientUserAgent) {
 		clientUserAgent = ""
 	}
 	if r.config.ShouldForwardUserAgent() && clientUserAgent != "" {

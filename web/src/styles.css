@@ -711,7 +711,7 @@ code {
 
 .overview-strip {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 20px;
 }
@@ -833,15 +833,22 @@ code {
   gap: 10px;
 }
 
+.proxy-card-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-right: -7px;
+}
+
 .service-mark {
-  width: 40px;
-  height: 40px;
-  flex: 0 0 40px;
-  border-radius: 13px;
+  width: 58px;
+  height: 58px;
+  flex: 0 0 58px;
+  margin: -10px 0 0 -10px;
   display: grid;
   place-items: center;
-  background: rgba(253, 253, 252, 0.24);
-  border: 1px solid rgba(253, 253, 252, 0.34);
+  background: transparent;
+  border: none;
 }
 
 .service-mark svg {
@@ -855,10 +862,11 @@ code {
 }
 
 .service-mark img {
-  width: 27px;
-  height: 27px;
+  width: 52px;
+  height: 52px;
   object-fit: contain;
-  border-radius: 8px;
+  border-radius: 14px;
+  filter: drop-shadow(0 5px 9px rgba(63, 69, 80, 0.18));
 }
 
 .proxy-status {
@@ -871,6 +879,8 @@ code {
   font-weight: 500;
   background: rgba(253, 253, 252, 0.9);
   color: #3f4550;
+  border: 1px solid transparent;
+  cursor: pointer;
 }
 
 .proxy-status i {
@@ -887,6 +897,16 @@ code {
 
 .proxy-status.offline i {
   background: #e7dcdd;
+}
+
+.proxy-status:hover:not(:disabled) {
+  border-color: rgba(63, 69, 80, 0.2);
+  transform: translateY(-1px);
+}
+
+.mode-tag {
+  background: rgba(253, 253, 252, 0.68);
+  border: 1px solid rgba(253, 253, 252, 0.44);
 }
 
 .proxy-card-content h3 {
@@ -929,6 +949,17 @@ code {
   opacity: 0.86;
 }
 
+.route-endpoint {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.route-target {
+  margin-left: auto;
+}
+
 .route-flow strong {
   font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
   font-size: 13px;
@@ -940,7 +971,7 @@ code {
   padding: 2px 7px;
   border: 1px solid rgba(253, 253, 252, 0.48);
   border-radius: 7px;
-  background: rgba(253, 253, 252, 0.25);
+  background: rgba(253, 253, 252, 0.38);
   color: inherit;
   font: 600 13px "Cascadia Code", "JetBrains Mono", Consolas, monospace;
   cursor: pointer;
@@ -1389,6 +1420,26 @@ input:focus-visible + .toggle-control {
   overflow-wrap: anywhere;
 }
 
+.log-floating-tooltip {
+  position: fixed;
+  top: 18px;
+  right: 22px;
+  z-index: 3000;
+  width: min(760px, calc(100vw - 44px));
+  max-height: min(42vh, 360px);
+  overflow: auto;
+  padding: 11px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background: rgba(253, 253, 252, 0.98);
+  box-shadow: var(--shadow-lg);
+  color: var(--text-soft);
+  font: 12px/1.6 "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
 .log-message-tooltip {
   position: relative;
   padding: 3px 7px;
@@ -1403,7 +1454,7 @@ input:focus-visible + .toggle-control {
   z-index: 7;
   width: max-content;
   max-width: min(68vw, 760px);
-  padding: 9px 12px;
+  padding: 9px 11px;
   border: 1px solid var(--border-strong);
   border-radius: 12px;
   background: rgba(253, 253, 252, 0.98);
@@ -1661,16 +1712,88 @@ td.target-cell {
   opacity: 0.58;
 }
 
+.settings-sidebar .account-card { order: 0; }
+.settings-sidebar .backup-card { order: 1; }
+.settings-sidebar .runtime-card { order: 2; }
+
 .ua-block-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
 }
 
+.ua-policy-panel {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgba(242, 243, 245, 0.52);
+}
+
+.ua-policy-panel .security-toggle {
+  margin: 0 0 14px;
+}
+
+.candidate-box {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 11px 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 12px;
+  background: rgba(253, 253, 252, 0.66);
+}
+
+.candidate-title {
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.candidate-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.candidate-option input {
+  width: auto;
+  accent-color: var(--accent-deep);
+}
+
+.candidate-empty {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
 .backup-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 9px;
+}
+
+.backup-actions button {
+  flex: 1 1 132px;
+  justify-content: center;
+  min-height: 42px;
+  border-radius: 13px;
+  font-weight: 600;
+}
+
+.backup-actions button:first-child {
+  color: var(--accent-ink);
+  background: var(--accent-wash);
+  border-color: rgba(143, 137, 184, 0.28);
+}
+
+.backup-actions button:last-of-type {
+  color: #5d7c6b;
+  background: var(--ok-wash);
+  border-color: #cfe0d5;
 }
 
 .visually-hidden {
@@ -1981,8 +2104,7 @@ table {
 
 .playback-time-column { width: 7%; }
 .playback-upstream-column { width: 8%; }
-.playback-path-column { width: 15%; }
-.playback-ua-column { width: 17%; }
+.playback-ua-column { width: 20%; }
 .playback-outcome-column { width: 9%; }
 .playback-target-column { width: 22%; }
 .playback-cache-column { width: 8%; }
@@ -1998,6 +2120,11 @@ td {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.playback-table td.target-cell,
+.playback-table td.cell-tooltip {
+  overflow: visible;
 }
 
 th {
@@ -2025,7 +2152,7 @@ th {
   position: absolute;
   left: 8px;
   bottom: calc(100% + 8px);
-  z-index: 6;
+  z-index: 1000;
   width: max-content;
   max-width: min(52vw, 620px);
   padding: 8px 11px;
@@ -2095,7 +2222,7 @@ th {
   position: absolute;
   left: 18px;
   bottom: calc(100% + 8px);
-  z-index: 5;
+  z-index: 1000;
   width: max-content;
   max-width: min(52vw, 620px);
   padding: 8px 11px;
@@ -2302,15 +2429,12 @@ label.inline input[type='checkbox'] {
     gap: 2px;
   }
 
-  .playback-path-column,
   .playback-cache-column,
   .playback-ttl-column,
-  .playback-table th:nth-child(3),
-  .playback-table td:nth-child(3),
+  .playback-table th:nth-child(6),
+  .playback-table td:nth-child(6),
   .playback-table th:nth-child(7),
-  .playback-table td:nth-child(7),
-  .playback-table th:nth-child(8),
-  .playback-table td:nth-child(8) {
+  .playback-table td:nth-child(7) {
     display: none;
   }
 

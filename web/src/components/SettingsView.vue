@@ -8,6 +8,7 @@ const emit = defineEmits(['saved', 'account-changed'])
 const settings = ref(null)
 const server = ref(null)
 const account = ref(null)
+const upstreams = ref([])
 const error = ref('')
 const saved = ref(false)
 const busy = ref(false)
@@ -23,7 +24,13 @@ const blockedAudiobookshelfUserAgentText = ref('')
 const restoreInput = ref(null)
 const backupBusy = ref(false)
 
+function candidateUpstreams(type) {
+  return upstreams.value.filter((upstream) => upstream.type === type)
+}
+
 function syncBlockedUserAgents(settingsPayload) {
+  if (!Array.isArray(settingsPayload?.redirect?.blockedUserAgentsEmbyUpstreams)) settingsPayload.redirect.blockedUserAgentsEmbyUpstreams = []
+  if (!Array.isArray(settingsPayload?.redirect?.blockedUserAgentsAudiobookshelfUpstreams)) settingsPayload.redirect.blockedUserAgentsAudiobookshelfUpstreams = []
   blockedUserAgentText.value = (settingsPayload?.redirect?.blockedUserAgents || []).join('\n')
   blockedEmbyUserAgentText.value = (settingsPayload?.redirect?.blockedUserAgentsEmby || []).join('\n')
   blockedAudiobookshelfUserAgentText.value = (settingsPayload?.redirect?.blockedUserAgentsAudiobookshelf || []).join('\n')
@@ -36,6 +43,7 @@ async function load() {
     syncBlockedUserAgents(settings.value)
     server.value = payload.server
     account.value = payload.account
+    upstreams.value = payload.upstreams || []
     username.value = payload.account?.username || ''
     error.value = ''
   } catch (loadError) {
@@ -315,33 +323,47 @@ onMounted(load)
             </div>
           </div>
 
-          <label class="setting-toggle security-toggle">
-            <input type="checkbox" v-model="settings.redirect.blockClientUserAgent" />
-            <span class="toggle-control"></span>
-            <span class="toggle-copy"><strong>屏蔽客户端 UA</strong><small>命中列表后使用回落 UA</small></span>
-          </label>
-
           <div class="ua-block-grid">
-            <label class="field security-field">
-              <span>Emby 屏蔽 UA</span>
-              <textarea v-model="blockedEmbyUserAgentText" rows="5" :disabled="!settings.redirect.blockClientUserAgent" placeholder="/Infuse/\nForward\nEmby Theater"></textarea>
-              <small>每行一个片段，大小写不敏感；可用 /xxx/ 包裹。</small>
-            </label>
-            <label class="field security-field">
-              <span>AudioBookShelf 屏蔽 UA</span>
-              <textarea v-model="blockedAudiobookshelfUserAgentText" rows="5" :disabled="!settings.redirect.blockClientUserAgent" placeholder="/Komic-iOS/\nListenAudiobook"></textarea>
-              <small>每行一个片段，匹配后使用回落 UA。</small>
-            </label>
+            <div class="ua-policy-panel">
+              <label class="setting-toggle security-toggle">
+                <input type="checkbox" v-model="settings.redirect.blockClientUserAgentEmby" />
+                <span class="toggle-control"></span>
+                <span class="toggle-copy"><strong>Emby 屏蔽 UA</strong><small>仅作用于下面选中的 Emby 服务</small></span>
+              </label>
+              <label class="field security-field">
+                <span>匹配片段</span>
+                <textarea v-model="blockedEmbyUserAgentText" rows="4" :disabled="!settings.redirect.blockClientUserAgentEmby" placeholder="/Infuse/\nForward\nEmby Theater"></textarea>
+              </label>
+              <div class="candidate-box">
+                <span class="candidate-title">候选服务器</span>
+                <label v-for="upstream in candidateUpstreams('emby')" :key="upstream.name" class="candidate-option">
+                  <input type="checkbox" :value="upstream.name" v-model="settings.redirect.blockedUserAgentsEmbyUpstreams" :disabled="!settings.redirect.blockClientUserAgentEmby" />
+                  <span>{{ upstream.name }}</span>
+                </label>
+                <small v-if="!candidateUpstreams('emby').length" class="candidate-empty">暂无 Emby 服务</small>
+              </div>
+            </div>
+            <div class="ua-policy-panel">
+              <label class="setting-toggle security-toggle">
+                <input type="checkbox" v-model="settings.redirect.blockClientUserAgentAudiobookshelf" />
+                <span class="toggle-control"></span>
+                <span class="toggle-copy"><strong>AudioBookShelf 屏蔽 UA</strong><small>仅作用于下面选中的 ABS 服务</small></span>
+              </label>
+              <label class="field security-field">
+                <span>匹配片段</span>
+                <textarea v-model="blockedAudiobookshelfUserAgentText" rows="4" :disabled="!settings.redirect.blockClientUserAgentAudiobookshelf" placeholder="/Komic-iOS/\nListenAudiobook"></textarea>
+              </label>
+              <div class="candidate-box">
+                <span class="candidate-title">候选服务器</span>
+                <label v-for="upstream in candidateUpstreams('audiobookshelf')" :key="upstream.name" class="candidate-option">
+                  <input type="checkbox" :value="upstream.name" v-model="settings.redirect.blockedUserAgentsAudiobookshelfUpstreams" :disabled="!settings.redirect.blockClientUserAgentAudiobookshelf" />
+                  <span>{{ upstream.name }}</span>
+                </label>
+                <small v-if="!candidateUpstreams('audiobookshelf').length" class="candidate-empty">暂无 AudioBookShelf 服务</small>
+              </div>
+            </div>
           </div>
         </section>
-
-        <div class="settings-tip">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <circle cx="12" cy="12" r="9" />
-            <path d="M12 11v5M12 8h.01" />
-          </svg>
-          <span>每个反代上游仍需单独把容器端口映射到宿主机，播放端只更换端口，路径保持不变。</span>
-        </div>
       </div>
     </div>
 

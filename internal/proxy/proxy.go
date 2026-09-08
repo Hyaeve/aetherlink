@@ -106,7 +106,7 @@ func newReverseProxy(provider upstream.Provider, mediaResolver *resolver.Resolve
 	return &httputil.ReverseProxy{
 		Transport: provider.Transport(),
 		Rewrite: func(request *httputil.ProxyRequest) {
-			userAgent := mediaResolver.EffectiveUserAgentFor(provider.Type(), request.In.UserAgent())
+			userAgent := mediaResolver.EffectiveUserAgentForUpstream(provider.Type(), provider.Name(), request.In.UserAgent())
 			request.Out.Header.Set("User-Agent", userAgent)
 			if canRewrite && rewriter.WantsResponseRewrite(request.In) {
 				// PlaybackInfo 必须以明文 JSON 返回，才能在交给 Emby 客户端前改写。
@@ -216,7 +216,7 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 		Client:    clientIP(request),
 		UserAgent: request.UserAgent(),
 	}
-	event.EffectiveUserAgent = s.resolver.EffectiveUserAgentFor(s.provider.Type(), request.UserAgent())
+	event.EffectiveUserAgent = s.resolver.EffectiveUserAgentForUpstream(s.provider.Type(), s.provider.Name(), request.UserAgent())
 
 	// finish 是所有出口的唯一收尾：记录事件之后必定打一行日志。
 	// 之前只有 s.stats.Record，成功的 302 与透传一行日志都没有，
@@ -405,7 +405,7 @@ func isIncompatibleAudio(resolution *resolver.Resolution) bool {
 
 func (s *Server) relayTranscoded(writer http.ResponseWriter, request *http.Request, source string, resolution *resolver.Resolution) (int, bool, error) {
 	mode := audioAdaptationMode(resolution, source)
-	key := audioCacheKey(source, mode, s.resolver.EffectiveUserAgentFor(s.provider.Type(), request.UserAgent()))
+	key := audioCacheKey(source, mode, s.resolver.EffectiveUserAgentForUpstream(s.provider.Type(), s.provider.Name(), request.UserAgent()))
 	bookName := audioCacheBookName(resolution, source)
 	filename := audioCacheFilename(resolution, source)
 	buildContext := context.WithoutCancel(request.Context())
@@ -440,7 +440,7 @@ func (s *Server) transcodeToFile(ctx context.Context, request *http.Request, sou
 	codecArgs, label := audioAdaptationArgs(mode)
 	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-stats_period", "5", "-progress", "pipe:2", "-analyzeduration", "1M", "-probesize", "1M", "-y"}
 	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
-		args = append(args, "-user_agent", s.resolver.EffectiveUserAgentFor(s.provider.Type(), request.UserAgent()))
+		args = append(args, "-user_agent", s.resolver.EffectiveUserAgentForUpstream(s.provider.Type(), s.provider.Name(), request.UserAgent()))
 	}
 	if inputFormat != "" {
 		args = append(args, "-f", inputFormat)
@@ -452,7 +452,7 @@ func (s *Server) transcodeToFile(ctx context.Context, request *http.Request, sou
 	command := exec.CommandContext(ctx, s.ffmpegPath, args...)
 	progress := newTranscodeProgress(s.provider.Name(), request.URL.Path)
 	command.Stderr = progress
-	logx.Infof("[%s] FFmpeg 音频适配开始 %s：%s，输入格式 %s；临时文件缓存中；UA：%s", s.provider.Name(), request.URL.Path, label, displayInputFormat(inputFormat), s.resolver.EffectiveUserAgentFor(s.provider.Type(), request.UserAgent()))
+	logx.Infof("[%s] FFmpeg 音频适配开始 %s：%s，输入格式 %s；临时文件缓存中；UA：%s", s.provider.Name(), request.URL.Path, label, displayInputFormat(inputFormat), s.resolver.EffectiveUserAgentForUpstream(s.provider.Type(), s.provider.Name(), request.UserAgent()))
 	if err := command.Run(); err != nil {
 		return progress.errorWith(err)
 	}
@@ -961,7 +961,7 @@ func (s *Server) relayRemote(writer http.ResponseWriter, request *http.Request, 
 		http.Error(writer, "invalid strm target", http.StatusBadGateway)
 		return http.StatusBadGateway, err
 	}
-	outbound.Header.Set("User-Agent", s.resolver.EffectiveUserAgentFor(s.provider.Type(), request.UserAgent()))
+	outbound.Header.Set("User-Agent", s.resolver.EffectiveUserAgentForUpstream(s.provider.Type(), s.provider.Name(), request.UserAgent()))
 	for _, header := range []string{"Range", "If-Range", "If-Modified-Since", "If-None-Match", "Accept", "Accept-Encoding"} {
 		if value := request.Header.Get(header); value != "" {
 			outbound.Header.Set(header, value)

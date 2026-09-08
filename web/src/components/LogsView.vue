@@ -15,6 +15,7 @@ const pageSize = 25
 const eventPage = ref(1)
 const logPage = ref(1)
 const copiedTarget = ref('')
+const hoverTooltip = ref('')
 let timer = null
 let copyTimer = null
 
@@ -200,6 +201,14 @@ function shorten(value, max = 64) {
   return value.length > max ? `${value.slice(0, max)}…` : value
 }
 
+function showTooltip(value) {
+  hoverTooltip.value = value || ''
+}
+
+function hideTooltip() {
+  hoverTooltip.value = ''
+}
+
 onMounted(() => {
   load()
   timer = setInterval(() => autoRefresh.value && load(), 5000)
@@ -212,6 +221,7 @@ onUnmounted(() => {
 
 <template>
   <section class="logs-page">
+    <div v-if="hoverTooltip" class="log-floating-tooltip">{{ hoverTooltip }}</div>
     <p v-if="error" class="error page-error">{{ error }}</p>
     <div v-if="diagnosis" class="notice page-notice">{{ diagnosis }}</div>
 
@@ -264,7 +274,6 @@ onUnmounted(() => {
           <colgroup>
             <col class="playback-time-column" />
             <col class="playback-upstream-column" />
-            <col class="playback-path-column" />
             <col class="playback-ua-column" />
             <col class="playback-outcome-column" />
             <col class="playback-target-column" />
@@ -273,14 +282,19 @@ onUnmounted(() => {
             <col class="playback-duration-column" />
           </colgroup>
           <thead>
-            <tr><th>时间</th><th>上游</th><th>请求路径</th><th>UA</th><th>结果</th><th>目标</th><th>缓存状态</th><th>缓存有效期</th><th>耗时</th></tr>
+            <tr><th>时间</th><th>上游</th><th>UA</th><th>结果</th><th>目标</th><th>缓存状态</th><th>缓存有效期</th><th>耗时</th></tr>
           </thead>
           <tbody>
             <tr v-for="(event, index) in pagedEvents" :key="index">
               <td>{{ clock(event.time) }}</td>
               <td class="cell-tooltip" :data-tooltip="event.upstream">{{ event.upstream }}</td>
-              <td class="target-cell mono" :data-tooltip="event.path">{{ shorten(event.path, 42) }}</td>
-              <td class="target-cell" :data-tooltip="userAgentText(event)">
+              <td
+                class="target-cell"
+                @mouseenter="showTooltip(userAgentText(event))"
+                @mouseleave="hideTooltip"
+                @focusin="showTooltip(userAgentText(event))"
+                @focusout="hideTooltip"
+              >
                 <span
                   class="target-box mono"
                 >{{ shorten(userAgentText(event), 34) }}</span>
@@ -288,7 +302,10 @@ onUnmounted(() => {
               <td class="cell-tooltip" :data-tooltip="outcomeLabel(event.outcome)"><span :class="outcomeClass(event.outcome)">{{ outcomeLabel(event.outcome) }}</span></td>
               <td
                 class="target-cell"
-                :data-tooltip="copiedTarget === copyableTarget(event) ? '已复制' : targetText(event)"
+                @mouseenter="showTooltip(copiedTarget === copyableTarget(event) ? '已复制' : targetText(event))"
+                @mouseleave="hideTooltip"
+                @focusin="showTooltip(copiedTarget === copyableTarget(event) ? '已复制' : targetText(event))"
+                @focusout="hideTooltip"
               >
                 <button
                   type="button"
@@ -344,7 +361,13 @@ onUnmounted(() => {
         <div v-for="(entry, index) in pagedVisible" :key="index" class="log-line">
           <span class="log-time">{{ stamp(entry.time) }}</span>
           <span :class="levelClass(entry.level)">{{ entry.level }}</span>
-           <span class="log-message log-message-tooltip" :data-tooltip="entry.message">{{ entry.message }}</span>
+          <span
+            class="log-message"
+            @mouseenter="showTooltip(entry.message)"
+            @mouseleave="hideTooltip"
+            @focusin="showTooltip(entry.message)"
+            @focusout="hideTooltip"
+          >{{ entry.message }}</span>
         </div>
         <div v-if="!visible.length" class="empty-inline">
           <svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM8 9h8M8 13h5" /></svg>

@@ -291,18 +291,22 @@ type settingsPayload struct {
 }
 
 type redirectSettings struct {
-	Mode                            string   `json:"mode"`
-	FollowUpstreamRedirects         bool     `json:"followUpstreamRedirects"`
-	MaxFollowHops                   int      `json:"maxFollowHops"`
-	ForwardUserAgent                bool     `json:"forwardUserAgent"`
-	FallbackUserAgent               string   `json:"fallbackUserAgent"`
-	BlockClientUserAgent            bool     `json:"blockClientUserAgent"`
-	BlockedUserAgents               []string `json:"blockedUserAgents"`
-	BlockedUserAgentsEmby           []string `json:"blockedUserAgentsEmby"`
-	BlockedUserAgentsAudiobookshelf []string `json:"blockedUserAgentsAudiobookshelf"`
-	ProbeTimeout                    string   `json:"probeTimeout"`
-	StreamTimeout                   string   `json:"streamTimeout"`
-	AllowPublicTargets              bool     `json:"allowPublicTargets"`
+	Mode                                     string   `json:"mode"`
+	FollowUpstreamRedirects                  bool     `json:"followUpstreamRedirects"`
+	MaxFollowHops                            int      `json:"maxFollowHops"`
+	ForwardUserAgent                         bool     `json:"forwardUserAgent"`
+	FallbackUserAgent                        string   `json:"fallbackUserAgent"`
+	BlockClientUserAgent                     bool     `json:"blockClientUserAgent"`
+	BlockClientUserAgentEmby                 bool     `json:"blockClientUserAgentEmby"`
+	BlockClientUserAgentAudiobookshelf       bool     `json:"blockClientUserAgentAudiobookshelf"`
+	BlockedUserAgents                        []string `json:"blockedUserAgents"`
+	BlockedUserAgentsEmby                    []string `json:"blockedUserAgentsEmby"`
+	BlockedUserAgentsAudiobookshelf          []string `json:"blockedUserAgentsAudiobookshelf"`
+	BlockedUserAgentsEmbyUpstreams           []string `json:"blockedUserAgentsEmbyUpstreams"`
+	BlockedUserAgentsAudiobookshelfUpstreams []string `json:"blockedUserAgentsAudiobookshelfUpstreams"`
+	ProbeTimeout                             string   `json:"probeTimeout"`
+	StreamTimeout                            string   `json:"streamTimeout"`
+	AllowPublicTargets                       bool     `json:"allowPublicTargets"`
 }
 
 type cacheSettings struct {
@@ -315,18 +319,22 @@ func settingsFromConfig(cfg *config.Config) settingsPayload {
 		LogLevel:  cfg.Server.LogLevel,
 		LogBuffer: cfg.Server.LogBuffer,
 		Redirect: redirectSettings{
-			Mode:                            string(cfg.Redirect.Mode),
-			FollowUpstreamRedirects:         cfg.Redirect.FollowUpstreamRedirects,
-			MaxFollowHops:                   cfg.Redirect.MaxFollowHops,
-			ForwardUserAgent:                cfg.Redirect.ShouldForwardUserAgent(),
-			FallbackUserAgent:               cfg.Redirect.FallbackUserAgent,
-			BlockClientUserAgent:            cfg.Redirect.ShouldBlockClientUserAgent(),
-			BlockedUserAgents:               append([]string(nil), cfg.Redirect.BlockedUserAgents...),
-			BlockedUserAgentsEmby:           append([]string(nil), cfg.Redirect.BlockedUserAgentsEmby...),
-			BlockedUserAgentsAudiobookshelf: append([]string(nil), cfg.Redirect.BlockedUserAgentsAudiobookshelf...),
-			ProbeTimeout:                    cfg.Redirect.ProbeTimeout.String(),
-			StreamTimeout:                   cfg.Redirect.StreamTimeout.String(),
-			AllowPublicTargets:              cfg.Redirect.PublicTargetsAllowed(),
+			Mode:                                     string(cfg.Redirect.Mode),
+			FollowUpstreamRedirects:                  cfg.Redirect.FollowUpstreamRedirects,
+			MaxFollowHops:                            cfg.Redirect.MaxFollowHops,
+			ForwardUserAgent:                         cfg.Redirect.ShouldForwardUserAgent(),
+			FallbackUserAgent:                        cfg.Redirect.FallbackUserAgent,
+			BlockClientUserAgent:                     cfg.Redirect.ShouldBlockClientUserAgent(),
+			BlockClientUserAgentEmby:                 cfg.Redirect.BlockClientUserAgentEmby != nil && *cfg.Redirect.BlockClientUserAgentEmby,
+			BlockClientUserAgentAudiobookshelf:       cfg.Redirect.BlockClientUserAgentAudiobookshelf != nil && *cfg.Redirect.BlockClientUserAgentAudiobookshelf,
+			BlockedUserAgents:                        append([]string(nil), cfg.Redirect.BlockedUserAgents...),
+			BlockedUserAgentsEmby:                    append([]string(nil), cfg.Redirect.BlockedUserAgentsEmby...),
+			BlockedUserAgentsAudiobookshelf:          append([]string(nil), cfg.Redirect.BlockedUserAgentsAudiobookshelf...),
+			BlockedUserAgentsEmbyUpstreams:           append([]string(nil), cfg.Redirect.BlockedUserAgentsEmbyUpstreams...),
+			BlockedUserAgentsAudiobookshelfUpstreams: append([]string(nil), cfg.Redirect.BlockedUserAgentsAudiobookshelfUpstreams...),
+			ProbeTimeout:                             cfg.Redirect.ProbeTimeout.String(),
+			StreamTimeout:                            cfg.Redirect.StreamTimeout.String(),
+			AllowPublicTargets:                       cfg.Redirect.PublicTargetsAllowed(),
 		},
 		Cache: cacheSettings{TTL: cfg.Cache.TTL.String(), MaxSize: cfg.Cache.MaxSize},
 	}
@@ -388,9 +396,13 @@ func (a *API) handlePutSettings(writer http.ResponseWriter, request *http.Reques
 		draft.Redirect.MaxFollowHops = payload.Redirect.MaxFollowHops
 		draft.Redirect.ForwardUserAgent = &payload.Redirect.ForwardUserAgent
 		draft.Redirect.BlockClientUserAgent = &payload.Redirect.BlockClientUserAgent
+		draft.Redirect.BlockClientUserAgentEmby = &payload.Redirect.BlockClientUserAgentEmby
+		draft.Redirect.BlockClientUserAgentAudiobookshelf = &payload.Redirect.BlockClientUserAgentAudiobookshelf
 		draft.Redirect.BlockedUserAgents = append([]string(nil), payload.Redirect.BlockedUserAgents...)
 		draft.Redirect.BlockedUserAgentsEmby = append([]string(nil), payload.Redirect.BlockedUserAgentsEmby...)
 		draft.Redirect.BlockedUserAgentsAudiobookshelf = append([]string(nil), payload.Redirect.BlockedUserAgentsAudiobookshelf...)
+		draft.Redirect.BlockedUserAgentsEmbyUpstreams = append([]string(nil), payload.Redirect.BlockedUserAgentsEmbyUpstreams...)
+		draft.Redirect.BlockedUserAgentsAudiobookshelfUpstreams = append([]string(nil), payload.Redirect.BlockedUserAgentsAudiobookshelfUpstreams...)
 		draft.Redirect.AllowPublicTargets = &payload.Redirect.AllowPublicTargets
 		draft.Redirect.FallbackUserAgent = payload.Redirect.FallbackUserAgent
 		draft.Redirect.ProbeTimeout = probeTimeout

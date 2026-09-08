@@ -121,6 +121,23 @@ func TestProviderBlockedClientUserAgent(t *testing.T) {
 	}
 }
 
+func TestProviderBlockedClientUserAgentScopesToSelectedUpstream(t *testing.T) {
+	redirect := Redirect{
+		BlockClientUserAgentEmby:       Bool(true),
+		BlockedUserAgentsEmby:          []string{"Infuse"},
+		BlockedUserAgentsEmbyUpstreams: []string{"客厅 Emby"},
+	}
+	if !redirect.IsBlockedClientUserAgentForUpstream(UpstreamEmby, "客厅 Emby", "Infuse/8.0") {
+		t.Fatal("selected Emby upstream should block matching UA")
+	}
+	if redirect.IsBlockedClientUserAgentForUpstream(UpstreamEmby, "卧室 Emby", "Infuse/8.0") {
+		t.Fatal("unselected Emby upstream should not block matching UA")
+	}
+	if redirect.IsBlockedClientUserAgentForUpstream(UpstreamAudiobookshelf, "客厅 Emby", "Infuse/8.0") {
+		t.Fatal("provider switch should keep Emby rules out of ABS")
+	}
+}
+
 func TestLoadRejectsInvalidValues(t *testing.T) {
 	cases := map[string]string{
 		"bad redirect mode": "redirect:\n  mode: sometimes\nupstreams:\n  - name: a\n    type: emby\n    base_url: http://x:1\n    listen_port: 8096\n",
