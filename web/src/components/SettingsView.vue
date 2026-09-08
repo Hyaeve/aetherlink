@@ -245,11 +245,6 @@ onMounted(load)
           </div>
 
           <button class="primary settings-save-button wide-action" :disabled="accountBusy" @click="saveAccount">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M5 4h11l3 3v13H5z" />
-              <path d="M8 4v6h8V4" />
-              <path d="M8 20v-6h8v6" />
-            </svg>
             {{ accountBusy ? '保存中…' : '保存修改' }}
           </button>
           <p v-if="accountError" class="error form-error">{{ accountError }}</p>
@@ -314,7 +309,12 @@ onMounted(load)
               <h2>缓存与日志</h2>
               <p>管理解析缓存和运行日志</p>
             </div>
-            <span class="live-badge"><i></i>实时生效</span>
+            <div class="security-head-actions">
+              <span v-if="saved" class="save-confirm"><i></i>已保存</span>
+              <button class="primary settings-save-button compact-save-button" :disabled="busy" @click="save">
+                {{ busy ? '保存中…' : '保存' }}
+              </button>
+            </div>
           </div>
 
           <div class="settings-section">
@@ -346,20 +346,6 @@ onMounted(load)
             </div>
           </div>
 
-          <div class="settings-actions">
-            <div>
-              <strong>保存系统设置</strong>
-              <span v-if="saved" class="save-confirm"><i></i>已保存，立即生效</span>
-            </div>
-            <button class="primary settings-save-button action-button" :disabled="busy" @click="save">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M5 4h11l3 3v13H5z" />
-                <path d="M8 4v6h8V4" />
-                <path d="M8 20v-6h8v6" />
-              </svg>
-              {{ busy ? '保存中…' : '保存' }}
-            </button>
-          </div>
         </section>
 
         <section class="settings-card security-card">

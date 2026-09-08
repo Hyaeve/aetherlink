@@ -1567,26 +1567,8 @@ td.target-cell {
   height: 20px;
 }
 
-.system-head .live-badge {
+.system-head .security-head-actions {
   margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border-radius: 999px;
-  padding: 5px 11px;
-  font-size: 11.5px;
-  color: #5d7c6b;
-  background: var(--ok-wash);
-  border: 1px solid #cfe0d5;
-  white-space: nowrap;
-}
-
-.system-head .live-badge i {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--ok);
-  animation: pulse-soft 2.8s ease-in-out infinite;
 }
 
 .setting-alert {
