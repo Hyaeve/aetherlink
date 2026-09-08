@@ -12,6 +12,8 @@ const upstreams = ref([])
 const error = ref('')
 const saved = ref(false)
 const busy = ref(false)
+const securitySaved = ref(false)
+const securityBusy = ref(false)
 
 const username = ref('')
 const password = ref('')
@@ -65,6 +67,21 @@ function syncBlockedUserAgents(settingsPayload) {
   blockedAudiobookshelfUserAgentText.value = (settingsPayload?.redirect?.blockedUserAgentsAudiobookshelf || []).join('\n')
 }
 
+function applySecurityDraft() {
+  settings.value.redirect.blockedUserAgents = blockedUserAgentText.value
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+  settings.value.redirect.blockedUserAgentsEmby = blockedEmbyUserAgentText.value
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+  settings.value.redirect.blockedUserAgentsAudiobookshelf = blockedAudiobookshelfUserAgentText.value
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+}
+
 async function load() {
   try {
     const payload = await api.config()
@@ -85,18 +102,7 @@ async function save() {
   saved.value = false
   error.value = ''
   try {
-    settings.value.redirect.blockedUserAgents = blockedUserAgentText.value
-      .split(/\r?\n/)
-      .map((value) => value.trim())
-      .filter(Boolean)
-    settings.value.redirect.blockedUserAgentsEmby = blockedEmbyUserAgentText.value
-      .split(/\r?\n/)
-      .map((value) => value.trim())
-      .filter(Boolean)
-    settings.value.redirect.blockedUserAgentsAudiobookshelf = blockedAudiobookshelfUserAgentText.value
-      .split(/\r?\n/)
-      .map((value) => value.trim())
-      .filter(Boolean)
+    applySecurityDraft()
     const payload = await api.saveSettings(settings.value)
     settings.value = payload.settings
     syncBlockedUserAgents(settings.value)
@@ -106,6 +112,24 @@ async function save() {
     error.value = saveError.message
   } finally {
     busy.value = false
+  }
+}
+
+async function saveSecurity() {
+  securityBusy.value = true
+  securitySaved.value = false
+  error.value = ''
+  try {
+    applySecurityDraft()
+    const payload = await api.saveSettings(settings.value)
+    settings.value = payload.settings
+    syncBlockedUserAgents(settings.value)
+    securitySaved.value = true
+    emit('saved')
+  } catch (saveError) {
+    error.value = saveError.message
+  } finally {
+    securityBusy.value = false
   }
 }
 
@@ -339,7 +363,7 @@ onMounted(load)
         </section>
 
         <section class="settings-card security-card">
-          <div class="settings-card-head">
+          <div class="settings-card-head security-head">
             <div class="settings-icon violet" aria-hidden="true">
               <svg viewBox="0 0 24 24">
                 <path d="M12 3 5 6v5c0 4.6 2.9 8.3 7 10 4.1-1.7 7-5.4 7-10V6z" />
@@ -349,6 +373,12 @@ onMounted(load)
             <div>
               <h2>安全与代理</h2>
               <p>控制客户端 User-Agent 的转发</p>
+            </div>
+            <div class="security-head-actions">
+              <span v-if="securitySaved" class="save-confirm"><i></i>已保存</span>
+              <button class="primary compact-save-button" :disabled="securityBusy" @click="saveSecurity">
+                {{ securityBusy ? '保存中…' : '保存' }}
+              </button>
             </div>
           </div>
 

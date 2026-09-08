@@ -1711,6 +1711,25 @@ td.target-cell {
   opacity: 0.58;
 }
 
+.security-head {
+  align-items: center;
+}
+
+.security-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.compact-save-button {
+  min-width: 70px;
+  justify-content: center;
+  padding: 7px 13px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+
 .settings-sidebar .account-card { order: 0; }
 .settings-sidebar .backup-card { order: 1; }
 .settings-sidebar .runtime-card { order: 2; }
