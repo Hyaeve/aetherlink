@@ -1763,6 +1763,23 @@ td.target-cell {
   list-style: none;
 }
 
+.candidate-picker.disabled summary {
+  cursor: not-allowed;
+  opacity: 0.55;
+  background: var(--surface-2);
+}
+
+.candidate-picker.disabled[open] .candidate-menu {
+  display: none;
+}
+
+.candidate-summary-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .candidate-picker summary::-webkit-details-marker {
   display: none;
 }
@@ -1807,23 +1824,6 @@ td.target-cell {
   box-shadow: var(--shadow-lg);
 }
 
-.selected-candidates {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-
-.selected-candidates span {
-  max-width: 100%;
-  overflow: hidden;
-  padding: 3px 8px;
-  border-radius: 999px;
-  background: var(--accent-wash);
-  color: var(--accent-ink);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 .candidate-title {
   color: var(--text-soft);
@@ -1832,18 +1832,43 @@ td.target-cell {
 }
 
 .candidate-option {
+  width: 100%;
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 10px;
   min-height: 30px;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
   color: var(--text);
   font-size: 12.5px;
+  text-align: left;
   cursor: pointer;
 }
 
-.candidate-option input {
-  width: auto;
-  accent-color: var(--accent-deep);
+.candidate-option:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.candidate-option.selected {
+  background: var(--accent-wash);
+  border-color: rgba(143, 137, 184, 0.28);
+  color: var(--accent-ink);
+}
+
+.candidate-option i {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.candidate-option.selected i {
+  color: var(--accent-deep);
 }
 
 .candidate-empty {

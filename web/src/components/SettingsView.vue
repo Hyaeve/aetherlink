@@ -35,6 +35,28 @@ function selectedUpstreams(type) {
   return candidateUpstreams(type).filter((upstream) => selected.includes(upstream.name))
 }
 
+function candidateSummary(type) {
+  const names = selectedUpstreams(type).map((upstream) => upstream.name)
+  return names.length ? names.join('、') : `选择已添加的 ${type === 'emby' ? 'Emby' : 'ABS'} 服务`
+}
+
+function isCandidateSelected(type, name) {
+  const key = type === 'emby' ? 'blockedUserAgentsEmbyUpstreams' : 'blockedUserAgentsAudiobookshelfUpstreams'
+  return (settings.value?.redirect?.[key] || []).includes(name)
+}
+
+function toggleCandidate(type, name) {
+  const key = type === 'emby' ? 'blockedUserAgentsEmbyUpstreams' : 'blockedUserAgentsAudiobookshelfUpstreams'
+  const selected = settings.value.redirect[key] || []
+  settings.value.redirect[key] = selected.includes(name)
+    ? selected.filter((value) => value !== name)
+    : [...selected, name]
+}
+
+function preventCandidateMenu(event, enabled) {
+  if (!enabled) event.preventDefault()
+}
+
 function syncBlockedUserAgents(settingsPayload) {
   if (!Array.isArray(settingsPayload?.redirect?.blockedUserAgentsEmbyUpstreams)) settingsPayload.redirect.blockedUserAgentsEmbyUpstreams = []
   if (!Array.isArray(settingsPayload?.redirect?.blockedUserAgentsAudiobookshelfUpstreams)) settingsPayload.redirect.blockedUserAgentsAudiobookshelfUpstreams = []
@@ -343,19 +365,23 @@ onMounted(load)
               </label>
               <div class="candidate-box">
                 <span class="candidate-title">候选服务器</span>
-                <details class="candidate-picker">
-                  <summary>选择已添加的 Emby 服务 <b>{{ selectedUpstreams('emby').length }}</b></summary>
+                <details class="candidate-picker" :class="{ disabled: !settings.redirect.blockClientUserAgentEmby }">
+                  <summary @click="preventCandidateMenu($event, settings.redirect.blockClientUserAgentEmby)"><span class="candidate-summary-text">{{ candidateSummary('emby') }}</span><b>{{ selectedUpstreams('emby').length }}</b></summary>
                   <div class="candidate-menu">
-                    <label v-for="upstream in candidateUpstreams('emby')" :key="upstream.name" class="candidate-option">
-                      <input type="checkbox" :value="upstream.name" v-model="settings.redirect.blockedUserAgentsEmbyUpstreams" :disabled="!settings.redirect.blockClientUserAgentEmby" />
-                      <span>{{ upstream.name }}</span>
-                    </label>
+                    <button
+                      v-for="upstream in candidateUpstreams('emby')"
+                      :key="upstream.name"
+                      type="button"
+                      class="candidate-option"
+                      :class="{ selected: isCandidateSelected('emby', upstream.name) }"
+                      :disabled="!settings.redirect.blockClientUserAgentEmby"
+                      @click="toggleCandidate('emby', upstream.name)"
+                    >
+                      <span>{{ upstream.name }}</span><i>{{ isCandidateSelected('emby', upstream.name) ? '已选' : '选择' }}</i>
+                    </button>
                     <small v-if="!candidateUpstreams('emby').length" class="candidate-empty">暂无 Emby 服务</small>
                   </div>
                 </details>
-                <div v-if="selectedUpstreams('emby').length" class="selected-candidates">
-                  <span v-for="upstream in selectedUpstreams('emby')" :key="upstream.name">{{ upstream.name }}</span>
-                </div>
               </div>
             </div>
             <div class="ua-policy-panel">
@@ -370,19 +396,23 @@ onMounted(load)
               </label>
               <div class="candidate-box">
                 <span class="candidate-title">候选服务器</span>
-                <details class="candidate-picker">
-                  <summary>选择已添加的 ABS 服务 <b>{{ selectedUpstreams('audiobookshelf').length }}</b></summary>
+                <details class="candidate-picker" :class="{ disabled: !settings.redirect.blockClientUserAgentAudiobookshelf }">
+                  <summary @click="preventCandidateMenu($event, settings.redirect.blockClientUserAgentAudiobookshelf)"><span class="candidate-summary-text">{{ candidateSummary('audiobookshelf') }}</span><b>{{ selectedUpstreams('audiobookshelf').length }}</b></summary>
                   <div class="candidate-menu">
-                    <label v-for="upstream in candidateUpstreams('audiobookshelf')" :key="upstream.name" class="candidate-option">
-                      <input type="checkbox" :value="upstream.name" v-model="settings.redirect.blockedUserAgentsAudiobookshelfUpstreams" :disabled="!settings.redirect.blockClientUserAgentAudiobookshelf" />
-                      <span>{{ upstream.name }}</span>
-                    </label>
+                    <button
+                      v-for="upstream in candidateUpstreams('audiobookshelf')"
+                      :key="upstream.name"
+                      type="button"
+                      class="candidate-option"
+                      :class="{ selected: isCandidateSelected('audiobookshelf', upstream.name) }"
+                      :disabled="!settings.redirect.blockClientUserAgentAudiobookshelf"
+                      @click="toggleCandidate('audiobookshelf', upstream.name)"
+                    >
+                      <span>{{ upstream.name }}</span><i>{{ isCandidateSelected('audiobookshelf', upstream.name) ? '已选' : '选择' }}</i>
+                    </button>
                     <small v-if="!candidateUpstreams('audiobookshelf').length" class="candidate-empty">暂无 AudioBookShelf 服务</small>
                   </div>
                 </details>
-                <div v-if="selectedUpstreams('audiobookshelf').length" class="selected-candidates">
-                  <span v-for="upstream in selectedUpstreams('audiobookshelf')" :key="upstream.name">{{ upstream.name }}</span>
-                </div>
               </div>
             </div>
           </div>
