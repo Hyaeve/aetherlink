@@ -1525,10 +1525,6 @@ td.target-cell {
 }
 
 /* 上方卡片按内容自然收紧；左右两列的最后一个窗口落在同一底线。 */
-.settings-sidebar > :last-child,
-.settings-main > :last-child {
-  margin-top: auto;
-}
 
 .settings-card {
   border-radius: var(--radius-lg);
@@ -1619,9 +1615,8 @@ td.target-cell {
 
 .account-form {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin-bottom: 14px;
+  gap: 14px;
+  margin-bottom: 18px;
 }
 
 .account-card {
@@ -2602,9 +2597,6 @@ label.inline input[type='checkbox'] {
     padding: 18px;
   }
 
-  .account-form {
-    grid-template-columns: 1fr;
-  }
 
   .log-line {
     grid-template-columns: 1fr;
