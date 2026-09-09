@@ -1512,7 +1512,7 @@ td.target-cell {
   display: grid;
   grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
   gap: 18px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .settings-sidebar,
@@ -1520,7 +1520,14 @@ td.target-cell {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  height: 100%;
   min-width: 0;
+}
+
+/* 上方卡片按内容自然收紧；左右两列的最后一个窗口落在同一底线。 */
+.settings-sidebar > :last-child,
+.settings-main > :last-child {
+  margin-top: auto;
 }
 
 .settings-card {
@@ -1571,7 +1578,7 @@ td.target-cell {
   margin-left: auto;
 }
 
-/* 缓存与日志卡片保持更紧凑的纵向节奏，和左侧登录账号卡片底部对齐。 */
+/* 缓存与日志卡片保持紧凑的纵向节奏。 */
 .system-card {
   padding-top: 18px;
   padding-bottom: 16px;
