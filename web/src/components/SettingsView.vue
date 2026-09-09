@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
 
 defineProps({ status: { type: Object, default: null } })
@@ -25,6 +25,15 @@ const blockedEmbyUserAgentText = ref('')
 const blockedAudiobookshelfUserAgentText = ref('')
 const restoreInput = ref(null)
 const backupBusy = ref(false)
+const accountCard = ref(null)
+const systemCard = ref(null)
+let cardResizeObserver = null
+
+function alignAccountCard() {
+  if (!accountCard.value || !systemCard.value) return
+  accountCard.value.style.minHeight = ''
+  accountCard.value.style.minHeight = `${systemCard.value.offsetHeight}px`
+}
 
 function candidateUpstreams(type) {
   return upstreams.value.filter((upstream) => upstream.type === type)
@@ -92,6 +101,12 @@ async function load() {
     upstreams.value = payload.upstreams || []
     username.value = payload.account?.username || ''
     error.value = ''
+    await nextTick()
+    alignAccountCard()
+    if (!cardResizeObserver && systemCard.value && typeof ResizeObserver !== 'undefined') {
+      cardResizeObserver = new ResizeObserver(alignAccountCard)
+      cardResizeObserver.observe(systemCard.value)
+    }
   } catch (loadError) {
     error.value = loadError.message
   }
@@ -199,6 +214,10 @@ async function confirmAccountSave() {
 }
 
 onMounted(load)
+onUnmounted(() => {
+  cardResizeObserver?.disconnect()
+  cardResizeObserver = null
+})
 </script>
 
 <template>
@@ -212,7 +231,7 @@ onMounted(load)
 
     <div v-if="settings" class="settings-layout">
       <aside class="settings-sidebar">
-        <section class="settings-card account-card">
+        <section ref="accountCard" class="settings-card account-card">
           <div class="settings-card-head">
             <div class="settings-icon violet" aria-hidden="true">
               <svg viewBox="0 0 24 24">
@@ -248,7 +267,6 @@ onMounted(load)
             {{ accountBusy ? '保存中…' : '保存修改' }}
           </button>
           <p v-if="accountError" class="error form-error">{{ accountError }}</p>
-          <p class="card-footnote">保存后需要重新登录。</p>
         </section>
 
         <section class="settings-card runtime-card" v-if="server">
@@ -297,7 +315,7 @@ onMounted(load)
       </aside>
 
       <div class="settings-main">
-        <section class="settings-card system-card">
+        <section ref="systemCard" class="settings-card system-card">
           <div class="settings-card-head system-head">
             <div class="settings-icon indigo" aria-hidden="true">
               <svg viewBox="0 0 24 24">
