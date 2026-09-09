@@ -319,7 +319,6 @@ onMounted(load)
           <div class="settings-section">
             <div class="settings-section-title">
               <span>缓存与日志</span>
-              <small>重复播放更快，保留必要的排障记录</small>
             </div>
             <div class="form-grid two">
               <label class="field field-large">
