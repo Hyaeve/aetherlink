@@ -216,17 +216,13 @@ func containsString(values []string, target string) bool {
 }
 
 func normalizeUserAgentFragment(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	if len(value) >= 2 && strings.HasPrefix(value, "/") && strings.HasSuffix(value, "/") {
-		value = strings.TrimSpace(value[1 : len(value)-1])
-	}
-	return value
+	return strings.ToLower(strings.TrimSpace(value))
 }
 
 func normalizeUserAgentList(values []string) []string {
 	result := make([]string, 0, len(values))
 	for _, value := range values {
-		if strings.TrimSpace(normalizeUserAgentFragment(value)) != "" {
+		if strings.TrimSpace(value) != "" {
 			result = append(result, strings.TrimSpace(value))
 		}
 	}

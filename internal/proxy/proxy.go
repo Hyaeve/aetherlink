@@ -149,6 +149,12 @@ func newReverseProxy(provider upstream.Provider, mediaResolver *resolver.Resolve
 
 // ServeHTTP proxies a request to the upstream, intercepting media deliveries.
 func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	if s.redirect.IsBlockedClientUserAgentForUpstream(s.provider.Type(), s.provider.Name(), request.UserAgent()) {
+		logx.Warnf("[%s] UA 屏蔽：拒绝 UA %q 的请求 %s %s（403）", s.provider.Name(), request.UserAgent(), request.Method, request.URL.Path)
+		writer.Header().Set("Cache-Control", "no-store")
+		http.Error(writer, "User-Agent blocked", http.StatusForbidden)
+		return
+	}
 	ref, isMedia := s.provider.Match(request)
 	if !isMedia {
 		// 没被拦截的请求量很大（界面、封面、进度同步），所以只在 debug 级别

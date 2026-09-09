@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
 
 const props = defineProps({
@@ -52,8 +52,19 @@ const form = ref(initialForm())
 const busy = ref(false)
 const error = ref('')
 const testResult = ref(null)
+const editor = ref(null)
 
 const isEmby = computed(() => form.value.type === 'emby')
+const serviceOptions = [
+  { value: 'audiobookshelf', label: 'Audiobookshelf' },
+  { value: 'emby', label: 'Emby' }
+]
+const redirectOptions = [
+  { value: 'always', label: '始终跳转' },
+  { value: 'public', label: '公网跳转' },
+  { value: 'private', label: '内网跳转' },
+  { value: 'never', label: '始终中继' }
+]
 
 const keyHint = computed(() =>
   isEmby.value
@@ -74,6 +85,53 @@ function removeMapping(index) {
   form.value.pathMappings.splice(index, 1)
   if (!form.value.pathMappings.length) addMapping()
 }
+
+function optionLabel(options, value) {
+  return options.find((option) => option.value === value)?.label || ''
+}
+
+function selectOption(field, value, event) {
+  form.value[field] = value
+  const dropdown = event.currentTarget.closest('details')
+  dropdown?.removeAttribute('open')
+  dropdown?.querySelector('summary')?.focus()
+}
+
+function closeDropdowns(event) {
+  editor.value?.querySelectorAll('.form-select[open]').forEach((dropdown) => {
+    if (!dropdown.contains(event.target)) dropdown.removeAttribute('open')
+  })
+}
+
+function handleDropdownKey(event) {
+  const dropdown = event.currentTarget
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopPropagation()
+    dropdown.removeAttribute('open')
+    dropdown.querySelector('summary')?.focus()
+    return
+  }
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+  event.preventDefault()
+  dropdown.open = true
+  const options = [...dropdown.querySelectorAll('button')]
+  const current = options.indexOf(document.activeElement)
+  let next = current < 0 ? options.findIndex((option) => option.classList.contains('selected')) : current
+  if (event.key === 'Home') next = 0
+  else if (event.key === 'End') next = options.length - 1
+  else if (current >= 0) next = (current + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length
+  options[Math.max(0, next)]?.focus()
+}
+
+onMounted(() => {
+  document.addEventListener('pointerdown', closeDropdowns)
+  document.addEventListener('focusin', closeDropdowns)
+})
+onUnmounted(() => {
+  document.removeEventListener('pointerdown', closeDropdowns)
+  document.removeEventListener('focusin', closeDropdowns)
+})
 
 function buildPayload() {
   const current = form.value
@@ -133,7 +191,7 @@ async function save() {
 
 <template>
   <div class="modal-backdrop" @click.self="emit('close')">
-    <div class="modal">
+    <div ref="editor" class="modal">
       <div class="modal-head">
         <h2>{{ isCreate ? '添加反代上游' : `编辑 ${props.upstream.name}` }}</h2>
         <span class="tag" v-if="!isCreate && props.upstream.listening">端口已监听</span>
@@ -149,13 +207,24 @@ async function save() {
               <span>名称</span>
               <input v-model="form.name" placeholder="例如：我的有声书" />
             </label>
-            <label class="field">
+            <div class="field">
               <span>服务端类型</span>
-              <select v-model="form.type">
-                <option value="audiobookshelf">Audiobookshelf</option>
-                <option value="emby">Emby</option>
-              </select>
-            </label>
+              <details class="form-select" @keydown="handleDropdownKey">
+                <summary :aria-label="`服务端类型：${optionLabel(serviceOptions, form.type)}`">{{ optionLabel(serviceOptions, form.type) }}</summary>
+                <div class="form-select-options">
+                  <button
+                    v-for="option in serviceOptions"
+                    :key="option.value"
+                    type="button"
+                    :aria-pressed="form.type === option.value"
+                    :class="{ selected: form.type === option.value }"
+                    @click="selectOption('type', option.value, $event)"
+                  >
+                    {{ option.label }}
+                  </button>
+                </div>
+              </details>
+            </div>
             <label class="field">
               <span>原服务地址</span>
               <input v-model="form.baseUrl" :placeholder="isEmby ? 'http://10.0.0.31:8096' : 'http://10.0.0.31:13378'" />
@@ -166,15 +235,24 @@ async function save() {
                      :placeholder="props.suggestedPort ? String(props.suggestedPort) : '如 5152'" />
               <small class="field-note">保存后把宿主机端口映射到这个端口</small>
             </label>
-            <label class="field">
+            <div class="field">
               <span>播放跳转</span>
-              <select v-model="form.redirectMode">
-                <option value="always">始终跳转</option>
-                <option value="public">公网跳转</option>
-                <option value="private">内网跳转</option>
-                <option value="never">始终中继</option>
-              </select>
-            </label>
+              <details class="form-select" @keydown="handleDropdownKey">
+                <summary :aria-label="`播放跳转：${optionLabel(redirectOptions, form.redirectMode)}`">{{ optionLabel(redirectOptions, form.redirectMode) }}</summary>
+                <div class="form-select-options">
+                  <button
+                    v-for="option in redirectOptions"
+                    :key="option.value"
+                    type="button"
+                    :aria-pressed="form.redirectMode === option.value"
+                    :class="{ selected: form.redirectMode === option.value }"
+                    @click="selectOption('redirectMode', option.value, $event)"
+                  >
+                    {{ option.label }}
+                  </button>
+                </div>
+              </details>
+            </div>
           </div>
           <div class="row">
             <label class="inline"><input type="checkbox" v-model="form.enabled" /> 启用</label>

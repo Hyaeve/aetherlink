@@ -2300,6 +2300,77 @@ td.target-cell {
   margin-bottom: 12px;
 }
 
+.form-select {
+  position: relative;
+}
+
+.form-select summary {
+  position: relative;
+  min-height: 39px;
+  padding: 9px 36px 9px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  list-style: none;
+}
+
+.form-select summary::-webkit-details-marker {
+  display: none;
+}
+
+.form-select summary::after {
+  content: '⌄';
+  position: absolute;
+  top: 50%;
+  right: 13px;
+  color: var(--muted);
+  transform: translateY(-55%);
+  transition: transform 0.15s ease;
+}
+
+.form-select[open] summary {
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+}
+
+.form-select[open] summary::after {
+  transform: translateY(-45%) rotate(180deg);
+}
+
+.form-select-options {
+  position: absolute;
+  top: calc(100% + 7px);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  display: grid;
+  gap: 4px;
+  padding: 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: rgba(253, 253, 252, 0.98);
+  box-shadow: var(--shadow-lg);
+}
+
+.form-select-options button {
+  width: 100%;
+  justify-content: flex-start;
+  padding: 8px 10px;
+  border-color: transparent;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 13px;
+}
+
+.form-select-options button:hover:not(:disabled),
+.form-select-options button.selected {
+  border-color: transparent;
+  background: var(--accent-wash);
+  color: var(--accent-ink);
+}
+
 /* ---------- 表格、标签与其他 ---------- */
 
 table {

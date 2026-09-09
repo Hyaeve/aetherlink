@@ -356,7 +356,7 @@ onMounted(load)
             </div>
             <div>
               <h2>安全与代理</h2>
-              <p>控制客户端 User-Agent 的转发</p>
+              <p>拒绝匹配关键词的客户端访问</p>
             </div>
             <div class="security-head-actions">
               <span v-if="securitySaved" class="save-confirm"><i></i>已保存</span>
@@ -375,7 +375,7 @@ onMounted(load)
               </label>
               <label class="field security-field">
                 <span>匹配片段</span>
-                <textarea v-model="blockedEmbyUserAgentText" rows="4" :disabled="!settings.redirect.blockClientUserAgentEmby" placeholder="/Infuse/\nForward\nEmby Theater"></textarea>
+                <textarea v-model="blockedEmbyUserAgentText" rows="4" :disabled="!settings.redirect.blockClientUserAgentEmby" :placeholder="'Filmly\nForward\nEmby Theater'"></textarea>
               </label>
               <div class="candidate-box">
                 <span class="candidate-title">候选服务器</span>
@@ -406,7 +406,7 @@ onMounted(load)
               </label>
               <label class="field security-field">
                 <span>匹配片段</span>
-                <textarea v-model="blockedAudiobookshelfUserAgentText" rows="4" :disabled="!settings.redirect.blockClientUserAgentAudiobookshelf" placeholder="/Komic-iOS/\nListenAudiobook"></textarea>
+                <textarea v-model="blockedAudiobookshelfUserAgentText" rows="4" :disabled="!settings.redirect.blockClientUserAgentAudiobookshelf" :placeholder="'Komic-iOS\nListenAudiobook'"></textarea>
               </label>
               <div class="candidate-box">
                 <span class="candidate-title">候选服务器</span>

@@ -107,11 +107,19 @@ func TestBlockedClientUserAgentMatchesCaseInsensitiveFragments(t *testing.T) {
 func TestProviderBlockedClientUserAgent(t *testing.T) {
 	redirect := Redirect{
 		BlockClientUserAgent:            Bool(true),
-		BlockedUserAgentsEmby:           []string{"/Infuse/"},
+		BlockedUserAgentsEmby:           []string{"Infuse"},
 		BlockedUserAgentsAudiobookshelf: []string{"Komic-iOS"},
 	}
 	if !redirect.IsBlockedClientUserAgentFor(UpstreamEmby, "Infuse/8.0") {
-		t.Fatal("Emby slash-wrapped fragment should match")
+		t.Fatal("Emby keyword should match when it appears in the User-Agent")
+	}
+	if !redirect.IsBlockedClientUserAgentFor(UpstreamEmby, "X/Infuse/8.0") {
+		t.Fatal("Emby keyword should match within a User-Agent")
+	}
+	literalRedirect := redirect
+	literalRedirect.BlockedUserAgentsEmby = []string{"/Infuse/"}
+	if literalRedirect.IsBlockedClientUserAgentFor(UpstreamEmby, "Infuse/8.0") {
+		t.Fatal("slash-wrapped values should not be stripped automatically")
 	}
 	if redirect.IsBlockedClientUserAgentFor(UpstreamAudiobookshelf, "Infuse/8.0") {
 		t.Fatal("Emby fragment should not match Audiobookshelf")

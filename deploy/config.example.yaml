@@ -47,12 +47,12 @@ redirect:
   # 中继模式下单次传输上限，0 表示不限制（长音频建议保持 0）。
   stream_timeout: 0s
   allow_public_targets: true
-  # 可选：分别为 Emby 与 Audiobookshelf 配置客户端 UA 屏蔽片段，每行一个。
-  # 片段支持 /xxx/ 形式，匹配时不区分大小写。
+  # 可选：分别为 Emby 与 Audiobookshelf 配置客户端 UA 屏蔽关键词，每行一个。
+  # 关键词按大小写不敏感的包含关系匹配，命中后直接返回 403。
   # blocked_user_agents_emby:
-  #   - /Infuse/
+  #   - Filmly
   # blocked_user_agents_audiobookshelf:
-  #   - /Komic-iOS/
+  #   - Komic-iOS
 
 cache:
   # 解析结果缓存时间。播放器 seek 时会重复请求同一轨道，缓存可显著减少上游 API 调用。

@@ -186,6 +186,24 @@ func newTestServer(t *testing.T, absURL, strmRoot string, redirectCfg config.Red
 	return New(provider, mediaResolver, collector, redirectCfg), collector
 }
 
+func TestBlockedUserAgentIsRejectedBeforeProxying(t *testing.T) {
+	root, _, _ := writeStrm(t, "http://10.0.0.31:19527/d/blocked.m4a")
+	redirectCfg := defaultRedirect()
+	redirectCfg.BlockClientUserAgentAudiobookshelf = config.Bool(true)
+	redirectCfg.BlockedUserAgentsAudiobookshelf = []string{"Filmly"}
+	redirectCfg.BlockedUserAgentsAudiobookshelfUpstreams = []string{"abs"}
+	server, _ := newTestServer(t, "http://127.0.0.1:1", root, redirectCfg)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/library/audiobooks", nil)
+	request.Header.Set("User-Agent", "Filmly/99.0.0-217")
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", recorder.Code)
+	}
+}
+
 func defaultRedirect() config.Redirect {
 	return config.Redirect{
 		Mode:               config.RedirectAlways,
