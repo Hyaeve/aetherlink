@@ -1795,10 +1795,6 @@ td.target-cell {
   display: grid;
   gap: 8px;
   margin-top: 12px;
-  padding: 11px 12px;
-  border: 1px dashed var(--border-strong);
-  border-radius: 12px;
-  background: rgba(253, 253, 252, 0.66);
 }
 
 .candidate-picker {
