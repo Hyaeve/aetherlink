@@ -1740,12 +1740,31 @@ td.target-cell {
 }
 
 .security-field textarea {
-  min-height: 132px;
+  height: 108px;
+  min-height: 108px;
+  max-height: 108px;
   margin-top: 7px;
   border-radius: var(--radius);
   background: var(--surface-2);
   border-color: var(--border-strong);
   line-height: 1.7;
+  resize: none;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(143, 137, 184, 0.22) transparent;
+}
+
+.security-field textarea::-webkit-scrollbar {
+  width: 4px;
+}
+
+.security-field textarea::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(143, 137, 184, 0.22);
+}
+
+.security-field textarea::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .security-field textarea:disabled {
@@ -1785,6 +1804,10 @@ td.target-cell {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: rgba(242, 243, 245, 0.52);
+}
+
+.security-card {
+  padding-bottom: 16px;
 }
 
 .ua-policy-panel .security-toggle {
