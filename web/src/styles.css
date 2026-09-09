@@ -280,12 +280,10 @@ code {
   height: 44px;
   flex: 0 0 44px;
   border-radius: 15px;
-  background-image: linear-gradient(140deg, #9a93c4, var(--monet-blue) 55%, var(--monet-water));
-  background-size: 200% 200%;
-  animation: card-tide var(--card-tide-duration) ease-in-out infinite alternate;
+  background: var(--surface);
   display: grid;
   place-items: center;
-  color: #fdfdfc;
+  overflow: hidden;
   box-shadow: 0 8px 18px rgba(111, 105, 155, 0.26);
   border: 0;
   padding: 0;
@@ -293,9 +291,21 @@ code {
 }
 
 .rail .brand:hover:not(:disabled) {
-  color: #fdfdfc;
+  background: var(--surface);
   border-color: transparent;
   transform: translateY(-1px);
+}
+
+.rail .brand[aria-expanded='true'],
+.rail .brand[aria-expanded='true']:hover:not(:disabled) {
+  background: var(--surface);
+}
+
+.rail .brand img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
 }
 
 .rail-account-menu {
@@ -304,30 +314,23 @@ code {
   left: 0;
   z-index: 30;
   display: grid;
-  gap: 8px;
-  width: 172px;
-  padding: 10px;
+  width: 48px;
+  padding: 6px;
   border: 1px solid var(--border-strong);
-  border-radius: 14px;
+  border-radius: 12px;
   background: rgba(253, 253, 252, 0.98);
   box-shadow: var(--shadow-lg);
 }
 
-.rail-account-menu strong {
-  padding: 2px 8px 4px;
-  color: var(--muted);
-  font-size: 11.5px;
-  font-weight: 600;
-}
-
 .rail-account-menu button {
-  width: 100%;
-  justify-content: flex-start;
-  padding: 8px 9px;
+  width: 34px;
+  height: 34px;
+  justify-content: center;
+  padding: 0;
+  border-radius: 9px;
   border-color: transparent;
   background: transparent;
   color: var(--text-soft);
-  font-size: 12.5px;
 }
 
 .rail-account-menu button:hover:not(:disabled) {
@@ -339,16 +342,6 @@ code {
 .rail-account-menu button svg {
   width: 17px;
   height: 17px;
-  stroke: currentColor;
-  stroke-width: 1.7;
-  fill: none;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.rail .brand svg {
-  width: 23px;
-  height: 23px;
   stroke: currentColor;
   stroke-width: 1.7;
   fill: none;
@@ -2579,13 +2572,10 @@ label.inline input[type='checkbox'] {
   width: 48px;
   height: 48px;
   border-radius: 16px;
-  background-image: linear-gradient(140deg, #9a93c4, var(--monet-blue) 45%, var(--monet-water) 74%, var(--monet-gold));
-  background-size: 200% 200%;
-  animation: card-tide var(--card-tide-duration) ease-in-out infinite alternate;
-  display: grid;
-  place-items: center;
-  color: #fdfdfc;
-  font-weight: 600;
+  display: block;
+  object-fit: cover;
+  background: var(--surface-2);
+  box-shadow: 0 8px 18px rgba(111, 105, 155, 0.18);
   margin: 0 auto 14px;
 }
 

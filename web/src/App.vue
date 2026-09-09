@@ -195,7 +195,7 @@ function toggleAccountMenu() {
 <template>
   <div v-if="gate === 'loading'" class="gate">
     <div class="panel">
-      <div class="logo">AL</div>
+      <img class="logo" :src="'/aetherlink/icons/aetherlink-logo.png'" alt="AetherLink" />
       <h2>AetherLink 以太链接</h2>
       <p class="muted">正在连接服务…</p>
     </div>
@@ -203,7 +203,7 @@ function toggleAccountMenu() {
 
   <div v-else-if="gate === 'login'" class="gate">
     <div class="panel">
-      <div class="logo">AL</div>
+      <img class="logo" :src="'/aetherlink/icons/aetherlink-logo.png'" alt="AetherLink" />
       <h2>AetherLink</h2>
       <label class="field">
         <span>账号</span>
@@ -231,25 +231,19 @@ function toggleAccountMenu() {
           :aria-expanded="accountMenuOpen"
           @click="toggleAccountMenu"
         >
-          <svg viewBox="0 0 24 24">
-            <path d="M8.5 15.5 15.5 8.5" />
-            <path d="M10 13a4 4 0 0 0 5.7 0l2-2a4 4 0 0 0-5.7-5.7l-1 1" />
-            <path d="M14 11a4 4 0 0 0-5.7 0l-2 2A4 4 0 0 0 12 18.7l1-1" />
-          </svg>
+          <img :src="'/aetherlink/icons/aetherlink-logo.png'" alt="AetherLink" />
         </button>
         <div class="rail-brand-copy">
           <strong>AetherLink</strong>
           <span>以太链接</span>
         </div>
         <div v-if="accountMenuOpen" class="rail-account-menu">
-          <strong>账号菜单</strong>
-          <button type="button" @click="logout">
+          <button class="rail-logout-button" type="button" title="退出登录" aria-label="退出登录" @click="logout">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M15 5H7a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h8" />
               <path d="M17 8l4 4-4 4" />
               <path d="M21 12h-8" />
             </svg>
-            退出登录
           </button>
         </div>
       </div>
