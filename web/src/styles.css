@@ -1525,6 +1525,10 @@ td.target-cell {
 }
 
 /* 上方卡片按内容自然收紧；左右两列的最后一个窗口落在同一底线。 */
+.settings-sidebar > :last-child,
+.settings-main > :last-child {
+  margin-top: auto;
+}
 
 .settings-card {
   border-radius: var(--radius-lg);
