@@ -54,7 +54,7 @@ const eventPageCount = computed(() => Math.max(1, Math.ceil(events.value.length 
 const logPageCount = computed(() => Math.max(1, Math.ceil(visible.value.length / pageSize)))
 const pagedEvents = computed(() => pageSlice(events.value, eventPage.value))
 const pagedVisible = computed(() => pageSlice(visible.value, logPage.value))
-const relayCount = computed(() => (snapshot.value?.proxyStreams || 0) + (snapshot.value?.transcodes || 0) + (snapshot.value?.localFiles || 0))
+const relayCount = computed(() => (snapshot.value?.proxyStreams || 0) + (snapshot.value?.transcodes || 0) + (snapshot.value?.localFiles || 0) + (snapshot.value?.passthroughs || 0))
 
 watch(events, () => {
   if (eventPage.value > eventPageCount.value) eventPage.value = eventPageCount.value
