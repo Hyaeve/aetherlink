@@ -781,13 +781,6 @@ code {
   gap: 10px;
 }
 
-.proxy-card-badges {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  margin-right: -7px;
-}
-
 .service-mark {
   width: 58px;
   height: 58px;
@@ -797,16 +790,13 @@ code {
   place-items: center;
   background: transparent;
   border: none;
+  padding: 0;
+  border-radius: 14px;
 }
 
-.service-mark svg {
-  width: 21px;
-  height: 21px;
-  stroke: currentColor;
-  stroke-width: 1.6;
-  fill: none;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+.service-mark:hover:not(:disabled) {
+  background: transparent;
+  transform: scale(1.06);
 }
 
 .service-mark img {
@@ -817,41 +807,11 @@ code {
   filter: drop-shadow(0 5px 9px rgba(63, 69, 80, 0.18));
 }
 
-.proxy-status {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  flex: 0 0 34px;
-  border-radius: 11px;
-  padding: 0;
-  background: var(--ok-wash);
-  color: #5d7c6b;
-  border: 1px solid transparent;
-  cursor: pointer;
-}
-
-.proxy-status svg {
-  width: 18px;
-  height: 18px;
-  flex-basis: 18px;
-  fill: currentColor;
-  stroke: currentColor;
-  stroke-width: 1.5;
-}
-
-.proxy-status.offline {
-  background: var(--surface-2);
-  color: var(--text-soft);
-}
-
-.proxy-status:hover:not(:disabled) {
-  border-color: rgba(63, 69, 80, 0.2);
-  transform: translateY(-1px);
-}
-
-.mode-tag {
+.card-tag.mode-tag {
+  border-radius: 10px;
+  padding: 6px 12px;
+  font-size: 12px;
+  line-height: 20px;
   background: rgba(253, 253, 252, 0.68);
   border: 1px solid rgba(253, 253, 252, 0.44);
 }
@@ -2320,15 +2280,20 @@ table {
   font-size: 12px;
 }
 
-.playback-time-column { width: 8%; }
+.playback-time-column { width: 148px; }
 .playback-upstream-column { width: 9%; }
 .playback-ua-column { width: 8%; }
 .playback-outcome-column { width: 8%; }
-.playback-target-column { width: 34.5%; }
-.playback-client-column { width: 7.5%; }
+.playback-target-column { width: calc(39% - 148px); }
+.playback-client-column { width: 11%; }
 .playback-cache-column { width: 9%; }
 .playback-ttl-column { width: 9%; }
 .playback-duration-column { width: 7%; }
+
+.playback-table th:first-child,
+.playback-table td:first-child {
+  padding-left: 16px;
+}
 
 .trusted-proxy-field {
   margin-top: 14px;

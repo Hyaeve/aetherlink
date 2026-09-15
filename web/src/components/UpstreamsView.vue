@@ -202,30 +202,23 @@ onMounted(load)
         @contextmenu.prevent="openMenu($event, upstream)"
       >
         <div class="proxy-card-top">
-          <span class="service-mark" :class="upstream.type">
-            <img
-              :src="upstream.type === 'emby' ? '/aetherlink/icons/emby.png' : '/aetherlink/icons/abs.png'"
-              :alt="typeLabel(upstream.type)"
-            />
-          </span>
-          <span class="proxy-card-badges">
-          <span class="card-tag mode-tag">{{ redirectLabel(upstream.redirectMode) }}</span>
           <button
             type="button"
-            class="proxy-status"
-            :class="upstream.enabled && upstream.listening ? 'online' : 'offline'"
-            :title="upstream.enabled && upstream.listening ? '运行中，点击停止' : upstream.enabled ? '未监听，点击停用' : '已停止，点击恢复运行'"
-            :aria-label="upstream.enabled && upstream.listening ? '运行中，点击停止' : upstream.enabled ? '未监听，点击停用' : '已停止，点击恢复运行'"
+            class="service-mark"
+            :class="upstream.type"
+            :title="upstream.enabled ? '点击停用' : '点击启用'"
+            :aria-label="`${upstream.name}，${upstream.enabled ? '点击停用' : '点击启用'}`"
+            :aria-pressed="upstream.enabled"
             :disabled="busy"
             @click.stop="toggleEnabled(upstream)"
             @keyup.stop
           >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path v-if="upstream.enabled && upstream.listening" d="m9 5 11 7-11 7z" />
-              <rect v-else x="6" y="6" width="12" height="12" rx="2" />
-            </svg>
+            <img
+              :src="upstream.type === 'emby' ? '/aetherlink/icons/emby.png' : '/aetherlink/icons/abs.png'"
+              :alt="typeLabel(upstream.type)"
+            />
           </button>
-          </span>
+          <span class="card-tag mode-tag">{{ redirectLabel(upstream.redirectMode) }}</span>
         </div>
 
         <div class="proxy-card-content">

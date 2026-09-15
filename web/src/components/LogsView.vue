@@ -24,7 +24,7 @@ let tooltipTimer = null
 const OUTCOME_LABELS = {
   redirect: '302 跳转',
   passthrough: '透传上游',
-  proxy: 'AetherLink 中继',
+  proxy: '中继',
   transcode: '音频兼容中继',
   local: '本地直读',
   error: '失败',
@@ -100,7 +100,10 @@ function stamp(value) {
 }
 
 function clock(value) {
-  return new Date(value).toLocaleTimeString('zh-CN', { hour12: false })
+  const date = new Date(value)
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${month}-${day} ${date.toLocaleTimeString('zh-CN', { hour12: false })}`
 }
 
 // 后端的 durationMs 是 Go 的 time.Duration（纳秒），显示前换成毫秒。
@@ -198,26 +201,28 @@ function nextLogPage() {
   logPage.value = Math.min(logPageCount.value, logPage.value + 1)
 }
 
-function shorten(value, max = 64) {
-  if (!value) return '—'
-  return value.length > max ? `${value.slice(0, max)}…` : value
-}
-
-function isTruncated(target, value, maxLength) {
-  if (maxLength && value.length > maxLength) return true
+function isTruncated(target) {
   const content = target.querySelector?.('.target-box') || target
-  return content.scrollWidth > content.clientWidth + 1 || content.scrollHeight > content.clientHeight + 1
+  if (content.scrollWidth > content.clientWidth || content.scrollHeight > content.clientHeight) return true
+  const range = document.createRange()
+  range.selectNodeContents(content)
+  const style = getComputedStyle(content)
+  const availableWidth = content.getBoundingClientRect().width
+    - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)
+    - parseFloat(style.borderLeftWidth) - parseFloat(style.borderRightWidth)
+  return range.getBoundingClientRect().width > availableWidth
 }
 
-function showTooltip(value, event, maxLength = 0) {
+function showTooltip(value, event) {
   if (tooltipTimer) clearTimeout(tooltipTimer)
+  hoverTooltip.value = null
   const target = event.currentTarget
   if (!value) {
     hoverTooltip.value = null
     return
   }
   tooltipTimer = setTimeout(async () => {
-    if (!target.isConnected || !isTruncated(target, value, maxLength)) return
+    if (!target.isConnected || !isTruncated(target)) return
     const rect = target.getBoundingClientRect()
     const maxWidth = Math.min(760, window.innerWidth - 32)
     const left = Math.max(16, rect.left)
@@ -297,7 +302,7 @@ onUnmounted(() => {
             <option value="all">全部结果</option>
             <option value="redirect">302 跳转</option>
             <option value="passthrough">透传上游</option>
-            <option value="proxy">AetherLink 中继</option>
+            <option value="proxy">中继</option>
             <option value="transcode">音频兼容中继</option>
             <option value="local">本地直读</option>
             <option value="error">失败</option>
@@ -328,30 +333,31 @@ onUnmounted(() => {
               <td>{{ clock(event.time) }}</td>
               <td
                 class="target-cell"
-                @mouseenter="showTooltip(event.upstream, $event, 20)"
+                @mouseenter="showTooltip(event.upstream, $event)"
                 @mouseleave="hideTooltip"
-                @focusin="showTooltip(event.upstream, $event, 20)"
+                @focusin="showTooltip(event.upstream, $event)"
                 @focusout="hideTooltip"
               >
-                <span class="target-box">{{ shorten(event.upstream, 20) }}</span>
+                <span class="target-box" tabindex="0">{{ event.upstream || '—' }}</span>
               </td>
               <td
                 class="target-cell"
-                @mouseenter="showTooltip(userAgentText(event), $event, 34)"
+                @mouseenter="showTooltip(userAgentText(event), $event)"
                 @mouseleave="hideTooltip"
-                @focusin="showTooltip(userAgentText(event), $event, 34)"
+                @focusin="showTooltip(userAgentText(event), $event)"
                 @focusout="hideTooltip"
               >
                 <span
                   class="target-box mono"
-                >{{ shorten(userAgentText(event), 34) }}</span>
+                  tabindex="0"
+                >{{ userAgentText(event) }}</span>
               </td>
               <td><span :class="outcomeClass(event.outcome)">{{ outcomeLabel(event.outcome) }}</span></td>
               <td
                 class="target-cell"
-                @mouseenter="showTooltip(copiedTarget === copyableTarget(event) ? '已复制' : targetText(event), $event, 48)"
+                @mouseenter="showTooltip(copiedTarget === copyableTarget(event) ? '已复制' : targetText(event), $event)"
                 @mouseleave="hideTooltip"
-                @focusin="showTooltip(copiedTarget === copyableTarget(event) ? '已复制' : targetText(event), $event, 48)"
+                @focusin="showTooltip(copiedTarget === copyableTarget(event) ? '已复制' : targetText(event), $event)"
                 @focusout="hideTooltip"
               >
                 <button
@@ -360,7 +366,7 @@ onUnmounted(() => {
                   :class="{ 'is-copyable': copyableTarget(event) }"
                   :disabled="!copyableTarget(event)"
                   @click="copyTarget(event)"
-                >{{ shorten(targetText(event), 48) }}</button>
+                >{{ targetText(event) || '—' }}</button>
               </td>
               <td class="target-cell" @mouseenter="showTooltip(event.client || '未知', $event)" @mouseleave="hideTooltip" @focusin="showTooltip(event.client || '未知', $event)" @focusout="hideTooltip">
                 <span class="target-box mono" tabindex="0">{{ event.client || '未知' }}</span>
