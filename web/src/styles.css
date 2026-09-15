@@ -806,7 +806,7 @@ code {
   gap: 16px;
 }
 
-/* 卡片渐变由 palette.js 按名称哈希固定；这里让它缓慢流动。 */
+/* 卡片渐变由 palette.js 按服务启动时间与名称固定；这里让它缓慢流动。 */
 .proxy-card {
   position: relative;
   border-radius: var(--radius-lg);
@@ -2380,14 +2380,20 @@ table {
   font-size: 12px;
 }
 
-.playback-time-column { width: 7%; }
-.playback-upstream-column { width: 8%; }
-.playback-ua-column { width: 20%; }
-.playback-outcome-column { width: 9%; }
-.playback-target-column { width: 22%; }
-.playback-cache-column { width: 8%; }
-.playback-ttl-column { width: 8%; }
-.playback-duration-column { width: 6%; }
+.playback-time-column { width: 8%; }
+.playback-upstream-column { width: 9%; }
+.playback-ua-column { width: 8%; }
+.playback-outcome-column { width: 8%; }
+.playback-target-column { width: 27%; }
+.playback-client-column { width: 15%; }
+.playback-cache-column { width: 9%; }
+.playback-ttl-column { width: 9%; }
+.playback-duration-column { width: 7%; }
+
+.trusted-proxy-field {
+  margin-top: 14px;
+  margin-bottom: 0;
+}
 
 th,
 td {
@@ -2711,10 +2717,10 @@ label.inline input[type='checkbox'] {
 
   .playback-cache-column,
   .playback-ttl-column,
-  .playback-table th:nth-child(6),
-  .playback-table td:nth-child(6),
   .playback-table th:nth-child(7),
-  .playback-table td:nth-child(7) {
+  .playback-table td:nth-child(7),
+  .playback-table th:nth-child(8),
+  .playback-table td:nth-child(8) {
     display: none;
   }
 

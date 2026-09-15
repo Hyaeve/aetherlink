@@ -13,6 +13,7 @@ const adminPort = ref(0)
 const error = ref('')
 const notice = ref('')
 const loading = ref(true)
+const startedAt = ref('')
 
 // editing: null 不打开；{ upstream: null } 新增；{ upstream } 编辑。
 const editing = ref(null)
@@ -30,7 +31,8 @@ const absCount = computed(() => upstreams.value.filter((item) => item.type === '
 async function load() {
   loading.value = true
   try {
-    const payload = await api.upstreams()
+    const [payload, status] = await Promise.all([api.upstreams(), api.status()])
+    startedAt.value = status.startedAt
     upstreams.value = payload.upstreams || []
     suggestedPort.value = payload.suggestedPort || 0
     adminPort.value = payload.adminPort || 0
@@ -190,7 +192,7 @@ onMounted(load)
         :key="upstream.name"
         class="proxy-card"
         :class="{ dimmed: !upstream.enabled }"
-        :style="cardStyleFor(upstream.name)"
+        :style="cardStyleFor(upstream.name, startedAt)"
         tabindex="0"
         role="button"
         :aria-label="`${upstream.name}，点击卡片编辑`"

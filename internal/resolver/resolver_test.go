@@ -139,7 +139,7 @@ func TestEmbyCacheFallbackIsFixedAtTwoHours(t *testing.T) {
 	}
 }
 
-func TestRedirectModesApplyToPublicAndPrivateTargets(t *testing.T) {
+func TestRedirectModesApplyToClientIPRegardlessOfTarget(t *testing.T) {
 	resolver := New(config.Cache{}, config.Redirect{})
 	publicResolution := &Resolution{Target: &strm.Target{Type: strm.TargetRemote, URL: "https://cdn.example/video.mkv"}}
 	privateResolution := &Resolution{Target: &strm.Target{Type: strm.TargetRemote, URL: "http://10.0.0.31:19527/d/video.mkv"}}
@@ -156,11 +156,22 @@ func TestRedirectModesApplyToPublicAndPrivateTargets(t *testing.T) {
 	}
 	for _, test := range cases {
 		redirect := config.Redirect{Mode: test.mode}
-		if got := resolver.ShouldRedirectWith(publicResolution, redirect); got != test.wantPublic {
-			t.Errorf("mode %s public target = %v, want %v", test.mode, got, test.wantPublic)
-		}
-		if got := resolver.ShouldRedirectWith(privateResolution, redirect); got != test.wantPrivate {
-			t.Errorf("mode %s private target = %v, want %v", test.mode, got, test.wantPrivate)
+		for _, resolution := range []*Resolution{publicResolution, privateResolution} {
+			for _, client := range []string{"8.8.8.8", "2001:4860:4860::8888"} {
+				if got := resolver.ShouldRedirectForClient(resolution, redirect, client); got != test.wantPublic {
+					t.Errorf("mode %s client %s = %v, want %v", test.mode, client, got, test.wantPublic)
+				}
+			}
+			for _, client := range []string{"192.168.1.3", "::ffff:192.168.1.3", "fd00::1", "127.0.0.1", "::1", "fe80::1"} {
+				if got := resolver.ShouldRedirectForClient(resolution, redirect, client); got != test.wantPrivate {
+					t.Errorf("mode %s client %s = %v, want %v", test.mode, client, got, test.wantPrivate)
+				}
+			}
+			for _, client := range []string{"", "example.org", "0.0.0.0", "::"} {
+				if got := resolver.ShouldRedirectForClient(resolution, redirect, client); got != (test.mode == config.RedirectAlways) {
+					t.Errorf("mode %s unknown client %q = %v", test.mode, client, got)
+				}
+			}
 		}
 	}
 }

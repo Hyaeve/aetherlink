@@ -23,6 +23,7 @@ import (
 	"github.com/aetherlink/aetherlink/internal/config"
 	"github.com/aetherlink/aetherlink/internal/logx"
 	"github.com/aetherlink/aetherlink/internal/pathmap"
+	"github.com/aetherlink/aetherlink/internal/proxy"
 	"github.com/aetherlink/aetherlink/internal/resolver"
 	"github.com/aetherlink/aetherlink/internal/runtime"
 	"github.com/aetherlink/aetherlink/internal/strm"
@@ -291,6 +292,7 @@ type settingsPayload struct {
 }
 
 type redirectSettings struct {
+	TrustedProxyCIDRs                        []string `json:"trustedProxyCidrs"`
 	Mode                                     string   `json:"mode"`
 	FollowUpstreamRedirects                  bool     `json:"followUpstreamRedirects"`
 	MaxFollowHops                            int      `json:"maxFollowHops"`
@@ -319,6 +321,7 @@ func settingsFromConfig(cfg *config.Config) settingsPayload {
 		LogLevel:  cfg.Server.LogLevel,
 		LogBuffer: cfg.Server.LogBuffer,
 		Redirect: redirectSettings{
+			TrustedProxyCIDRs:                        append([]string(nil), cfg.Redirect.TrustedProxyCIDRs...),
 			Mode:                                     string(cfg.Redirect.Mode),
 			FollowUpstreamRedirects:                  cfg.Redirect.FollowUpstreamRedirects,
 			MaxFollowHops:                            cfg.Redirect.MaxFollowHops,
@@ -395,6 +398,7 @@ func (a *API) handlePutSettings(writer http.ResponseWriter, request *http.Reques
 		draft.Redirect.FollowUpstreamRedirects = payload.Redirect.FollowUpstreamRedirects
 		draft.Redirect.MaxFollowHops = payload.Redirect.MaxFollowHops
 		draft.Redirect.ForwardUserAgent = &payload.Redirect.ForwardUserAgent
+		draft.Redirect.TrustedProxyCIDRs = append([]string(nil), payload.Redirect.TrustedProxyCIDRs...)
 		draft.Redirect.BlockClientUserAgent = &payload.Redirect.BlockClientUserAgent
 		draft.Redirect.BlockClientUserAgentEmby = &payload.Redirect.BlockClientUserAgentEmby
 		draft.Redirect.BlockClientUserAgentAudiobookshelf = &payload.Redirect.BlockClientUserAgentAudiobookshelf
@@ -859,7 +863,7 @@ func (a *API) handleResolve(writer http.ResponseWriter, request *http.Request) {
 		"cacheHit":        cacheHit,
 		"cacheTtlSeconds": int64((cacheTTL + time.Second - 1) / time.Second),
 		"resolution":      resolution,
-		"willRedirect":    mediaResolver.ShouldRedirect(resolution),
+		"willRedirect":    mediaResolver.ShouldRedirectForClient(resolution, a.rt.Config().Redirect, proxy.ClientIP(request, a.rt.Config().Redirect.TrustedProxyCIDRs...)),
 		"playUrl":         resolution.PlayURL(),
 	})
 }

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -33,10 +34,9 @@ type RedirectMode string
 const (
 	// RedirectAlways answers every resolved remote media request with a 302.
 	RedirectAlways RedirectMode = "always"
-	// RedirectPublic only redirects to public targets and relays private ones.
+	// RedirectPublic redirects public clients and relays private clients.
 	RedirectPublic RedirectMode = "public"
-	// RedirectPrivate only redirects to RFC1918/loopback targets and streams
-	// public targets through the proxy.
+	// RedirectPrivate redirects private clients and relays public clients.
 	RedirectPrivate RedirectMode = "private"
 	// RedirectNever disables 302 and always relays bytes.
 	RedirectNever RedirectMode = "never"
@@ -98,7 +98,8 @@ func (u Upstream) Clone() Upstream {
 
 // Redirect holds the 302 behaviour shared by all upstreams.
 type Redirect struct {
-	Mode RedirectMode `yaml:"mode" json:"mode"`
+	TrustedProxyCIDRs []string     `yaml:"trusted_proxy_cidrs,omitempty" json:"trustedProxyCidrs"`
+	Mode              RedirectMode `yaml:"mode" json:"mode"`
 	// FollowUpstreamRedirects resolves intermediate 302 hops (common for 115
 	// pick-code services) before answering the client, so players that do not
 	// follow redirects still get a final URL.
@@ -302,6 +303,7 @@ func (c *Config) SetPath(path string) { c.path = path }
 // candidate config without touching the one currently serving traffic.
 func (c *Config) Clone() *Config {
 	copied := *c
+	copied.Redirect.TrustedProxyCIDRs = append([]string(nil), c.Redirect.TrustedProxyCIDRs...)
 	copied.Redirect.ForwardUserAgent = clonePointer(c.Redirect.ForwardUserAgent)
 	copied.Redirect.BlockClientUserAgent = clonePointer(c.Redirect.BlockClientUserAgent)
 	copied.Redirect.BlockClientUserAgentEmby = clonePointer(c.Redirect.BlockClientUserAgentEmby)
@@ -555,6 +557,9 @@ func merge(base, parsed *Config) {
 	if parsed.Redirect.AllowPublicTargets != nil {
 		base.Redirect.AllowPublicTargets = parsed.Redirect.AllowPublicTargets
 	}
+	if parsed.Redirect.TrustedProxyCIDRs != nil {
+		base.Redirect.TrustedProxyCIDRs = append([]string(nil), parsed.Redirect.TrustedProxyCIDRs...)
+	}
 	if parsed.Redirect.FallbackUserAgent != "" {
 		base.Redirect.FallbackUserAgent = parsed.Redirect.FallbackUserAgent
 	}
@@ -628,6 +633,13 @@ func (c *Config) Validate() error {
 		}
 	}
 	c.Redirect.BlockedUserAgents = blockedUserAgents
+	c.Redirect.TrustedProxyCIDRs = normalizeStringList(c.Redirect.TrustedProxyCIDRs)
+	for _, value := range c.Redirect.TrustedProxyCIDRs {
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil || prefix.Bits() == 0 {
+			return fmt.Errorf("可信代理 %q 必须为明确的 IP/CIDR 网段，不能信任全部地址", value)
+		}
+	}
 	c.Redirect.BlockedUserAgentsEmby = normalizeUserAgentList(c.Redirect.BlockedUserAgentsEmby)
 	c.Redirect.BlockedUserAgentsAudiobookshelf = normalizeUserAgentList(c.Redirect.BlockedUserAgentsAudiobookshelf)
 	c.Redirect.BlockedUserAgentsEmbyUpstreams = normalizeStringList(c.Redirect.BlockedUserAgentsEmbyUpstreams)

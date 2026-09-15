@@ -308,12 +308,13 @@ onUnmounted(() => {
             <col class="playback-ua-column" />
             <col class="playback-outcome-column" />
             <col class="playback-target-column" />
+            <col class="playback-client-column" />
             <col class="playback-cache-column" />
             <col class="playback-ttl-column" />
             <col class="playback-duration-column" />
           </colgroup>
           <thead>
-            <tr><th>时间</th><th>上游</th><th>UA</th><th>结果</th><th>目标</th><th>缓存状态</th><th>缓存有效期</th><th>耗时</th></tr>
+            <tr><th>时间</th><th>上游</th><th>UA</th><th>结果</th><th>目标</th><th>客户端 IP</th><th>缓存状态</th><th>缓存有效期</th><th>耗时</th></tr>
           </thead>
           <tbody>
             <tr v-for="(event, index) in pagedEvents" :key="index">
@@ -353,6 +354,9 @@ onUnmounted(() => {
                   :disabled="!copyableTarget(event)"
                   @click="copyTarget(event)"
                 >{{ shorten(targetText(event), 48) }}</button>
+              </td>
+              <td class="target-cell" @mouseenter="showTooltip(event.client || '未知', $event)" @mouseleave="hideTooltip" @focusin="showTooltip(event.client || '未知', $event)" @focusout="hideTooltip">
+                <span class="target-box mono" tabindex="0">{{ event.client || '未知' }}</span>
               </td>
               <td><span :class="cacheSourceClass(event)">{{ cacheSourceLabel(event) }}</span></td>
               <td>{{ cacheTTL(event.cacheTtlSeconds) }}</td>

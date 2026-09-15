@@ -21,6 +21,7 @@ const accountError = ref('')
 const accountBusy = ref(false)
 const accountConfirm = ref(false)
 const blockedUserAgentText = ref('')
+const trustedProxyText = ref('')
 const blockedEmbyUserAgentText = ref('')
 const blockedAudiobookshelfUserAgentText = ref('')
 const restoreInput = ref(null)
@@ -60,6 +61,7 @@ function preventCandidateMenu(event, enabled) {
 }
 
 function syncBlockedUserAgents(settingsPayload) {
+  trustedProxyText.value = (settingsPayload?.redirect?.trustedProxyCidrs || []).join('\n')
   if (!Array.isArray(settingsPayload?.redirect?.blockedUserAgentsEmbyUpstreams)) settingsPayload.redirect.blockedUserAgentsEmbyUpstreams = []
   if (!Array.isArray(settingsPayload?.redirect?.blockedUserAgentsAudiobookshelfUpstreams)) settingsPayload.redirect.blockedUserAgentsAudiobookshelfUpstreams = []
   blockedUserAgentText.value = (settingsPayload?.redirect?.blockedUserAgents || []).join('\n')
@@ -68,6 +70,7 @@ function syncBlockedUserAgents(settingsPayload) {
 }
 
 function applySecurityDraft() {
+  settings.value.redirect.trustedProxyCidrs = trustedProxyText.value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)
   settings.value.redirect.blockedUserAgents = blockedUserAgentText.value
     .split(/\r?\n/)
     .map((value) => value.trim())
@@ -430,6 +433,10 @@ onMounted(load)
               </div>
             </div>
           </div>
+          <label class="field trusted-proxy-field">
+            <span>可信前置代理 IP/CIDR</span>
+            <textarea v-model="trustedProxyText" rows="2" placeholder="192.168.1.10/32"></textarea>
+          </label>
         </section>
       </div>
     </div>

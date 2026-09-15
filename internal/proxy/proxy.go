@@ -172,7 +172,7 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		s.proxy.ServeHTTP(writer, request)
 		return
 	}
-	logx.Infof("[%s] 拦截播放请求 %s %s（类型 %s，item=%s file=%s）", s.provider.Name(), request.Method, request.URL.RequestURI(), ref.Kind, ref.ItemID, ref.FileID)
+	logx.Infof("[%s] 拦截播放请求 %s %s（类型 %s，item=%s file=%s，客户端 IP=%s）", s.provider.Name(), request.Method, request.URL.RequestURI(), ref.Kind, ref.ItemID, ref.FileID, clientIP(request, s.redirect.TrustedProxyCIDRs...))
 	s.serveMedia(writer, request, ref)
 }
 
@@ -219,7 +219,7 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 		Path:      request.URL.Path,
 		ItemID:    ref.ItemID,
 		FileID:    ref.FileID,
-		Client:    clientIP(request),
+		Client:    clientIP(request, s.redirect.TrustedProxyCIDRs...),
 		UserAgent: request.UserAgent(),
 	}
 	event.EffectiveUserAgent = s.resolver.EffectiveUserAgentForUpstream(s.provider.Type(), s.provider.Name(), request.UserAgent())
@@ -317,7 +317,7 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 		return
 	}
 
-	if s.resolver.ShouldRedirectWith(resolution, s.redirect) {
+	if s.resolver.ShouldRedirectForClient(resolution, s.redirect, event.Client) {
 		event.StatusCode = http.StatusFound
 		finish(stats.OutcomeRedirect, cacheNote(event)+"；已 302 到真实地址")
 		// 302 keeps the request method for GET/HEAD and is what media players
@@ -1101,12 +1101,4 @@ func mimeTypeForURL(target string) string {
 	default:
 		return ""
 	}
-}
-
-func clientIP(request *http.Request) string {
-	host, _, err := net.SplitHostPort(request.RemoteAddr)
-	if err != nil {
-		return request.RemoteAddr
-	}
-	return host
 }

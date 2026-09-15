@@ -384,7 +384,7 @@ func TestRedirectNeverRelaysBytesWithRange(t *testing.T) {
 	}
 }
 
-func TestRedirectPrivateOnlyRedirectsPrivateHosts(t *testing.T) {
+func TestRedirectPrivateOnlyRedirectsPrivateClients(t *testing.T) {
 	publicBackend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Write([]byte("public-bytes"))
 	}))
@@ -397,9 +397,48 @@ func TestRedirectPrivateOnlyRedirectsPrivateHosts(t *testing.T) {
 	server, _ := newTestServer(t, fake.server.URL, root, redirectCfg)
 
 	recorder := httptest.NewRecorder()
-	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/items/book-1/file/ino-strm", nil))
+	request := httptest.NewRequest(http.MethodGet, "http://media.example/api/items/book-1/file/ino-strm", nil)
+	request.RemoteAddr = "192.168.1.20:5000"
+	server.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusFound {
 		t.Fatalf("private host status = %d, want 302", recorder.Code)
+	}
+}
+
+func TestRedirectModeUsesEachPlaybackClientWithSharedCache(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Write([]byte("media-bytes"))
+	}))
+	defer backend.Close()
+	root, strmPath, regularPath := writeStrm(t, backend.URL+"/audio.m4a")
+	fake := newFakeABS(t, strmPath, regularPath)
+	for _, mode := range []config.RedirectMode{config.RedirectPublic, config.RedirectPrivate} {
+		t.Run(string(mode), func(t *testing.T) {
+			redirectCfg := defaultRedirect()
+			redirectCfg.Mode = mode
+			redirectCfg.TrustedProxyCIDRs = []string{"172.18.0.2/32"}
+			server, collector := newTestServer(t, fake.server.URL, root, redirectCfg)
+			for _, client := range []string{"192.168.1.20", "8.8.8.8", "192.168.1.20"} {
+				request := httptest.NewRequest(http.MethodGet, "http://media.example/api/items/book-1/file/ino-strm", nil)
+				request.RemoteAddr = "172.18.0.2:4000"
+				request.Header.Set("X-Forwarded-For", client)
+				recorder := httptest.NewRecorder()
+				server.ServeHTTP(recorder, request)
+				want := http.StatusOK
+				if (mode == config.RedirectPrivate) == (client == "192.168.1.20") {
+					want = http.StatusFound
+				}
+				if recorder.Code != want {
+					t.Fatalf("client %s: status %d, want %d", client, recorder.Code, want)
+				}
+				if event := collector.Snapshot(1).RecentEvents[0]; event.Client != client {
+					t.Fatalf("event client = %q, want %q", event.Client, client)
+				}
+			}
+			if snapshot := collector.Snapshot(10); snapshot.CacheHits != 2 {
+				t.Fatalf("cache hits = %d, want 2", snapshot.CacheHits)
+			}
+		})
 	}
 }
 

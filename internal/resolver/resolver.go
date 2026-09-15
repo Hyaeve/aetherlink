@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -422,6 +423,10 @@ func (r *Resolver) ShouldRedirect(resolution *Resolution) bool {
 
 // ShouldRedirectWith applies the policy selected for one upstream.
 func (r *Resolver) ShouldRedirectWith(resolution *Resolution, redirectCfg config.Redirect) bool {
+	return r.ShouldRedirectForClient(resolution, redirectCfg, "")
+}
+
+func (r *Resolver) ShouldRedirectForClient(resolution *Resolution, redirectCfg config.Redirect, client string) bool {
 	if resolution == nil || !resolution.IsRemote() {
 		return false
 	}
@@ -429,13 +434,22 @@ func (r *Resolver) ShouldRedirectWith(resolution *Resolution, redirectCfg config
 	if playURL == "" {
 		return false
 	}
+	address, err := netip.ParseAddr(client)
+	if err != nil {
+		if endpoint, endpointErr := netip.ParseAddrPort(client); endpointErr == nil {
+			address = endpoint.Addr()
+		}
+	}
+	address = address.Unmap()
+	known := address.IsValid() && !address.IsUnspecified() && !address.IsMulticast()
+	private := address.IsPrivate() || address.IsLoopback() || address.IsLinkLocalUnicast()
 	switch redirectCfg.Mode {
 	case config.RedirectNever:
 		return false
 	case config.RedirectPublic:
-		return !urlx.IsPrivateHost(playURL)
+		return known && !private
 	case config.RedirectPrivate:
-		return urlx.IsPrivateHost(playURL)
+		return known && private
 	case config.RedirectAlways:
 		return true
 	default:
