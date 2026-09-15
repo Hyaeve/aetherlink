@@ -253,7 +253,7 @@ onMounted(load)
           <p v-if="accountError" class="error form-error">{{ accountError }}</p>
         </section>
 
-        <section class="settings-card runtime-card" v-if="server">
+        <section class="settings-card runtime-card" v-if="false && server">
           <div class="settings-card-head compact">
             <div class="settings-icon blue" aria-hidden="true">
               <svg viewBox="0 0 24 24">
@@ -278,6 +278,17 @@ onMounted(load)
             <span class="tag warn" v-if="server.breakGlassEnabled">应急令牌启用</span>
             <span class="tag bad" v-if="server.restartRequired">需要重启</span>
           </div>
+        </section>
+
+        <section class="settings-card trusted-proxy-card">
+          <div class="settings-card-head compact">
+            <div class="settings-icon blue" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10" /></svg></div>
+            <div><h2>可信前置代理</h2><p>填写 NAS 反向代理的来源 IP 或 CIDR</p></div>
+          </div>
+          <label class="field trusted-proxy-field">
+            <span>IP/CIDR</span>
+            <textarea v-model="trustedProxyText" rows="2" placeholder="192.168.1.10/32"></textarea>
+          </label>
         </section>
 
         <section class="settings-card backup-card">
@@ -433,10 +444,6 @@ onMounted(load)
               </div>
             </div>
           </div>
-          <label class="field trusted-proxy-field">
-            <span>可信前置代理 IP/CIDR</span>
-            <textarea v-model="trustedProxyText" rows="2" placeholder="192.168.1.10/32"></textarea>
-          </label>
         </section>
       </div>
     </div>

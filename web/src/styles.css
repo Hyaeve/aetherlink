@@ -404,7 +404,8 @@ code {
 
 .rail .rail-label {
   display: none;
-  font-size: 13px;
+  font-family: "HarmonyOS Sans SC", "HarmonyOS Sans", "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-size: 15px;
   white-space: nowrap;
 }
 
@@ -779,6 +780,28 @@ code {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+}
+
+.page-inline-stats {
+  display: none;
+}
+
+.header-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.header-stat b {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 650;
 }
 
 .service-mark {

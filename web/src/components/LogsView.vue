@@ -6,6 +6,7 @@ import { api } from '../api'
 // 播放流水来自 /stats，逐条记录每个媒体请求最终是 302、透传还是中继；
 // 排查「为什么没有 302」时它比文本日志更直接，因为原因就在同一行里。
 const entries = ref([])
+const emit = defineEmits(['stats'])
 const snapshot = ref(null)
 const error = ref('')
 const levelFilter = ref('all')
@@ -36,6 +37,7 @@ async function load() {
     const [logPayload, statsPayload] = await Promise.all([api.logs(5000), api.stats(5000)])
     entries.value = (logPayload.entries || []).slice().reverse()
     snapshot.value = statsPayload
+    emit('stats', { requests: statsPayload.totalRequests || 0, redirects: statsPayload.redirects || 0, relay: (statsPayload.proxyStreams || 0) + (statsPayload.transcodes || 0) + (statsPayload.passthroughs || 0), errors: statsPayload.errors || 0 })
     error.value = ''
   } catch (loadError) {
     error.value = loadError.message
@@ -268,13 +270,13 @@ onUnmounted(() => {
     <p v-if="error" class="error page-error">{{ error }}</p>
     <div v-if="diagnosis" class="notice page-notice">{{ diagnosis }}</div>
 
-    <div class="log-metrics">
+    <div class="log-metrics page-inline-stats">
       <div class="log-metric violet">
-        <span class="metric-icon"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6" /></svg></span>
+        <span class="metric-icon"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h10M4 17h7" /><circle cx="18" cy="16" r="3" /></svg></span>
         <span><small>播放请求</small><strong>{{ snapshot?.totalRequests ?? 0 }}</strong></span>
       </div>
       <div class="log-metric amber">
-        <span class="metric-icon"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6" /></svg></span>
+        <span class="metric-icon"><svg viewBox="0 0 24 24"><path d="M5 12h13M13 6l6 6-6 6" /><path d="M4 5v14" /></svg></span>
         <span><small>302 跳转</small><strong>{{ snapshot?.redirects ?? 0 }}</strong></span>
       </div>
       <div class="log-metric blue">

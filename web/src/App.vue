@@ -63,6 +63,7 @@ const authBusy = ref(false)
 const authError = ref('')
 
 const status = ref(null)
+const pageStats = ref(null)
 const statusError = ref('')
 let statusTimer = null
 
@@ -303,12 +304,18 @@ function toggleAccountMenu() {
           <p>{{ activeDescription }}</p>
         </div>
         <div class="system-summary" v-if="status">
-          <span class="status-pill online"><i></i>运行中</span>
-          <span class="status-pill">v1.0</span>
-          <template v-if="activeTab === 'settings'">
-            <span class="status-pill">管理端口 {{ status.adminPort }}</span>
-            <span class="status-pill">链接 {{ status.enabledUpstreamCount }}/{{ status.upstreamCount }}</span>
-            <span class="status-pill">已运行 {{ uptime }}</span>
+          <template v-if="activeTab === 'upstreams' && pageStats">
+            <span class="header-stat">总链接 <b>{{ pageStats.total }}</b></span>
+            <span class="header-stat">Emby <b>{{ pageStats.emby }}</b></span>
+            <span class="header-stat">ABS <b>{{ pageStats.abs }}</b></span>
+            <span class="header-stat">运行中 <b>{{ pageStats.running }}</b></span>
+            <span class="header-stat">已停止 <b>{{ pageStats.stopped }}</b></span>
+          </template>
+          <template v-else-if="activeTab === 'logs' && pageStats">
+            <span class="header-stat">播放请求 <b>{{ pageStats.requests }}</b></span>
+            <span class="header-stat">302 跳转 <b>{{ pageStats.redirects }}</b></span>
+            <span class="header-stat">中继/转码 <b>{{ pageStats.relay }}</b></span>
+            <span class="header-stat">失败 <b>{{ pageStats.errors }}</b></span>
           </template>
         </div>
       </header>
@@ -321,8 +328,8 @@ function toggleAccountMenu() {
         仍在使用默认账号 admin / password，请到设置页修改。
       </div>
 
-      <UpstreamsView v-if="activeTab === 'upstreams'" @changed="refreshStatus" />
-      <LogsView v-else-if="activeTab === 'logs'" />
+      <UpstreamsView v-if="activeTab === 'upstreams'" @changed="refreshStatus" @stats="pageStats = $event" />
+      <LogsView v-else-if="activeTab === 'logs'" @stats="pageStats = $event" />
       <SettingsView v-else :status="status" @saved="refreshStatus" @account-changed="onAccountChanged" />
     </main>
   </div>

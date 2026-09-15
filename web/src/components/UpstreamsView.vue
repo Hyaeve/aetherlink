@@ -5,7 +5,7 @@ import { cardStyleFor } from '../palette'
 import ContextMenu from './ContextMenu.vue'
 import UpstreamForm from './UpstreamForm.vue'
 
-const emit = defineEmits(['changed'])
+const emit = defineEmits(['changed', 'stats'])
 
 const upstreams = ref([])
 const suggestedPort = ref(0)
@@ -34,6 +34,7 @@ async function load() {
     const [payload, status] = await Promise.all([api.upstreams(), api.status()])
     startedAt.value = status.startedAt
     upstreams.value = payload.upstreams || []
+    emit('stats', { total: upstreams.value.length, emby: embyCount.value, abs: absCount.value, running: runningCount.value, stopped: stoppedCount.value })
     suggestedPort.value = payload.suggestedPort || 0
     adminPort.value = payload.adminPort || 0
     error.value = ''
@@ -154,7 +155,7 @@ onMounted(load)
     <p v-if="error" class="error page-error">{{ error }}</p>
     <div v-if="notice" class="notice page-notice">{{ notice }}</div>
 
-    <div class="overview-strip">
+    <div class="overview-strip page-inline-stats">
       <div class="overview-item">
         <span class="overview-icon violet"><svg viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h9" /></svg></span>
         <span><small>总链接</small><strong>{{ upstreams.length }}</strong></span>
