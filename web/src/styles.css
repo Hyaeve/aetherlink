@@ -2284,8 +2284,8 @@ table {
 .playback-upstream-column { width: 9%; }
 .playback-ua-column { width: 8%; }
 .playback-outcome-column { width: 8%; }
-.playback-target-column { width: calc(39% - 148px); }
-.playback-client-column { width: 11%; }
+.playback-target-column { width: calc(36% - 148px); }
+.playback-client-column { width: 14%; }
 .playback-cache-column { width: 9%; }
 .playback-ttl-column { width: 9%; }
 .playback-duration-column { width: 7%; }

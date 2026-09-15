@@ -226,7 +226,6 @@ function toggleAccountMenu() {
         <button
           class="brand"
           type="button"
-          title="打开账号菜单"
           aria-label="打开账号菜单"
           :aria-expanded="accountMenuOpen"
           @click="toggleAccountMenu"
@@ -238,7 +237,7 @@ function toggleAccountMenu() {
           <span>以太链接</span>
         </div>
         <div v-if="accountMenuOpen" class="rail-account-menu">
-          <button class="rail-logout-button" type="button" title="退出登录" aria-label="退出登录" @click="logout">
+          <button class="rail-logout-button" type="button" aria-label="退出登录" @click="logout">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M15 5H7a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h8" />
               <path d="M17 8l4 4-4 4" />
@@ -253,7 +252,6 @@ function toggleAccountMenu() {
       <div class="rail-nav">
         <button
           type="button"
-          :title="railOpen ? '折叠栏目' : '展开栏目'"
           :aria-label="railOpen ? '折叠栏目' : '展开栏目'"
           :aria-expanded="railOpen"
           @click="railOpen = !railOpen"
@@ -267,7 +265,6 @@ function toggleAccountMenu() {
           v-for="tab in primaryTabs"
           :key="tab.id"
           :class="{ active: activeTab === tab.id }"
-          :title="tab.label"
           :aria-label="tab.label"
           :aria-current="activeTab === tab.id ? 'page' : undefined"
           @click="navigateTo(tab.id)"
@@ -285,7 +282,6 @@ function toggleAccountMenu() {
         <button
           v-if="settingsTab"
           :class="{ active: activeTab === settingsTab.id }"
-          :title="settingsTab.label"
           :aria-label="settingsTab.label"
           :aria-current="activeTab === settingsTab.id ? 'page' : undefined"
           @click="navigateTo(settingsTab.id)"
