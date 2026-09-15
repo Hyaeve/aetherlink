@@ -2112,7 +2112,9 @@ td.target-cell {
 }
 
 .context-menu button {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   width: 100%;
   text-align: left;
   border: none;
@@ -2289,6 +2291,17 @@ td.target-cell {
   border-radius: 8px;
   background: transparent;
   font-size: 13px;
+}
+
+.context-menu button svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .form-select-options button:hover:not(:disabled),

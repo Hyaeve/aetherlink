@@ -273,13 +273,32 @@ onMounted(load)
       :title="menu.upstream.name"
       @close="closeMenu"
     >
-      <button @click="openEditor(menu.upstream)">详细编辑…</button>
-      <button @click="ping(menu.upstream)">测试连接</button>
+      <button @click="openEditor(menu.upstream)">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="m15 5 4 4M4 20l5-1L20 8a2.8 2.8 0 0 0-4-4L5 15z" />
+        </svg>
+        <span>编辑</span>
+      </button>
+      <button @click="ping(menu.upstream)">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="m9 15 6-6M10 7l2-2a5 5 0 0 1 7 7l-2 2M14 17l-2 2a5 5 0 0 1-7-7l2-2" />
+        </svg>
+        <span>测试</span>
+      </button>
       <button :disabled="busy" @click="toggleEnabled(menu.upstream)">
-        {{ menu.upstream.enabled ? '停用' : '启用' }}
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect v-if="menu.upstream.enabled" x="6" y="6" width="12" height="12" rx="2" />
+          <path v-else d="m8 5 11 7-11 7z" />
+        </svg>
+        <span>{{ menu.upstream.enabled ? '停用' : '启用' }}</span>
       </button>
       <div class="divider"></div>
-      <button class="danger" @click="askDelete(menu.upstream)">删除</button>
+      <button class="danger" @click="askDelete(menu.upstream)">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5" />
+        </svg>
+        <span>删除</span>
+      </button>
     </ContextMenu>
 
     <UpstreamForm
