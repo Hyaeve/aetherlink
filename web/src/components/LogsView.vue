@@ -103,7 +103,7 @@ function clock(value) {
   const date = new Date(value)
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
-  return `${month}-${day} ${date.toLocaleTimeString('zh-CN', { hour12: false })}`
+  return `${month}/${day} ${date.toLocaleTimeString('zh-CN', { hour12: false })}`
 }
 
 // 后端的 durationMs 是 Go 的 time.Duration（纳秒），显示前换成毫秒。
