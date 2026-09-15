@@ -1444,7 +1444,8 @@ input:focus-visible + .toggle-control {
 .log-floating-tooltip {
   position: fixed;
   z-index: 3000;
-  width: min(760px, calc(100vw - 32px));
+  width: max-content;
+  max-width: min(760px, calc(100vw - 32px));
   max-height: min(42vh, 360px);
   overflow: auto;
   padding: 11px 14px;
@@ -2384,8 +2385,8 @@ table {
 .playback-upstream-column { width: 9%; }
 .playback-ua-column { width: 8%; }
 .playback-outcome-column { width: 8%; }
-.playback-target-column { width: 27%; }
-.playback-client-column { width: 15%; }
+.playback-target-column { width: 34.5%; }
+.playback-client-column { width: 7.5%; }
 .playback-cache-column { width: 9%; }
 .playback-ttl-column { width: 9%; }
 .playback-duration-column { width: 7%; }

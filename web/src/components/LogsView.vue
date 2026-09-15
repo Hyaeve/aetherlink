@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api'
 
 // 这一页有两块：上半是「播放流水」，下半是「运行日志」。
@@ -16,6 +16,7 @@ const eventPage = ref(1)
 const logPage = ref(1)
 const copiedTarget = ref('')
 const hoverTooltip = ref(null)
+const tooltipElement = ref(null)
 let timer = null
 let copyTimer = null
 let tooltipTimer = null
@@ -215,11 +216,11 @@ function showTooltip(value, event, maxLength = 0) {
     hoverTooltip.value = null
     return
   }
-  tooltipTimer = setTimeout(() => {
+  tooltipTimer = setTimeout(async () => {
     if (!target.isConnected || !isTruncated(target, value, maxLength)) return
     const rect = target.getBoundingClientRect()
     const maxWidth = Math.min(760, window.innerWidth - 32)
-    const left = Math.min(Math.max(16, rect.left), Math.max(16, window.innerWidth - maxWidth - 16))
+    const left = Math.max(16, rect.left)
     hoverTooltip.value = {
       text: value,
       style: {
@@ -228,6 +229,12 @@ function showTooltip(value, event, maxLength = 0) {
         maxWidth: `${maxWidth}px`
       }
     }
+    const currentTooltip = hoverTooltip.value
+    await nextTick()
+    if (hoverTooltip.value !== currentTooltip || !tooltipElement.value) return
+    const bounds = tooltipElement.value.getBoundingClientRect()
+    currentTooltip.style.left = `${Math.max(16, Math.min(left, window.innerWidth - bounds.width - 16))}px`
+    currentTooltip.style.top = `${Math.max(16, Math.min(rect.bottom + 8, window.innerHeight - bounds.height - 16))}px`
   }, 600)
 }
 
@@ -252,7 +259,7 @@ onUnmounted(() => {
 
 <template>
   <section class="logs-page">
-    <div v-if="hoverTooltip" class="log-floating-tooltip" :style="hoverTooltip.style">{{ hoverTooltip.text }}</div>
+    <div v-if="hoverTooltip" ref="tooltipElement" class="log-floating-tooltip" :style="hoverTooltip.style">{{ hoverTooltip.text }}</div>
     <p v-if="error" class="error page-error">{{ error }}</p>
     <div v-if="diagnosis" class="notice page-notice">{{ diagnosis }}</div>
 
