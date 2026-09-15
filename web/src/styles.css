@@ -249,7 +249,6 @@ code {
   min-height: 100vh;
 }
 
-/* 侧栏默认只有图标；右边缘的竖线按钮负责展开与收起。 */
 .rail {
   position: sticky;
   top: 0;
@@ -443,78 +442,6 @@ code {
 
 .rail-nav-bottom {
   margin-top: auto;
-}
-
-/* 侧栏右边缘的竖线按钮：常态是一条细竖线，悬停时浮出箭头。 */
-.rail-edge-toggle {
-  position: absolute;
-  top: 0;
-  right: -11px;
-  width: 22px;
-  height: 100%;
-  padding: 0;
-  border: none;
-  background: transparent;
-  border-radius: 0;
-  display: grid;
-  place-items: center;
-  cursor: col-resize;
-  z-index: 5;
-}
-
-.rail-edge-toggle:hover:not(:disabled) {
-  background: transparent;
-}
-
-.rail-edge-line {
-  position: absolute;
-  top: 12px;
-  bottom: 12px;
-  left: 50%;
-  width: 2px;
-  transform: translateX(-50%);
-  border-radius: 2px;
-  background: transparent;
-  transition: background 0.16s ease;
-}
-
-.rail-edge-toggle:hover .rail-edge-line,
-.rail-edge-toggle:focus-visible .rail-edge-line {
-  background: rgba(143, 137, 184, 0.55);
-}
-
-.rail-edge-toggle svg {
-  position: relative;
-  width: 14px;
-  height: 20px;
-  flex: none;
-  padding: 4px 1px;
-  border-radius: 999px;
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  box-shadow: var(--shadow-sm);
-  color: var(--text-soft);
-  stroke: currentColor;
-  stroke-width: 2;
-  fill: none;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  opacity: 0;
-  transition: opacity 0.16s ease, color 0.16s ease, border-color 0.16s ease;
-}
-
-.rail:hover .rail-edge-toggle svg,
-.rail-edge-toggle:focus-visible svg {
-  opacity: 1;
-}
-
-.rail-edge-toggle:hover svg {
-  color: var(--accent-deep);
-  border-color: var(--accent);
-}
-
-.rail-edge-toggle:focus-visible {
-  box-shadow: none;
 }
 
 /* 展开态 */
@@ -893,31 +820,30 @@ code {
 .proxy-status {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  border-radius: 999px;
-  padding: 4px 10px;
-  font-size: 11.5px;
-  font-weight: 500;
-  background: rgba(253, 253, 252, 0.9);
-  color: #3f4550;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border-radius: 11px;
+  padding: 0;
+  background: var(--ok-wash);
+  color: #5d7c6b;
   border: 1px solid transparent;
   cursor: pointer;
 }
 
-.proxy-status i {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--ok);
+.proxy-status svg {
+  width: 18px;
+  height: 18px;
+  flex-basis: 18px;
+  fill: currentColor;
+  stroke: currentColor;
+  stroke-width: 1.5;
 }
 
 .proxy-status.offline {
-  background: rgba(63, 69, 80, 0.36);
-  color: #fdfdfc;
-}
-
-.proxy-status.offline i {
-  background: #e7dcdd;
+  background: var(--surface-2);
+  color: var(--text-soft);
 }
 
 .proxy-status:hover:not(:disabled) {

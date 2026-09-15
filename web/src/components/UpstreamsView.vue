@@ -214,10 +214,16 @@ onMounted(load)
             type="button"
             class="proxy-status"
             :class="upstream.enabled && upstream.listening ? 'online' : 'offline'"
-            :title="upstream.enabled ? '点击停止' : '点击恢复运行'"
+            :title="upstream.enabled && upstream.listening ? '运行中，点击停止' : upstream.enabled ? '未监听，点击停用' : '已停止，点击恢复运行'"
+            :aria-label="upstream.enabled && upstream.listening ? '运行中，点击停止' : upstream.enabled ? '未监听，点击停用' : '已停止，点击恢复运行'"
+            :disabled="busy"
             @click.stop="toggleEnabled(upstream)"
+            @keyup.stop
           >
-            <i></i>{{ upstream.enabled && upstream.listening ? '运行中' : '未运行' }}
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path v-if="upstream.enabled && upstream.listening" d="m9 5 11 7-11 7z" />
+              <rect v-else x="6" y="6" width="12" height="12" rx="2" />
+            </svg>
           </button>
           </span>
         </div>

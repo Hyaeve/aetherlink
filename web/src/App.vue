@@ -252,6 +252,18 @@ function toggleAccountMenu() {
 
       <div class="rail-nav">
         <button
+          type="button"
+          :title="railOpen ? '折叠栏目' : '展开栏目'"
+          :aria-label="railOpen ? '折叠栏目' : '展开栏目'"
+          :aria-expanded="railOpen"
+          @click="railOpen = !railOpen"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+          <span class="rail-label">折叠栏目</span>
+        </button>
+        <button
           v-for="tab in primaryTabs"
           :key="tab.id"
           :class="{ active: activeTab === tab.id }"
@@ -285,18 +297,6 @@ function toggleAccountMenu() {
         </button>
       </div>
 
-      <button
-        class="rail-edge-toggle"
-        :title="railOpen ? '收起侧栏' : '展开侧栏'"
-        :aria-label="railOpen ? '收起侧栏' : '展开侧栏'"
-        :aria-expanded="railOpen"
-        @click="railOpen = !railOpen"
-      >
-        <span class="rail-edge-line"></span>
-        <svg viewBox="0 0 16 24" aria-hidden="true">
-          <path :d="railOpen ? 'M10 6 5 12l5 6' : 'm6 6 5 6-5 6'" />
-        </svg>
-      </button>
     </nav>
 
     <main class="main">
