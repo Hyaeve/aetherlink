@@ -440,6 +440,57 @@ func TestConfigNeverLeaksApiKeys(t *testing.T) {
 	}
 }
 
+// 飞牛的账号密码：账号可以回显（界面上要能看到现在登的是谁），密码只能报
+// 「有没有」。密码本身必须落盘，否则重启后登录就失效了。
+func TestUpstreamUsernameIsEchoedButPasswordIsNot(t *testing.T) {
+	env := newEnv(t)
+	token := env.login(t, testUsername, testPassword)
+	payload := `{"name":"fnos","type":"fnos","baseUrl":"http://127.0.0.1:8005",` +
+		`"username":"kiro","password":"fnos-secret","listenPort":5154}`
+	recorder := env.do(http.MethodPost, BasePath+"/upstreams", payload, token)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if strings.Contains(body, "fnos-secret") {
+		t.Fatalf("上游列表泄漏了密码: %s", body)
+	}
+	if !strings.Contains(body, `"username":"kiro"`) || !strings.Contains(body, `"hasPassword":true`) {
+		t.Fatalf("上游列表应当回显账号并标明已存密码: %s", body)
+	}
+
+	reloaded, err := config.Load(env.confPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := reloaded.UpstreamByName("fnos")
+	if stored == nil || stored.Username != "kiro" || stored.Password != "fnos-secret" {
+		t.Fatalf("账号密码没有被保存: %+v", stored)
+	}
+
+	// 更新其他字段时省略密码，必须保留已存的那一份。
+	if recorder := env.do(http.MethodPut, BasePath+"/upstreams/fnos", `{"listenPort":18099}`, token); recorder.Code != http.StatusOK {
+		t.Fatalf("update status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	updated := env.rt.Config().UpstreamByName("fnos")
+	if updated == nil || updated.Password != "fnos-secret" || updated.Username != "kiro" {
+		t.Fatalf("省略密码的更新弄丢了凭据: %+v", updated)
+	}
+}
+
+// 只填一半凭据必须被拒，否则会存下一个永远登不上去的上游。
+func TestUpstreamRejectsHalfCredentials(t *testing.T) {
+	env := newEnv(t)
+	token := env.login(t, testUsername, testPassword)
+	payload := `{"name":"fnos","type":"fnos","baseUrl":"http://127.0.0.1:8005","username":"kiro","listenPort":5154}`
+	if recorder := env.do(http.MethodPost, BasePath+"/upstreams", payload, token); recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", recorder.Code, recorder.Body.String())
+	}
+	if env.rt.ProviderByName("fnos") != nil {
+		t.Fatal("被拒绝的上游不该被挂载")
+	}
+}
+
 func TestPutSettingsAppliesAndPersists(t *testing.T) {
 	env := newEnv(t)
 	token := env.login(t, testUsername, testPassword)

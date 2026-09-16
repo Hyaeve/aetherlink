@@ -153,9 +153,9 @@ async function selectMode(mode) {
   try {
     await api.updateUpstream(target.name, { redirectMode: mode })
     closeModeMenu()
+    // 切换结果直接体现在卡片上的模式标识里，不再额外弹一条页面横栏。
     await load()
     emit('changed')
-    notice.value = `${target.name} 的播放跳转已切换为「${redirectLabel(mode)}」`
   } catch (modeError) {
     error.value = modeError.message
   } finally {

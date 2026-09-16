@@ -10,7 +10,7 @@
 | `internal/urlx` | STRM 原始内容的 URL 归一化与分类。保留已有 `%XX` 转义，识别 115 pick code / openlist 形态，判断私有网段。 |
 | `internal/pathmap` | 上游媒体路径 → 容器路径的前缀重写（最长前缀优先）、本地目标的根目录白名单校验，以及 `Locate`：翻译后的路径不存在时，把上游路径逐段剥前缀，在配置根目录、映射目标与常见挂载点下 stat 定位指针，两侧挂载点不同名也不必手写映射。 |
 | `internal/strm` | 读取 `.strm` 指针（跳过注释行、限制读取长度），区分远程 URL 与容器本地文件，推导显示文件名。 |
-| `internal/upstream` | Audiobookshelf、Emby 与飞牛影视的 API 客户端：识别需要拦截的媒体请求、回答「这个媒体是什么」（`MediaTarget`：ABS 给指针路径，Emby 系给已解析的直链）、书库浏览。Emby 与飞牛影视（`fnos.go`）还会改写客户端的 `PlaybackInfo`，只把已经通过客户端兼容性判断的 STRM 接到 302 路由。 |
+| `internal/upstream` | Audiobookshelf、Emby 与飞牛影视的 API 客户端：识别需要拦截的媒体请求、回答「这个媒体是什么」（`MediaTarget`：ABS 给指针路径，Emby 系给已解析的直链）、书库浏览，以及两种鉴权方式（静态密钥与账号密码登录换令牌）。Emby 与飞牛影视（`fnos.go`）还会改写客户端的 `PlaybackInfo`，只把已经通过客户端兼容性判断的 STRM 接到 302 路由。 |
 | `internal/resolver` | 解析流水线：问上游 → 直链直接用 / 定位并读指针 →（可选）走完跳转链。带 TTL+LRU 缓存与并发去重。读不到指针时返回 `ErrPointerUnavailable`，由调用方退回透传。 |
 | `internal/proxy` | 反向代理与拦截决策：302、中继转发、本地直读、透传四条出口。一个 `Server` 只服务一个上游，因此不需要路径匹配。 |
 | `internal/stats` | 内存计数与最近事件环形缓冲，供日志与排障使用。 |
@@ -28,7 +28,7 @@
 | `web/src/palette.js` | 上游名称哈希到固定的莫奈三段渐变与动画相位，保证同名上游的卡片配色恒定，同时让卡片之间的流动不同步。 |
 | `web/src/components/UpstreamsView.vue` | 卡片网格：一个上游一张方卡，左键开编辑弹窗，右键出上下文菜单。 |
 | `web/src/components/ContextMenu.vue` | 通用右键菜单，含视口边缘回折与点击外部关闭。 |
-| `web/src/components/UpstreamForm.vue` | 上游详细编辑弹窗，按「基本 / 密钥 / 路径」分组；密钥与地址提示随服务端类型在 Audiobookshelf、Emby、飞牛影视之间切换。 |
+| `web/src/components/UpstreamForm.vue` | 上游详细编辑弹窗，按「基本 / 密钥 / 路径」分组；地址提示随服务端类型切换，密钥输入框只对 Audiobookshelf 与 Emby 显示，飞牛影视换成一对其登录账号密码（可留空，且必须成对填写）。 |
 | `web/src/components/LogsView.vue` | 播放流水（读 `/stats`：计数 + 逐条事件 + 无 302 时的诊断结论）与运行日志（读 `/logs`，按级别过滤）。 |
 | `web/src/components/SettingsView.vue` | 302 策略、缓存与日志、管理账号、运行信息。 |
 ## 管理账号与入口
@@ -44,7 +44,7 @@
 1. 请求落在哪个反代端口上，就是哪个上游（`runtime.handlerFor`，一端口一上游，路径不参与选择）。
 2. Emby 系（`emby` / `fnos`）的 `/Items/:id/PlaybackInfo` 先原样请求上游。STRM 源只有在 `SupportsDirectPlay=true` 时才重写 `DirectStreamUrl`，三个 `Supports*` 能力字段与 `TranscodingUrl` 全部保留；若上游判断客户端不兼容，则响应逐字节不改并继续 HLS 转码。普通媒体源始终不修改。飞牛影视同一个响应里还会顺手给 `MediaStreams` 补上非空字段，并在转发前把这条请求钉到 `/emby` 前缀下（`upstream.RequestPathRewriter`）——少了前缀飞牛返回的是单页应用 HTML，拿不到 `MediaSources` 就永远不 302。
 3. 交给该上游的 `Match` 判断是否为媒体字节接口，不是则直接反代。未命中但路径看起来像播放请求（含 `/stream`、`/track/`、媒体扩展名等）时记一条 info 日志；Emby HLS 清单或分片会单独说明「分片本身不能 302，应重新播放以重新协商直放」。
-4. 上游没有 API 密钥 → 记为 `passthrough` 并反代（无法查询媒体信息）。
+4. 上游没有可用凭据、且该类型必需凭据（Audiobookshelf / Emby）→ 记为 `passthrough` 并反代（无法查询媒体信息）。飞牛影视属于「凭据可选」：它没有静态密钥，什么都没配也照常查询，不会落到这一支（见「飞牛的凭据是可选的」）。
 5. 问上游 `MediaTarget`，按回答分三条路：
    - **已是直链**（Emby：`Protocol: Http` 或 `Path` 以 `http(s)://` 开头）→ 归一化后直接进入第 7 步，不读任何文件。
    - **是指针文件**（路径以 `.strm` 结尾，或 Emby 报的 `Container` 是 `strm`）→ `pathmap.Locate` 定位到容器内路径再读取。定位不到或读不到（`ErrPointerUnavailable`）→ 记为 `passthrough` 并反代，同时把原因写进日志与事件。
@@ -78,6 +78,7 @@
 - **Emby 的 302 起点是 PlaybackInfo，不是 HLS 分片**：客户端先根据 `PlaybackInfo` 决定直放或转码。一旦选中 `/hls1/main/*.ts`，每个请求只代表一段转码数据，不可能 302 到完整媒体文件。但也不能把所有 STRM 强制直放：网页端拿到不支持的 H.265 原文件同样无法播放。因此只在上游给出 `SupportsDirectPlay=true` 时重写 `DirectStreamUrl`，其余能力字段和转码 URL 保持原样；不兼容时宁可不 302，也要让 Emby 正常转码。媒体源和兼容性判断会一起短暂缓存；不兼容的客户端即使又请求 `/stream`，也会退回上游而不会误跳原文件。
 - **基础路径不能重复拼接**：配置的 Emby / 飞牛影视地址可能已经带 `/emby`，客户端请求也可能以 `/emby` 开头。反代 `joinPath` 会先判断请求是否已含基础路径，直放 URL 也会优先复用 Emby 原本的路由前缀并折叠相邻重复段，避免生成 `/emby/emby/Videos/...`；`fnosAPIPrefix` 同样在地址已以 `/emby` 结尾时不再补前缀。
 - **前缀改写只给播放协商开一个口子**：飞牛的 API 只挂在 `/emby` 下，而网页控制台（`/web/...`）、封面（`/Items/:id/Images/...`）与字节接口都在根路径。因此 `RequestPathRewriter` 只在 `PlaybackInfo` 上门禁补前缀，其余路径一律原样送达——无差别加前缀会把界面整个打挂，这比「少 302」更难排查。反向断言（其余路由必须不被改写）与正向断言（少前缀时仍能 302）在 `internal/proxy/fnos_test.go` 里成对存在。
+- **飞牛的凭据是可选的，令牌只活在内存里**：飞牛影视没有 Emby 控制台里那种静态 API 密钥，它的接口只认客户端登录换来的令牌——而那份令牌由播放器自己登录取得、随请求转发，AetherLink 只是把请求转过去。所以「什么都不填」就能完成 302：`PlaybackInfo` 改写时顺手缓存下来的媒体源足够回答紧接着的 `/stream`。超出这个 10 分钟窗口、或客户端直接请求下载入口时，AetherLink 才需要自己回头查一次上游，那份查询才需要凭据。因此账号密码被设计成**可选项而非必填**：填了就用 `POST /emby/Users/AuthenticateByName` 换令牌（复用 6 小时，只存在内存里，不落盘），没填就裸调。撞上 401/403 视为令牌被吊销，丢掉缓存重登一次再重试——不这么做，一次令牌过期会表现成「上游坏了」。`HasCredentials()` 对飞牛恒为真，否则代理层会退化成纯反代，播放请求永远拿不到 302。
 - **自动定位而非要求手写映射**：`pathmap.Locate` 把上游路径逐段剥前缀，在配置根目录、映射目标与常见挂载点下 stat。白名单校验从不放宽——白名单外的候选连 stat 都不做。凡能自动化的就不要求用户填表。
 - **不缓存指针内容按 mtime**：文件系统 mtime 精度不足，同一 tick 内两次写入无法区分。缓存键是媒体引用（上游 + 条目 + 文件），TTL 到期后重新读取指针，路径白名单校验永远在缓存之外无条件执行。
 - **并发去重**：播放器 seek 时会并发发起多个 Range 请求，`resolver` 用 inflight map 让同一轨道只打一次上游 API。

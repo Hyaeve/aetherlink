@@ -32,6 +32,59 @@ upstreams:
 	}
 }
 
+// 飞牛没有 Emby 那种静态 API 密钥，它只认客户端账号密码换来的令牌。
+// 账号密码是可选项，但必须成对：只填一半既登不上去，又会让界面误以为
+// 「已经配好了」。
+func TestFnosLoginCredentialsMustBePaired(t *testing.T) {
+	onlyUsername := writeConfig(t, `
+upstreams:
+  - name: fnos
+    type: fnos
+    base_url: "http://10.0.0.33:8005"
+    username: kiro
+    listen_port: 5154
+`)
+	if _, err := Load(onlyUsername); err == nil {
+		t.Fatal("只填账号时应当被拒绝")
+	}
+
+	onlyPassword := writeConfig(t, `
+upstreams:
+  - name: fnos
+    type: fnos
+    base_url: "http://10.0.0.33:8005"
+    password: s3cret
+    listen_port: 5154
+`)
+	if _, err := Load(onlyPassword); err == nil {
+		t.Fatal("只填密码时应当被拒绝")
+	}
+}
+
+func TestFnosLoginCredentialsLoadAndNormalize(t *testing.T) {
+	path := writeConfig(t, `
+upstreams:
+  - name: fnos
+    type: fnos
+    base_url: "http://10.0.0.33:8005"
+    username: "  kiro  "
+    password: "p@ss word"
+    listen_port: 5154
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	upstream := cfg.Upstreams[0]
+	if upstream.Username != "kiro" {
+		t.Fatalf("username = %q，首尾空格应当被裁掉", upstream.Username)
+	}
+	// 密码是口令，裁剪会悄悄改掉它，必须原样保留。
+	if upstream.Password != "p@ss word" {
+		t.Fatalf("password = %q，应当原样保留", upstream.Password)
+	}
+}
+
 func TestUnknownUpstreamTypeStillRejected(t *testing.T) {
 	path := writeConfig(t, `
 upstreams:

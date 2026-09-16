@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,6 +26,11 @@ import (
 //  3. 网页播放器 basehtmlplayer.js 里的 crossorigin="anonymous" 要去掉。
 //     302 出去的是跨域直链，带着 anonymous 会让浏览器把播放请求当成需要
 //     CORS 放行的请求，直链服务端不返回 CORS 头时视频就播不出来。
+//
+// 鉴权上飞牛和 Emby 也不同：它没有 Emby 控制台里那种静态 API 密钥，接口只认
+// 客户端登录换来的令牌。所以账号密码是「填了更好、不填也能播」的可选项——
+// 不填时 302 主链路照常（靠 PlaybackInfo 改写 + 缓存），填了才多出媒体库列表
+// 和缓存未命中时的兜底解析。
 type fnosProvider struct {
 	embyProvider
 }
@@ -108,6 +114,35 @@ func (p *fnosProvider) RewriteResponse(originalPath string, response *http.Respo
 		return rewriteFnosBaseHTMLPlayer(response)
 	}
 	return p.embyProvider.RewriteResponse(originalPath, response)
+}
+
+// Ping 先问不需要鉴权的 /System/Info/Public。
+//
+// Emby 默认探的 /System/Info 要带令牌，而飞牛在没配账号密码时不会给 ——
+// 但飞牛无论如何都愿意回答 /System/Info/Public，返回的服务器名与版本和
+// /System/Info 一致。所以先探它，没有这条路由的旧版本再退回 /System/Info。
+func (p *fnosProvider) Ping(ctx context.Context) (string, error) {
+	var info embySystemInfo
+	err := p.client.getJSON(ctx, "/System/Info/Public", nil, &info)
+	if err != nil {
+		if err = p.client.getJSON(ctx, "/System/Info", nil, &info); err != nil {
+			return "", err
+		}
+	}
+	return fmt.Sprintf("飞牛影视 %s v%s", strings.TrimSpace(info.ServerName), strings.TrimSpace(info.Version)), nil
+}
+
+// Libraries 读飞牛的媒体库列表。
+//
+// 这条接口要求以某个用户身份登录，只填地址不填账号密码时上游只会回 401。
+// 这时把「该填什么」补进错误里，比原样抛一串状态码有用得多；已经配了账号
+// 密码却还失败，那就是真实故障，如实上报。
+func (p *fnosProvider) Libraries(ctx context.Context) ([]Library, error) {
+	libraries, err := p.embyProvider.Libraries(ctx)
+	if err != nil && !p.client.authenticated() {
+		return nil, fmt.Errorf("飞牛影视未配置登录账号，无法读取媒体库（%w）", err)
+	}
+	return libraries, err
 }
 
 // rewriteFnosBaseHTMLPlayer 去掉网页播放器给 media 元素加的 crossorigin 属性。

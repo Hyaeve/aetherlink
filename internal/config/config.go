@@ -69,7 +69,14 @@ type Upstream struct {
 	Type    UpstreamType `yaml:"type" json:"type"`
 	BaseURL string       `yaml:"base_url" json:"baseUrl"`
 	APIKey  string       `yaml:"api_key" json:"-"`
-	Enabled *bool        `yaml:"enabled,omitempty" json:"enabled"`
+	// Username / Password 是「没有静态密钥、只能账号密码登录」的上游的凭据，
+	// 目前只有飞牛影视用得到：它没有 Emby 控制台里那种 API 密钥，接口要求先
+	// 以某个用户身份登录换取访问令牌。两项必须同时填写；都留空表示 AetherLink
+	// 完全不调用它的 API —— 此时 Emby 系依旧能靠 PlaybackInfo 改写加缓存完成
+	// 302，只是拿不到媒体库列表、也失去了缓存未命中时的兜底解析。
+	Username string `yaml:"username,omitempty" json:"username,omitempty"`
+	Password string `yaml:"password,omitempty" json:"-"`
+	Enabled  *bool  `yaml:"enabled,omitempty" json:"enabled"`
 	// ListenPort is the container port AetherLink serves this upstream on.
 	ListenPort   int          `yaml:"listen_port" json:"listenPort"`
 	Insecure     bool         `yaml:"insecure_skip_verify" json:"insecureSkipVerify"`
@@ -727,6 +734,12 @@ func (u *Upstream) normalize() error {
 	}
 
 	u.APIKey = strings.TrimSpace(u.APIKey)
+	u.Username = strings.TrimSpace(u.Username)
+	// 密码原样保留：它是口令，首尾空格也可能真的属于密码，这里不做裁剪。
+	// 只有一半的凭据既登不上去，又会让界面误以为「已配置」，所以直接拒掉。
+	if (u.Username == "") != (u.Password == "") {
+		return fmt.Errorf("上游 %s 的登录账号与密码必须同时填写", u.Name)
+	}
 	if u.RedirectMode == "" {
 		u.RedirectMode = RedirectAlways
 	}

@@ -84,11 +84,18 @@ upstreams: []
 #         to: /NetDisk/115-Strm/Set/Read
 #
 #   # 飞牛影视（飞牛 NAS 自带的「影视」应用）是 Emby 方言，走的是同一套拦截与
-#   # 302 链路，只是接口挂在 /emby 前缀下。密钥在飞牛影视「设置 → 高级」里生成。
+#   # 302 链路，只是接口挂在 /emby 前缀下。它没有 Emby 那种静态 API 密钥：播放时
+#   # 的鉴权由播放器自己登录完成，AetherLink 只是把请求转过去，所以下面两项通常
+#   # 留空即可，302 照常工作。
+#   #
+#   # username / password 是「让 AetherLink 自己读媒体库」时才需要的：填了之后
+#   # 它会用这副账号走飞牛的登录接口换取访问令牌（缓存 6 小时，不落盘），从而能
+#   # 列出媒体库、并补上 PlaybackInfo 缓存过期后的媒体源解析。两项必须同时填写。
 #   - name: fnos
 #     type: fnos
 #     base_url: http://10.0.0.33:8005
-#     api_key: "飞牛影视的 API 密钥"
+#     # username: "飞牛影视登录账号"
+#     # password: "飞牛影视登录密码"
 #     enabled: true
 #     listen_port: 5154
 #     path_mappings: []

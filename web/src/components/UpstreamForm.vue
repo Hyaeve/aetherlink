@@ -21,6 +21,9 @@ function initialForm() {
       baseUrl: '',
       apiKey: '',
       keepApiKey: false,
+      username: '',
+      password: '',
+      keepPassword: false,
       enabled: true,
       listenPort: props.suggestedPort || null,
       insecureSkipVerify: false,
@@ -36,6 +39,10 @@ function initialForm() {
     apiKey: '',
     // 密钥从不回显：已保存时留空即表示保留原值。
     keepApiKey: source.hasApiKey,
+    // 账号可以回显（它不是秘密），密码同样不回显。
+    username: source.username || '',
+    password: '',
+    keepPassword: Boolean(source.hasPassword),
     enabled: source.enabled,
     listenPort: source.listenPort || null,
     insecureSkipVerify: source.insecureSkipVerify,
@@ -53,14 +60,16 @@ const error = ref('')
 const testResult = ref(null)
 const editor = ref(null)
 // 密钥默认明文显示，点小眼睛切到遮蔽（斜线眼睛表示「点一下会隐藏」）。
+// 密码反过来默认遮蔽——它是口令，不该一打开弹窗就摊在屏幕上。
 const keyVisible = ref(true)
+const passwordVisible = ref(false)
 
 const serviceOptions = [
   { value: 'audiobookshelf', label: 'Audiobookshelf' },
   { value: 'emby', label: 'Emby' },
   { value: 'fnos', label: '飞牛影视' }
 ]
-// 每种服务端的地址示例、密钥提示与路径示例。
+// 每种服务端的地址示例、密钥/账号提示与路径示例。
 const serviceHints = {
   audiobookshelf: {
     address: 'http://10.0.0.31:13378',
@@ -72,13 +81,18 @@ const serviceHints = {
     key: '粘贴 Emby API 密钥',
     mapping: '上游看到的路径，如 /media'
   },
+  // 飞牛影视没有 API 密钥，改用客户端账号密码登录换令牌。
   fnos: {
     address: 'http://10.0.0.31:8005',
-    key: '粘贴飞牛影视 API 密钥',
+    account: '飞牛影视登录账号',
+    password: '飞牛影视登录密码',
     mapping: '上游看到的路径，如 /media'
   }
 }
 const serviceHint = computed(() => serviceHints[form.value.type] || serviceHints.emby)
+// 飞牛影视没有静态 API 密钥，表单里为它换成账号密码两项。
+const showApiKey = computed(() => form.value.type !== 'fnos')
+const showCredentials = computed(() => form.value.type === 'fnos')
 const redirectOptions = [
   { value: 'always', label: '始终跳转' },
   { value: 'public', label: '公网跳转' },
@@ -90,6 +104,25 @@ const keyPlaceholder = computed(() => {
   if (form.value.keepApiKey) return '留空保留原密钥'
   return serviceHint.value.key
 })
+
+const passwordPlaceholder = computed(() => {
+  if (form.value.keepPassword) return '留空保留原密码'
+  return serviceHint.value.password
+})
+
+// 飞牛影视的账号与密码必须成对。后端会拒掉「只有一半」的配置，这里先给一句
+// 更直白的提示，免得用户对着 400 猜。清空账号等于删除凭据，是允许的，
+// 但那时不能再留着密码。
+function credentialError() {
+  if (!showCredentials.value) return ''
+  const username = form.value.username.trim()
+  const password = form.value.password
+  if (username === '') {
+    return password ? '请填写飞牛影视的登录账号，或把密码也一起清空' : ''
+  }
+  if (!password && !form.value.keepPassword) return '请填写飞牛影视的登录密码'
+  return ''
+}
 
 function addMapping() {
   form.value.pathMappings.push({ from: '', to: '' })
@@ -165,17 +198,34 @@ function buildPayload() {
       .filter((mapping) => mapping.from || mapping.to),
     redirectMode: current.redirectMode
   }
-  const key = current.apiKey.trim()
-  if (key) {
-    payload.apiKey = key
-  } else if (!current.keepApiKey) {
-    payload.apiKey = ''
+  // 飞牛影视没有 API 密钥：表单里不显示这个输入框，这里也整段跳过，
+  // 免得把配置文件里手工补过的 api_key 清掉。
+  if (current.type !== 'fnos') {
+    const key = current.apiKey.trim()
+    if (key) {
+      payload.apiKey = key
+    } else if (!current.keepApiKey) {
+      payload.apiKey = ''
+    }
+  } else {
+    // 飞牛影视改用账号密码登录换令牌。两项必须成对：清空账号就表示要删掉
+    // 凭据，此时把密码一并清掉，否则后端会因为「只有一半」拒绝保存。
+    const username = current.username.trim()
+    payload.username = username
+    if (username === '') {
+      payload.password = ''
+    } else if (current.password) {
+      payload.password = current.password
+    } else if (!current.keepPassword) {
+      payload.password = ''
+    }
   }
   return payload
 }
 
 async function test() {
-  error.value = ''
+  error.value = credentialError()
+  if (error.value) return
   testResult.value = { loading: true }
   try {
     testResult.value = await api.testUpstream(buildPayload())
@@ -185,7 +235,8 @@ async function test() {
 }
 
 async function save() {
-  error.value = ''
+  error.value = credentialError()
+  if (error.value) return
   busy.value = true
   try {
     const payload = buildPayload()
@@ -267,7 +318,7 @@ async function save() {
                 </div>
               </details>
             </div>
-            <label class="field">
+            <label class="field" v-if="showApiKey">
               <span>API 密钥</span>
               <span class="secret-input">
                 <input
@@ -286,6 +337,41 @@ async function save() {
                   @click.prevent="keyVisible = !keyVisible"
                 >
                   <svg v-if="keyVisible" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z" />
+                    <circle cx="12" cy="12" r="3.1" />
+                    <path d="m4 3.6 16 16.8" />
+                  </svg>
+                  <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z" />
+                    <circle cx="12" cy="12" r="3.1" />
+                  </svg>
+                </button>
+              </span>
+            </label>
+            <label class="field" v-if="showCredentials">
+              <span>登录账号</span>
+              <input v-model="form.username" autocomplete="off" spellcheck="false" :placeholder="serviceHint.account" />
+              <small class="field-note">可留空：不填也不影响播放跳转，只是读不到媒体库</small>
+            </label>
+            <label class="field" v-if="showCredentials">
+              <span>登录密码</span>
+              <span class="secret-input">
+                <input
+                  v-model="form.password"
+                  :type="passwordVisible ? 'text' : 'password'"
+                  autocomplete="new-password"
+                  spellcheck="false"
+                  :placeholder="passwordPlaceholder"
+                />
+                <button
+                  type="button"
+                  class="secret-toggle"
+                  :aria-pressed="passwordVisible"
+                  :title="passwordVisible ? '隐藏密码' : '显示密码'"
+                  :aria-label="passwordVisible ? '隐藏密码' : '显示密码'"
+                  @click.prevent="passwordVisible = !passwordVisible"
+                >
+                  <svg v-if="passwordVisible" viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z" />
                     <circle cx="12" cy="12" r="3.1" />
                     <path d="m4 3.6 16 16.8" />

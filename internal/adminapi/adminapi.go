@@ -484,9 +484,12 @@ type upstreamSummary struct {
 	Type    string `json:"type"`
 	BaseURL string `json:"baseUrl"`
 	// ListenPort 是 AetherLink 容器内为该上游开的反代端口。
-	ListenPort   int                  `json:"listenPort"`
-	Enabled      bool                 `json:"enabled"`
-	HasAPIKey    bool                 `json:"hasApiKey"`
+	ListenPort int  `json:"listenPort"`
+	Enabled    bool `json:"enabled"`
+	HasAPIKey  bool `json:"hasApiKey"`
+	// Username 是登录账号，可以回显（它不是秘密）；密码只报有没有，不回显。
+	Username     string               `json:"username"`
+	HasPassword  bool                 `json:"hasPassword"`
 	Insecure     bool                 `json:"insecureSkipVerify"`
 	StrmRoots    []string             `json:"strmRoots"`
 	PathMappings []config.PathMapping `json:"pathMappings"`
@@ -507,6 +510,8 @@ func (a *API) describeUpstreams(upstreams []config.Upstream) []upstreamSummary {
 			ListenPort:   up.ListenPort,
 			Enabled:      up.IsEnabled(),
 			HasAPIKey:    strings.TrimSpace(up.APIKey) != "",
+			Username:     up.Username,
+			HasPassword:  up.Password != "",
 			Insecure:     up.Insecure,
 			StrmRoots:    up.StrmRoots,
 			PathMappings: up.PathMappings,
@@ -535,13 +540,15 @@ func (a *API) handleUpstreams(writer http.ResponseWriter, request *http.Request)
 	})
 }
 
-// upstreamPayload 是新增/修改上游的请求体。APIKey 用指针：省略表示保留原有
-// 密钥，这样界面上无需回显密钥也能编辑其他字段。
+// upstreamPayload 是新增/修改上游的请求体。APIKey 与 Password 用指针：省略
+// 表示保留原有凭据，这样界面上无需回显秘密也能编辑其他字段。
 type upstreamPayload struct {
 	Name         string               `json:"name"`
 	Type         string               `json:"type"`
 	BaseURL      string               `json:"baseUrl"`
 	APIKey       *string              `json:"apiKey"`
+	Username     *string              `json:"username"`
+	Password     *string              `json:"password"`
 	Enabled      *bool                `json:"enabled"`
 	ListenPort   int                  `json:"listenPort"`
 	Insecure     bool                 `json:"insecureSkipVerify"`
@@ -550,7 +557,7 @@ type upstreamPayload struct {
 	RedirectMode string               `json:"redirectMode"`
 }
 
-// toConfig 把请求体转成配置项，existing 非空时继承其密钥。
+// toConfig 把请求体转成配置项，existing 非空时继承其凭据。
 func (p upstreamPayload) toConfig(existing *config.Upstream) config.Upstream {
 	result := config.Upstream{
 		Name:         strings.TrimSpace(p.Name),
@@ -568,6 +575,18 @@ func (p upstreamPayload) toConfig(existing *config.Upstream) config.Upstream {
 		result.APIKey = strings.TrimSpace(*p.APIKey)
 	case existing != nil:
 		result.APIKey = existing.APIKey
+	}
+	switch {
+	case p.Username != nil:
+		result.Username = strings.TrimSpace(*p.Username)
+	case existing != nil:
+		result.Username = existing.Username
+	}
+	switch {
+	case p.Password != nil:
+		result.Password = *p.Password
+	case existing != nil:
+		result.Password = existing.Password
 	}
 	if result.Enabled == nil && existing != nil {
 		result.Enabled = existing.Enabled
