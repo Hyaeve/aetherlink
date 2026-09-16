@@ -406,6 +406,7 @@ code {
   display: none;
   font-family: "HarmonyOS Sans SC", "HarmonyOS Sans", "Segoe UI", "Microsoft YaHei", sans-serif;
   font-size: 15px;
+  font-weight: 600;
   white-space: nowrap;
 }
 
@@ -1144,6 +1145,12 @@ code {
   box-shadow: var(--shadow-sm);
   margin-bottom: 16px;
   overflow: hidden;
+}
+
+/* 服务日志卡：比播放流水卡更高，给长日志更多纵向空间；
+   高度跟随视口伸缩，屏幕越高一次能看到的日志行越多。 */
+.activity-card.log-card {
+  height: clamp(620px, 76vh, 840px);
 }
 
 .activity-head {

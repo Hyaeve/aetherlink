@@ -391,7 +391,7 @@ onUnmounted(() => {
       </div>
     </section>
 
-    <section class="activity-card">
+    <section class="activity-card log-card">
       <div class="activity-head">
         <div class="activity-title">
           <span class="activity-icon blue"><svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM8 9h8M8 12h8M8 15h5" /></svg></span>
