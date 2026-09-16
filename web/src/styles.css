@@ -498,8 +498,13 @@ code {
 
 .page-head-banner {
   position: relative;
-  min-height: 188px;
+  display: grid;
+  /* 标题占左侧、统计块固定在右侧同一排，不允许整块折到标题下方。 */
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 30px;
+  row-gap: 20px;
   align-items: center;
+  min-height: 188px;
   margin: -26px 0 28px;
   padding: 34px 38px;
   overflow: hidden;
@@ -540,10 +545,6 @@ code {
   font-size: 15px;
 }
 
-.page-head-banner .system-summary {
-  padding-top: 0;
-}
-
 .page-title h1 {
   margin: 6px 0 4px;
   font-size: 24px;
@@ -558,12 +559,14 @@ code {
   max-width: 60ch;
 }
 
+/* 页头右侧的指标块：紧贴标题右侧同排，图标 + 标签 + 数值。 */
 .system-summary {
   display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  align-items: center;
-  padding-top: 8px;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 0;
 }
 
 .status-pill {
@@ -659,44 +662,8 @@ code {
   font-weight: 500;
 }
 
-.overview-strip {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 12px;
-  margin-bottom: 20px;
-}
-
-.overview-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px 16px;
-  border-radius: var(--radius);
-  background: rgba(253, 253, 252, 0.84);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow-sm);
-  backdrop-filter: blur(10px);
-}
-
-.overview-item > span:last-child {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.overview-item small {
-  font-size: 11.5px;
-  color: var(--muted);
-}
-
-.overview-item strong {
-  font-size: 20px;
-  font-weight: 600;
-}
-
-.overview-icon,
-.metric-icon,
+/* 图标字形容器：页头指标块、卡片标题、设置项共用一套尺寸。 */
+.header-stat-icon,
 .activity-icon,
 .settings-icon {
   width: 38px;
@@ -707,8 +674,7 @@ code {
   place-items: center;
 }
 
-.overview-icon svg,
-.metric-icon svg,
+.header-stat-icon svg,
 .activity-icon svg,
 .settings-icon svg {
   width: 19px;
@@ -783,26 +749,46 @@ code {
   gap: 10px;
 }
 
-.page-inline-stats {
-  display: none;
-}
-
 .header-stat {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 5px;
-  padding: 7px 10px;
-  border: 1px solid var(--border);
-  border-radius: 11px;
-  color: var(--muted);
-  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  padding: 10px 14px 10px 11px;
+  border: 1px solid rgba(205, 214, 228, 0.9);
+  border-radius: 16px;
+  background: rgba(253, 253, 252, 0.82);
+  box-shadow: 0 1px 2px rgba(38, 42, 58, 0.05), 0 14px 26px -22px rgba(38, 42, 58, 0.7);
+  backdrop-filter: blur(10px);
   white-space: nowrap;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
 }
 
-.header-stat b {
+.header-stat:hover {
+  transform: translateY(-2px);
+  border-color: rgba(180, 193, 214, 0.95);
+  box-shadow: 0 2px 5px rgba(38, 42, 58, 0.07), 0 18px 30px -22px rgba(38, 42, 58, 0.72);
+}
+
+.header-stat-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.header-stat-text small {
+  font-size: 12px;
+  line-height: 1.25;
+  color: var(--text-soft);
+}
+
+.header-stat-text b {
   color: var(--text);
-  font-size: 15px;
+  font-size: 21px;
   font-weight: 650;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
 }
 
 .service-mark {
@@ -1087,52 +1073,6 @@ code {
 }
 
 /* ---------- 运行日志页 ---------- */
-
-.log-metrics {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(178px, 1fr));
-  gap: 12px;
-  margin-bottom: 18px;
-}
-
-.log-metric {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 15px 16px;
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
-  background: rgba(253, 253, 252, 0.84);
-  backdrop-filter: blur(10px);
-  box-shadow: var(--shadow-sm);
-}
-
-.log-metric > span:last-child {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.log-metric small {
-  font-size: 11.5px;
-  color: var(--muted);
-}
-
-.log-metric strong {
-  font-size: 22px;
-  font-weight: 600;
-}
-
-.log-metric .metric-icon {
-  background: var(--surface-2);
-  color: var(--text-soft);
-}
-
-.log-metric.violet .metric-icon { background: var(--accent-wash); color: var(--accent-ink); }
-.log-metric.amber .metric-icon { background: var(--warn-wash); color: #8b7549; }
-.log-metric.blue .metric-icon { background: var(--info-wash); color: #5f7796; }
-.log-metric.rose .metric-icon { background: var(--danger-wash); color: #99666c; }
-.log-metric.green .metric-icon { background: var(--ok-wash); color: #5d7c6b; }
 
 .activity-card {
   display: flex;
@@ -2663,8 +2603,16 @@ label.inline input[type='checkbox'] {
 
 @media (max-width: 1120px) {
   .page-head-banner {
+    /* 窗口放不下「标题 + 5 个指标块」时，指标块回到标题下方，保持一行不再被压缩。 */
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 18px;
     min-height: 164px;
     padding: 28px;
+  }
+
+  .system-summary {
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 
   .settings-layout {

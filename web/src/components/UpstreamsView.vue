@@ -155,29 +155,6 @@ onMounted(load)
     <p v-if="error" class="error page-error">{{ error }}</p>
     <div v-if="notice" class="notice page-notice">{{ notice }}</div>
 
-    <div class="overview-strip page-inline-stats">
-      <div class="overview-item">
-        <span class="overview-icon violet"><svg viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h9" /></svg></span>
-        <span><small>总链接</small><strong>{{ upstreams.length }}</strong></span>
-      </div>
-      <div class="overview-item">
-        <span class="overview-icon blue"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="3" /><path d="M8 9h8M8 13h5" /></svg></span>
-        <span><small>Emby 链接</small><strong>{{ embyCount }}</strong></span>
-      </div>
-      <div class="overview-item">
-        <span class="overview-icon amber"><svg viewBox="0 0 24 24"><path d="M6 5h12v14H6z" /><path d="M9 8h6M9 12h6M9 16h4" /></svg></span>
-        <span><small>ABS 链接</small><strong>{{ absCount }}</strong></span>
-      </div>
-      <div class="overview-item">
-        <span class="overview-icon green"><svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" /></svg></span>
-        <span><small>正在运行</small><strong>{{ runningCount }}</strong></span>
-      </div>
-      <div class="overview-item">
-        <span class="overview-icon rose"><svg viewBox="0 0 24 24"><path d="M6 6h12M6 12h12M6 18h12" /></svg></span>
-        <span><small>停止运行</small><strong>{{ stoppedCount }}</strong></span>
-      </div>
-    </div>
-
     <div v-if="loading" class="card-grid">
       <div v-for="index in 2" :key="index" class="proxy-card skeleton-card" aria-hidden="true">
         <span class="skeleton-line short"></span>

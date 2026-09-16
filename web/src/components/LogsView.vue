@@ -37,7 +37,13 @@ async function load() {
     const [logPayload, statsPayload] = await Promise.all([api.logs(5000), api.stats(5000)])
     entries.value = (logPayload.entries || []).slice().reverse()
     snapshot.value = statsPayload
-    emit('stats', { requests: statsPayload.totalRequests || 0, redirects: statsPayload.redirects || 0, relay: (statsPayload.proxyStreams || 0) + (statsPayload.transcodes || 0) + (statsPayload.passthroughs || 0), errors: statsPayload.errors || 0 })
+    emit('stats', {
+      requests: statsPayload.totalRequests || 0,
+      redirects: statsPayload.redirects || 0,
+      relay: (statsPayload.proxyStreams || 0) + (statsPayload.transcodes || 0) + (statsPayload.passthroughs || 0),
+      errors: statsPayload.errors || 0,
+      logLines: entries.value.length
+    })
     error.value = ''
   } catch (loadError) {
     error.value = loadError.message
@@ -57,7 +63,6 @@ const eventPageCount = computed(() => Math.max(1, Math.ceil(events.value.length 
 const logPageCount = computed(() => Math.max(1, Math.ceil(visible.value.length / pageSize)))
 const pagedEvents = computed(() => pageSlice(events.value, eventPage.value))
 const pagedVisible = computed(() => pageSlice(visible.value, logPage.value))
-const relayCount = computed(() => (snapshot.value?.proxyStreams || 0) + (snapshot.value?.transcodes || 0) + (snapshot.value?.localFiles || 0) + (snapshot.value?.passthroughs || 0))
 
 watch(events, () => {
   if (eventPage.value > eventPageCount.value) eventPage.value = eventPageCount.value
@@ -269,29 +274,6 @@ onUnmounted(() => {
     <div v-if="hoverTooltip" ref="tooltipElement" class="log-floating-tooltip" :style="hoverTooltip.style">{{ hoverTooltip.text }}</div>
     <p v-if="error" class="error page-error">{{ error }}</p>
     <div v-if="diagnosis" class="notice page-notice">{{ diagnosis }}</div>
-
-    <div class="log-metrics page-inline-stats">
-      <div class="log-metric violet">
-        <span class="metric-icon"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h10M4 17h7" /><circle cx="18" cy="16" r="3" /></svg></span>
-        <span><small>播放请求</small><strong>{{ snapshot?.totalRequests ?? 0 }}</strong></span>
-      </div>
-      <div class="log-metric amber">
-        <span class="metric-icon"><svg viewBox="0 0 24 24"><path d="M5 12h13M13 6l6 6-6 6" /><path d="M4 5v14" /></svg></span>
-        <span><small>302 跳转</small><strong>{{ snapshot?.redirects ?? 0 }}</strong></span>
-      </div>
-      <div class="log-metric blue">
-        <span class="metric-icon"><svg viewBox="0 0 24 24"><path d="M4 12h16M12 4v16" /><circle cx="12" cy="12" r="8" /></svg></span>
-        <span><small>中继 / 转码</small><strong>{{ relayCount }}</strong></span>
-      </div>
-      <div class="log-metric rose">
-        <span class="metric-icon"><svg viewBox="0 0 24 24"><path d="M12 4 21 20H3zM12 9v5M12 17h.01" /></svg></span>
-        <span><small>失败</small><strong>{{ snapshot?.errors ?? 0 }}</strong></span>
-      </div>
-      <div class="log-metric green">
-        <span class="metric-icon"><svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM8 9h8M8 13h6M8 17h4" /></svg></span>
-        <span><small>服务日志</small><strong>{{ entries.length }}</strong></span>
-      </div>
-    </div>
 
     <section class="activity-card">
       <div class="activity-head">

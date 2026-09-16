@@ -76,11 +76,14 @@ function navigateTo(tab) {
   if (!TAB_IDS.has(tab) || activeTab.value === tab) return
   accountMenuOpen.value = false
   activeTab.value = tab
+  // 统计值由页面组件回传，换页时先清空，避免顶栏短暂显示上一个页面的数字。
+  pageStats.value = null
   window.history.pushState({ tab }, '', pathForTab(tab))
 }
 
 function handlePopState() {
   activeTab.value = tabFromPath(window.location.pathname)
+  pageStats.value = null
 }
 
 async function bootstrap() {
@@ -168,6 +171,53 @@ const uptime = computed(() => {
   const hours = Math.floor(seconds / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)
   return hours > 0 ? `${hours} 小时 ${minutes} 分` : `${minutes} 分`
+})
+
+// 顶栏右侧的指标块。每项自带图标与配色，值由当前页面的组件通过 @stats 回传，
+// 页面里不再单独排一行统计条。
+const headerStats = computed(() => {
+  const stats = pageStats.value
+  if (!stats) return []
+
+  if (activeTab.value === 'upstreams') {
+    return [
+      { key: 'total', label: '总链接', value: stats.total, tone: 'violet', paths: ['M5 7h14M5 12h14M5 17h9'] },
+      {
+        key: 'emby',
+        label: 'Emby',
+        value: stats.emby,
+        tone: 'blue',
+        paths: ['M7 5h10a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V8a3 3 0 0 1 3-3z', 'M8 9h8M8 13h5']
+      },
+      { key: 'abs', label: 'ABS', value: stats.abs, tone: 'amber', paths: ['M6 5h12v14H6z', 'M9 8h6M9 12h6M9 16h4'] },
+      { key: 'running', label: '正在运行', value: stats.running, tone: 'green', paths: ['m5 12 4 4L19 6'] },
+      { key: 'stopped', label: '停止运行', value: stats.stopped, tone: 'rose', paths: ['M9 6v12M15 6v12'] }
+    ]
+  }
+
+  if (activeTab.value === 'logs') {
+    return [
+      {
+        key: 'requests',
+        label: '播放请求',
+        value: stats.requests,
+        tone: 'violet',
+        paths: ['M4 7h16M4 12h10M4 17h7', 'M21 16a3 3 0 1 1-6 0 3 3 0 0 1 6 0']
+      },
+      { key: 'redirects', label: '302 跳转', value: stats.redirects, tone: 'amber', paths: ['M5 12h13M13 6l6 6-6 6', 'M4 5v14'] },
+      {
+        key: 'relay',
+        label: '中继/转码',
+        value: stats.relay,
+        tone: 'blue',
+        paths: ['M4 12h16M12 4v16', 'M20 12a8 8 0 1 1-16 0 8 8 0 0 1 16 0']
+      },
+      { key: 'errors', label: '失败', value: stats.errors, tone: 'rose', paths: ['M12 4 21 20H3z', 'M12 9.5v5', 'M12 17.5h.01'] },
+      { key: 'logLines', label: '服务日志', value: stats.logLines, tone: 'green', paths: ['M5 5h14v14H5z', 'M8 9h8M8 13h6M8 17h4'] }
+    ]
+  }
+
+  return []
 })
 
 onMounted(() => {
@@ -303,20 +353,18 @@ function toggleAccountMenu() {
           <h1>{{ activeLabel }}</h1>
           <p>{{ activeDescription }}</p>
         </div>
-        <div class="system-summary" v-if="status">
-          <template v-if="activeTab === 'upstreams' && pageStats">
-            <span class="header-stat">总链接 <b>{{ pageStats.total }}</b></span>
-            <span class="header-stat">Emby <b>{{ pageStats.emby }}</b></span>
-            <span class="header-stat">ABS <b>{{ pageStats.abs }}</b></span>
-            <span class="header-stat">运行中 <b>{{ pageStats.running }}</b></span>
-            <span class="header-stat">已停止 <b>{{ pageStats.stopped }}</b></span>
-          </template>
-          <template v-else-if="activeTab === 'logs' && pageStats">
-            <span class="header-stat">播放请求 <b>{{ pageStats.requests }}</b></span>
-            <span class="header-stat">302 跳转 <b>{{ pageStats.redirects }}</b></span>
-            <span class="header-stat">中继/转码 <b>{{ pageStats.relay }}</b></span>
-            <span class="header-stat">失败 <b>{{ pageStats.errors }}</b></span>
-          </template>
+        <div class="system-summary" v-if="headerStats.length">
+          <span v-for="stat in headerStats" :key="stat.key" class="header-stat">
+            <span class="header-stat-icon" :class="stat.tone" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path v-for="(path, index) in stat.paths" :key="index" :d="path" />
+              </svg>
+            </span>
+            <span class="header-stat-text">
+              <small>{{ stat.label }}</small>
+              <b>{{ stat.value }}</b>
+            </span>
+          </span>
         </div>
       </header>
 
