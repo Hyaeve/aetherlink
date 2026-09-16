@@ -25,7 +25,9 @@ const modeMenu = ref(null)
 const modePanel = ref(null)
 const modeBusy = ref(false)
 
-const TYPE_LABELS = { audiobookshelf: 'Audiobookshelf', emby: 'Emby' }
+const TYPE_LABELS = { audiobookshelf: 'Audiobookshelf', emby: 'Emby', fnos: '飞牛影视' }
+// 卡片左上角的服务标识图，与 public/icons 下的文件名一一对应。
+const TYPE_ICONS = { audiobookshelf: 'abs.png', emby: 'emby.png', fnos: 'fnmovie.png' }
 
 // 与 config.RedirectMode 的四个取值一一对应（内网/公网按可信前置代理判断）。
 const REDIRECT_OPTIONS = [
@@ -38,7 +40,9 @@ const REDIRECT_LABELS = Object.fromEntries(REDIRECT_OPTIONS.map((option) => [opt
 
 const runningCount = computed(() => upstreams.value.filter((item) => item.enabled && item.listening).length)
 const stoppedCount = computed(() => upstreams.value.length - runningCount.value)
+// Emby 与飞牛影视同属 Emby 方言，统计上仍分开计数，方便一眼看清各自接了几个。
 const embyCount = computed(() => upstreams.value.filter((item) => item.type === 'emby').length)
+const fnosCount = computed(() => upstreams.value.filter((item) => item.type === 'fnos').length)
 const absCount = computed(() => upstreams.value.filter((item) => item.type === 'audiobookshelf').length)
 
 async function load() {
@@ -47,7 +51,7 @@ async function load() {
     const [payload, status] = await Promise.all([api.upstreams(), api.status()])
     startedAt.value = status.startedAt
     upstreams.value = payload.upstreams || []
-    emit('stats', { total: upstreams.value.length, emby: embyCount.value, abs: absCount.value, running: runningCount.value, stopped: stoppedCount.value })
+    emit('stats', { total: upstreams.value.length, emby: embyCount.value, fnos: fnosCount.value, abs: absCount.value, running: runningCount.value, stopped: stoppedCount.value })
     suggestedPort.value = payload.suggestedPort || 0
     error.value = ''
   } catch (loadError) {
@@ -81,6 +85,10 @@ function portFlow(upstream) {
 
 function typeLabel(type) {
   return TYPE_LABELS[type] || type
+}
+
+function typeIcon(type) {
+  return `/aetherlink/icons/${TYPE_ICONS[type] || 'aetherlink-logo.png'}`
 }
 
 function redirectLabel(mode) {
@@ -278,10 +286,7 @@ onUnmounted(() => {
             @click.stop="toggleEnabled(upstream)"
             @keyup.stop
           >
-            <img
-              :src="upstream.type === 'emby' ? '/aetherlink/icons/emby.png' : '/aetherlink/icons/abs.png'"
-              :alt="typeLabel(upstream.type)"
-            />
+            <img :src="typeIcon(upstream.type)" :alt="typeLabel(upstream.type)" />
           </button>
           <button
             type="button"
@@ -336,7 +341,7 @@ onUnmounted(() => {
     <div v-if="!loading && !upstreams.length" class="empty-state">
       <span class="empty-orb"><svg viewBox="0 0 24 24"><path d="M5 12a7 7 0 0 1 12-5M19 12a7 7 0 0 1-12 5" /><path d="m15 5 2 2-2 2M9 19l-2-2 2-2" /></svg></span>
       <strong>还没有以太链接</strong>
-      <p>添加 Audiobookshelf 或 Emby 后，AetherLink 会为它建立独立反代入口。</p>
+      <p>添加 Audiobookshelf、Emby 或飞牛影视后，AetherLink 会为它建立独立反代入口。</p>
       <button class="primary" @click="openEditor(null)">添加第一条链接</button>
     </div>
 

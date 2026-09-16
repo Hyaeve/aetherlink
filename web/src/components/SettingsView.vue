@@ -27,8 +27,13 @@ const blockedAudiobookshelfUserAgentText = ref('')
 const restoreInput = ref(null)
 const backupBusy = ref(false)
 
+// 飞牛影视与 Emby 同为 Emby 方言，共用同一份 UA 屏蔽名单，所以候选列表也合并。
+const CANDIDATE_TYPES = { emby: ['emby', 'fnos'], audiobookshelf: ['audiobookshelf'] }
+const CANDIDATE_LABELS = { emby: 'Emby / 飞牛影视', audiobookshelf: 'ABS' }
+
 function candidateUpstreams(type) {
-  return upstreams.value.filter((upstream) => upstream.type === type)
+  const types = CANDIDATE_TYPES[type] || [type]
+  return upstreams.value.filter((upstream) => types.includes(upstream.type))
 }
 
 function selectedUpstreams(type) {
@@ -40,7 +45,7 @@ function selectedUpstreams(type) {
 
 function candidateSummary(type) {
   const names = selectedUpstreams(type).map((upstream) => upstream.name)
-  return names.length ? names.join('、') : `选择已添加的 ${type === 'emby' ? 'Emby' : 'ABS'} 服务`
+  return names.length ? names.join('、') : `选择已添加的 ${CANDIDATE_LABELS[type] || type} 服务`
 }
 
 function isCandidateSelected(type, name) {
@@ -385,7 +390,7 @@ onMounted(load)
               <label class="setting-toggle security-toggle">
                 <input type="checkbox" v-model="settings.redirect.blockClientUserAgentEmby" />
                 <span class="toggle-control"></span>
-                <span class="toggle-copy"><strong>Emby 屏蔽 UA</strong><small>仅作用于下面选中的 Emby 服务</small></span>
+                <span class="toggle-copy"><strong>Emby / 飞牛影视 屏蔽 UA</strong><small>仅作用于下面选中的 Emby 系服务</small></span>
               </label>
               <label class="field security-field">
                 <span>匹配片段</span>
@@ -407,7 +412,7 @@ onMounted(load)
                     >
                       <span>{{ upstream.name }}</span><i>{{ isCandidateSelected('emby', upstream.name) ? '已选' : '选择' }}</i>
                     </button>
-                    <small v-if="!candidateUpstreams('emby').length" class="candidate-empty">暂无 Emby 服务</small>
+                    <small v-if="!candidateUpstreams('emby').length" class="candidate-empty">暂无 Emby / 飞牛影视服务</small>
                   </div>
                 </details>
               </div>

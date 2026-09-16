@@ -33,6 +33,11 @@ type embyProvider struct {
 	// 请求 /stream 时优先复用，避免某些 Emby 版本的 /Items 又把 URL 隐去。
 	playbackMu      sync.Mutex
 	playbackSources map[string]cachedEmbyMediaSource
+
+	// normalizeSource 是方言扩展点：PlaybackInfo 里每个媒体源都会先过一遍它，
+	// 用来补齐该方言特有的字段（飞牛影视要给 MediaStreams 补非空值）。
+	// 返回是否改动了这个源对象。nil 表示该方言没有额外要求。
+	normalizeSource func(source map[string]any) bool
 }
 
 type cachedEmbyMediaSource struct {
@@ -109,8 +114,14 @@ func (p *embyProvider) RewriteResponse(originalPath string, response *http.Respo
 	}
 	prefix := strings.TrimRight(matches[1], "/")
 	changed := 0
+	// mutated 记录响应体是否需要回写：方言补齐字段也算改动，但它不该被算进
+	// 「接入 302 的媒体源数量」，否则日志会把没跳转的情况说成跳转了。
+	mutated := false
 	skipped := make([]string, 0)
 	for _, source := range sources {
+		if p.normalizeSource != nil && p.normalizeSource(source) {
+			mutated = true
+		}
 		if !isEmbyStrmPlaybackSource(source) || embyBool(source, "IsInfiniteStream") {
 			continue
 		}
@@ -122,14 +133,17 @@ func (p *embyProvider) RewriteResponse(originalPath string, response *http.Respo
 		}
 		source["DirectStreamUrl"] = embyDirectStreamURL(prefix, itemID, source)
 		changed++
+		mutated = true
 	}
 	if changed == 0 {
 		if len(skipped) > 0 {
-			logx.Infof("[%s] PlaybackInfo 保留 %d 个 STRM 媒体源由 Emby 转码（item=%s）：%s", p.Name(), len(skipped), itemID, strings.Join(uniqueStrings(skipped), "、"))
+			logx.Infof("[%s] PlaybackInfo 保留 %d 个 STRM 媒体源由上游转码（item=%s）：%s", p.Name(), len(skipped), itemID, strings.Join(uniqueStrings(skipped), "、"))
 		} else {
 			logx.Infof("[%s] PlaybackInfo 未发现 STRM 媒体源（item=%s），保持上游播放能力不变", p.Name(), itemID)
 		}
-		return 0, nil
+		if !mutated {
+			return 0, nil
+		}
 	}
 
 	encodedSources, err := json.Marshal(sources)
@@ -149,7 +163,7 @@ func (p *embyProvider) RewriteResponse(originalPath string, response *http.Respo
 	response.Header.Del("ETag")
 	response.Header.Del("Content-MD5")
 	if len(skipped) > 0 {
-		logx.Infof("[%s] PlaybackInfo 已让 %d 个兼容的 STRM 媒体源接入 302，另有 %d 个保留 Emby 转码（item=%s）：%s", p.Name(), changed, len(skipped), itemID, strings.Join(uniqueStrings(skipped), "、"))
+		logx.Infof("[%s] PlaybackInfo 已让 %d 个兼容的 STRM 媒体源接入 302，另有 %d 个保留上游转码（item=%s）：%s", p.Name(), changed, len(skipped), itemID, strings.Join(uniqueStrings(skipped), "、"))
 	} else {
 		logx.Infof("[%s] PlaybackInfo 已让 %d 个兼容的 STRM 媒体源接入 302（item=%s），客户端下一步应请求 /Videos/%s/stream", p.Name(), changed, itemID, itemID)
 	}
@@ -168,7 +182,7 @@ func embyAllowsDirectPlay(source map[string]any) bool {
 func embyDirectPlayBlockReason(source map[string]any) string {
 	reasons := embyTranscodeReasons(source)
 	if len(reasons) == 0 {
-		return "Emby 判定当前客户端不能直接播放原始文件"
+		return "上游判定当前客户端不能直接播放原始文件"
 	}
 	labels := make([]string, 0, len(reasons))
 	for _, reason := range reasons {

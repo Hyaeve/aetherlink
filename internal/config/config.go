@@ -26,7 +26,17 @@ type UpstreamType string
 const (
 	UpstreamAudiobookshelf UpstreamType = "audiobookshelf"
 	UpstreamEmby           UpstreamType = "emby"
+	// UpstreamFnos 是飞牛 NAS 自带的「影视」应用。它本身就是一套 Emby 方言的
+	// 服务端（接口挂在 /emby 前缀下，播放路由与 PlaybackInfo 字段与 Emby 一致），
+	// 所以反代与解析都复用 Emby 的一套逻辑，只在端点前缀与网页播放器上做适配。
+	UpstreamFnos UpstreamType = "fnos"
 )
+
+// IsEmbyFamily 报告该类型是否属于 Emby 方言家族（Emby 本身与飞牛影视）。
+// 播放协商改写、HLS 判断、UA 屏蔽名单、缓存 TTL 都按这个家族统一处理。
+func (t UpstreamType) IsEmbyFamily() bool {
+	return t == UpstreamEmby || t == UpstreamFnos
+}
 
 // RedirectMode decides what AetherLink does once a STRM target is known.
 type RedirectMode string
@@ -163,7 +173,8 @@ func (r Redirect) IsBlockedClientUserAgentForUpstream(provider UpstreamType, ups
 	}
 	blockedLists := [][]string{r.BlockedUserAgents}
 	switch provider {
-	case UpstreamEmby:
+	case UpstreamEmby, UpstreamFnos:
+		// 飞牛影视与 Emby 同为 Emby 方言，共用一份 UA 名单。
 		blockedLists = append(blockedLists, r.BlockedUserAgentsEmby)
 	case UpstreamAudiobookshelf:
 		blockedLists = append(blockedLists, r.BlockedUserAgentsAudiobookshelf)
@@ -181,7 +192,8 @@ func (r Redirect) IsBlockedClientUserAgentForUpstream(provider UpstreamType, ups
 
 func (r Redirect) providerBlockSettings(provider UpstreamType) (enabled, scoped bool) {
 	switch provider {
-	case UpstreamEmby:
+	case UpstreamEmby, UpstreamFnos:
+		// 飞牛影视与 Emby 同为 Emby 方言，开关、关键词与上游勾选都共用一份。
 		if r.BlockClientUserAgentEmby != nil {
 			return *r.BlockClientUserAgentEmby, true
 		}
@@ -194,7 +206,7 @@ func (r Redirect) providerBlockSettings(provider UpstreamType) (enabled, scoped 
 }
 
 func providerBlockUpstreams(r Redirect, provider UpstreamType) []string {
-	if provider == UpstreamEmby {
+	if provider.IsEmbyFamily() {
 		return r.BlockedUserAgentsEmbyUpstreams
 	}
 	if provider == UpstreamAudiobookshelf {
@@ -421,7 +433,7 @@ func (c *Config) migrate() bool {
 	if c.ShouldUseLegacyUserAgentScope() {
 		for _, upstream := range c.Upstreams {
 			switch upstream.Type {
-			case UpstreamEmby:
+			case UpstreamEmby, UpstreamFnos:
 				c.Redirect.BlockedUserAgentsEmbyUpstreams = appendUniqueString(c.Redirect.BlockedUserAgentsEmbyUpstreams, upstream.Name)
 			case UpstreamAudiobookshelf:
 				c.Redirect.BlockedUserAgentsAudiobookshelfUpstreams = appendUniqueString(c.Redirect.BlockedUserAgentsAudiobookshelfUpstreams, upstream.Name)
@@ -699,9 +711,9 @@ func (u *Upstream) normalize() error {
 	}
 
 	switch u.Type {
-	case UpstreamAudiobookshelf, UpstreamEmby:
+	case UpstreamAudiobookshelf, UpstreamEmby, UpstreamFnos:
 	case "":
-		return fmt.Errorf("上游 %s 缺少类型，必须是 audiobookshelf 或 emby", u.Name)
+		return fmt.Errorf("上游 %s 缺少类型，必须是 audiobookshelf、emby 或 fnos", u.Name)
 	default:
 		return fmt.Errorf("上游 %s 的类型 %q 不受支持", u.Name, u.Type)
 	}

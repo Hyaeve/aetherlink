@@ -2748,9 +2748,12 @@ label.inline input[type='checkbox'] {
 
 /* ---------- 响应式 ---------- */
 
-@media (max-width: 1120px) {
+/* 顶栏有 6 个指标块时，标题列在 1150px 以下会被压到只剩一行字的宽度，
+   描述文案跟着折成四行，把页头从 188px 撑到 304px（实测）。
+   所以比其它响应式规则提前一档，让指标块先回到标题下方，页头高度稳定在 240px。 */
+@media (max-width: 1150px) {
   .page-head-banner {
-    /* 窗口放不下「标题 + 5 个指标块」时，指标块回到标题下方，保持一行不再被压缩。 */
+    /* 窗口放不下「标题 + 指标块」时，指标块回到标题下方，保持一行不再被压缩。 */
     grid-template-columns: minmax(0, 1fr);
     row-gap: 18px;
     min-height: 164px;
@@ -2761,7 +2764,9 @@ label.inline input[type='checkbox'] {
     justify-content: flex-start;
     flex-wrap: wrap;
   }
+}
 
+@media (max-width: 1120px) {
   .settings-layout {
     grid-template-columns: minmax(0, 1fr);
   }

@@ -55,11 +55,30 @@ const editor = ref(null)
 // 密钥默认明文显示，点小眼睛切到遮蔽（斜线眼睛表示「点一下会隐藏」）。
 const keyVisible = ref(true)
 
-const isEmby = computed(() => form.value.type === 'emby')
 const serviceOptions = [
   { value: 'audiobookshelf', label: 'Audiobookshelf' },
-  { value: 'emby', label: 'Emby' }
+  { value: 'emby', label: 'Emby' },
+  { value: 'fnos', label: '飞牛影视' }
 ]
+// 每种服务端的地址示例、密钥提示与路径示例。
+const serviceHints = {
+  audiobookshelf: {
+    address: 'http://10.0.0.31:13378',
+    key: '粘贴 Audiobookshelf API Token',
+    mapping: '上游看到的路径，如 /audiobooks'
+  },
+  emby: {
+    address: 'http://10.0.0.31:8096',
+    key: '粘贴 Emby API 密钥',
+    mapping: '上游看到的路径，如 /media'
+  },
+  fnos: {
+    address: 'http://10.0.0.31:8005',
+    key: '粘贴飞牛影视 API 密钥',
+    mapping: '上游看到的路径，如 /media'
+  }
+}
+const serviceHint = computed(() => serviceHints[form.value.type] || serviceHints.emby)
 const redirectOptions = [
   { value: 'always', label: '始终跳转' },
   { value: 'public', label: '公网跳转' },
@@ -69,7 +88,7 @@ const redirectOptions = [
 
 const keyPlaceholder = computed(() => {
   if (form.value.keepApiKey) return '留空保留原密钥'
-  return isEmby.value ? '粘贴 Emby API 密钥' : '粘贴 Audiobookshelf API Token'
+  return serviceHint.value.key
 })
 
 function addMapping() {
@@ -222,7 +241,7 @@ async function save() {
             </div>
             <label class="field">
               <span>原服务地址</span>
-              <input v-model="form.baseUrl" :placeholder="isEmby ? 'http://10.0.0.31:8096' : 'http://10.0.0.31:13378'" />
+              <input v-model="form.baseUrl" :placeholder="serviceHint.address" />
             </label>
             <label class="field">
               <span>反代端口</span>
@@ -296,7 +315,7 @@ async function save() {
         <div class="field-group">
           <div class="title">路径映射</div>
           <div class="row" v-for="(mapping, index) in form.pathMappings" :key="index" style="margin-bottom:8px">
-            <input v-model="mapping.from" :placeholder="isEmby ? '上游看到的路径，如 /media' : '上游看到的路径，如 /audiobooks'" style="flex:1;min-width:190px" />
+            <input v-model="mapping.from" :placeholder="serviceHint.mapping" style="flex:1;min-width:190px" />
             <span class="muted">→</span>
             <input v-model="mapping.to" placeholder="容器内路径，如 /NetDisk/115-Strm/Set/Read" style="flex:1;min-width:190px" />
             <button class="ghost danger" @click="removeMapping(index)">删除</button>

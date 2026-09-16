@@ -11,7 +11,7 @@ const tabs = [
   {
     id: 'upstreams',
     label: '以太链接',
-    description: '管理 Audiobookshelf 与 Emby 的反代入口和 302 播放链路。',
+    description: '管理 Audiobookshelf、Emby 与飞牛影视的反代入口和 302 播放链路。',
     paths: [
       'M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.2',
       'M14 11a5 5 0 0 0-7.1 0l-2 2A5 5 0 0 0 12 20.1l1.1-1.2',
@@ -188,6 +188,13 @@ const headerStats = computed(() => {
         value: stats.emby,
         tone: 'blue',
         paths: ['M7 5h10a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V8a3 3 0 0 1 3-3z', 'M8 9h8M8 13h5']
+      },
+      {
+        key: 'fnos',
+        label: '飞牛影视',
+        value: stats.fnos,
+        tone: 'indigo',
+        paths: ['M3.5 6h17v12h-17z', 'M8 6v12M16 6v12', 'M3.5 12h4.5M16 12h4.5']
       },
       { key: 'abs', label: 'ABS', value: stats.abs, tone: 'amber', paths: ['M6 5h12v14H6z', 'M9 8h6M9 12h6M9 16h4'] },
       { key: 'running', label: '正在运行', value: stats.running, tone: 'green', paths: ['m5 12 4 4L19 6'] },

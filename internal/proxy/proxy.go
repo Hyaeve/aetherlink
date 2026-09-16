@@ -102,6 +102,7 @@ func (s *Server) Provider() upstream.Provider { return s.provider }
 func newReverseProxy(provider upstream.Provider, mediaResolver *resolver.Resolver) *httputil.ReverseProxy {
 	target := provider.BaseURL()
 	rewriter, canRewrite := provider.(upstream.ResponseRewriter)
+	pathRewriter, canRewritePath := provider.(upstream.RequestPathRewriter)
 
 	return &httputil.ReverseProxy{
 		Transport: provider.Transport(),
@@ -114,10 +115,20 @@ func newReverseProxy(provider upstream.Provider, mediaResolver *resolver.Resolve
 				ctx := context.WithValue(request.Out.Context(), responseRewriteContextKey{}, request.In.URL.Path)
 				request.Out = request.Out.WithContext(ctx)
 			}
+			requestPath := request.In.URL.Path
+			if canRewritePath {
+				// 方言可以要求换一条上游路径（飞牛的 API 都在 /emby 下）。
+				// 上下文里记的始终是客户端原本那条路径，响应改写按它分流。
+				requestPath = pathRewriter.RewriteRequestPath(request.In)
+			}
 			request.Out.URL.Scheme = target.Scheme
 			request.Out.URL.Host = target.Host
 			request.Out.Host = target.Host
-			request.Out.URL.Path = joinPath(target.Path, request.In.URL.Path)
+			request.Out.URL.Path = joinPath(target.Path, requestPath)
+			if requestPath != request.In.URL.Path {
+				// 路径被改过之后，转义形式必须重新推导，不能沿用客户端的 RawPath。
+				request.Out.URL.RawPath = ""
+			}
 			request.SetXForwarded()
 		},
 		ErrorHandler: func(writer http.ResponseWriter, request *http.Request, err error) {
@@ -161,7 +172,9 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		// 记一行。排查「明明在播放却完全不 302」时，这一行是唯一能回答
 		// 「播放请求到底长什么样、为什么没被识别成媒体」的证据。
 		if rewriter, ok := s.provider.(upstream.ResponseRewriter); ok && rewriter.WantsResponseRewrite(request) {
-			logx.Infof("[%s] 拦截播放协商 %s %s（将检查并改写 STRM 媒体源的直放能力）", s.provider.Name(), request.Method, request.URL.RequestURI())
+			// 不止播放协商：飞牛的网页播放器脚本也要改写，所以这句话不能说成
+			// 只拦 PlaybackInfo，否则排查时会对不上日志。
+			logx.Infof("[%s] 拦截待改写响应 %s %s（将检查并改写其中的 STRM 直放能力）", s.provider.Name(), request.Method, request.URL.RequestURI())
 		} else if isEmbyHLSRequest(s.provider, request.URL.Path) {
 			logx.Infof("[%s] 检测到 Emby HLS 转码请求 %s %s（HLS 清单或分片本身不能 302；若前一条 PlaybackInfo 日志提示保留转码，这是客户端兼容性回退）", s.provider.Name(), request.Method, request.URL.RequestURI())
 		} else if looksLikeMedia(request.URL.Path) {
@@ -177,7 +190,8 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 }
 
 func isEmbyHLSRequest(provider upstream.Provider, requestPath string) bool {
-	if provider.Type() != config.UpstreamEmby {
+	// 飞牛影视同样是 Emby 方言，HLS 回退的表现一模一样。
+	if !provider.Type().IsEmbyFamily() {
 		return false
 	}
 	lowered := strings.ToLower(requestPath)
@@ -250,7 +264,7 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 	if err != nil {
 		if errors.Is(err, upstream.ErrDirectPlayUnsupported) {
 			event.Error = err.Error()
-			finish(stats.OutcomePassthrough, "Emby 判定当前客户端不支持原始文件，本次交回上游直流或转码")
+			finish(stats.OutcomePassthrough, "上游判定当前客户端不支持原始文件，本次交回上游直流或转码")
 			s.proxy.ServeHTTP(writer, request)
 			return
 		}

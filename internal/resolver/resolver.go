@@ -180,7 +180,7 @@ func (r *Resolver) ResolveWithSource(ctx context.Context, provider upstream.Prov
 }
 
 func (r *Resolver) cacheTTLFor(provider upstream.Provider, resolution *Resolution, fallback time.Duration) time.Duration {
-	if provider == nil || provider.Type() != config.UpstreamEmby || resolution == nil {
+	if provider == nil || !provider.Type().IsEmbyFamily() || resolution == nil {
 		return fallback
 	}
 	if ttl, ok := directURLTTL(resolution); ok {
@@ -233,7 +233,7 @@ func (r *Resolver) cacheTTL(provider upstream.Provider) time.Duration {
 		switch provider.Type() {
 		case config.UpstreamAudiobookshelf:
 			return audiobookshelfCacheTTL
-		case config.UpstreamEmby:
+		case config.UpstreamEmby, config.UpstreamFnos:
 			return embyFallbackCacheTTL
 		}
 	}

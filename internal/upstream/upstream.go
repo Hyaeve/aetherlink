@@ -165,6 +165,16 @@ type ResponseRewriter interface {
 	RewriteResponse(originalPath string, response *http.Response) (int, error)
 }
 
+// RequestPathRewriter 允许方言在转发前调整请求路径。绝大多数上游不需要它：
+// 播放器换的只是端口，路径原样送达。飞牛影视是例外——它的 API 只挂在 /emby
+// 前缀下，客户端若没带这个前缀，请求会落到单页应用的 HTML 上，PlaybackInfo
+// 拿不到 JSON，于是「反代通了却永远不 302」。
+type RequestPathRewriter interface {
+	// RewriteRequestPath 返回实际发给上游的请求路径（BaseURL 的路径部分
+	// 由代理另外拼接，这里不必也不应包含它）。返回原路径表示不做调整。
+	RewriteRequestPath(request *http.Request) string
+}
+
 // New builds the provider matching the configured upstream type.
 func New(cfg config.Upstream) (Provider, error) {
 	base, err := url.Parse(cfg.BaseURL)
@@ -199,9 +209,25 @@ func New(cfg config.Upstream) (Provider, error) {
 		client.authHeader = "X-Emby-Token"
 		client.authQuery = "api_key"
 		return &embyProvider{providerBase: shared}, nil
+	case config.UpstreamFnos:
+		client.authHeader = "X-Emby-Token"
+		client.authQuery = "api_key"
+		client.apiPrefix = fnosAPIPrefix(base.Path)
+		provider := &fnosProvider{embyProvider: embyProvider{providerBase: shared}}
+		provider.normalizeSource = normalizeFnosMediaStreams
+		return provider, nil
 	default:
 		return nil, fmt.Errorf("upstream %s: unsupported type %q", cfg.Name, cfg.Type)
 	}
+}
+
+// fnosAPIPrefix 决定飞牛影视的 API 调用要在 base 路径后补什么前缀。
+// 地址里已经写了 /emby 的用户直接沿用，避免拼成 /emby/emby。
+func fnosAPIPrefix(basePath string) string {
+	if strings.HasSuffix(strings.ToLower(strings.TrimRight(basePath, "/")), "/emby") {
+		return ""
+	}
+	return "/emby"
 }
 
 func newTransport(insecure bool) *http.Transport {
@@ -252,16 +278,19 @@ type apiClient struct {
 	// Audiobookshelf (bearer token) and Emby (api_key) dialects.
 	authHeader string
 	authQuery  string
+	// apiPrefix 是拼在 base 路径与接口路径之间的固定前缀。飞牛影视的接口全都
+	// 挂在 /emby 下，少了这一段会落到 SPA 的 HTML 上而不是 JSON 接口。
+	apiPrefix string
 }
 
 // ErrNoAPIKey is returned when an upstream has no API key configured, which
 // means AetherLink cannot resolve media paths for it.
 var ErrNoAPIKey = fmt.Errorf("upstream api key is not configured")
 
-// ErrDirectPlayUnsupported 表示 Emby 在刚才的 PlaybackInfo 中已经判定当前
-// 客户端不能直接播放原始文件。这时即使客户端请求了 /stream，也应退回 Emby
-// 自己处理，不能把无法解码的原文件强行 302 出去。
-var ErrDirectPlayUnsupported = errors.New("Emby 判定当前客户端不能直接播放原始文件")
+// ErrDirectPlayUnsupported 表示上游在刚才的 PlaybackInfo 中已经判定当前客户端
+// 不能直接播放原始文件。这时即使客户端请求了 /stream，也应退回上游自己处理，
+// 不能把无法解码的原文件强行 302 出去。
+var ErrDirectPlayUnsupported = errors.New("上游判定当前客户端不能直接播放原始文件")
 
 // getJSON issues an authenticated GET and decodes the JSON body into out.
 func (c *apiClient) getJSON(ctx context.Context, endpoint string, query url.Values, out any) error {
@@ -269,7 +298,7 @@ func (c *apiClient) getJSON(ctx context.Context, endpoint string, query url.Valu
 		return ErrNoAPIKey
 	}
 	target := *c.base
-	target.Path = strings.TrimRight(target.Path, "/") + endpoint
+	target.Path = strings.TrimRight(target.Path, "/") + c.apiPrefix + endpoint
 	if query == nil {
 		query = url.Values{}
 	}
