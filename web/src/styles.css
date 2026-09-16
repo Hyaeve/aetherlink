@@ -1434,10 +1434,12 @@ td.target-cell {
   min-width: 0;
 }
 
-/* 上方卡片按内容自然收紧；左右两列的最后一个窗口落在同一底线。 */
+/* 上方卡片按内容自然收紧；左右两列的最后一个窗口落在同一底线。
+   冗余高度由最后一列卡片在内部消化，不再撑成卡片之间的间隙。 */
 .settings-sidebar > :last-child,
 .settings-main > :last-child {
-  margin-top: auto;
+  flex: 1 1 auto;
+  margin-top: 0;
 }
 
 .settings-card {
@@ -1653,10 +1655,24 @@ td.target-cell {
   margin-bottom: 0;
 }
 
+/* 主列的冗余高度经由卡片、面板、输入框逐层吸收，
+   所以匹配片段输入框会随窗口一起长高，而不是在卡片之间留下空隙。 */
+.ua-policy-panel .security-field {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.security-field > span {
+  flex: 0 0 auto;
+}
+
 .security-field textarea {
-  height: 108px;
-  min-height: 108px;
-  max-height: 108px;
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 148px;
+  max-height: none;
   margin-top: 7px;
   border-radius: var(--radius);
   background: var(--surface-2);
@@ -1686,6 +1702,35 @@ td.target-cell {
   opacity: 0.58;
 }
 
+/* 可信前置代理：固定高度、禁止拖拽拉伸，内容超出时用滚轮滚动查看。 */
+.trusted-proxy-field textarea {
+  height: 62px;
+  min-height: 62px;
+  max-height: 62px;
+  resize: none;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(143, 137, 184, 0.18) transparent;
+}
+
+/* 滚动条做得尽量细、颜色浅，不抢正文的注意力。 */
+.trusted-proxy-field textarea::-webkit-scrollbar {
+  width: 3px;
+}
+
+.trusted-proxy-field textarea::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(143, 137, 184, 0.18);
+}
+
+.trusted-proxy-field textarea::-webkit-scrollbar-thumb:hover {
+  background: rgba(143, 137, 184, 0.32);
+}
+
+.trusted-proxy-field textarea::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 .security-head {
   align-items: center;
 }
@@ -1710,9 +1755,13 @@ td.target-cell {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .ua-policy-panel {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   padding: 14px;
   border: 1px solid var(--border);
@@ -1721,6 +1770,8 @@ td.target-cell {
 }
 
 .security-card {
+  display: flex;
+  flex-direction: column;
   padding-bottom: 16px;
 }
 
