@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -160,6 +161,81 @@ func contextUserAgent(ctx context.Context) string {
 	return userAgent
 }
 
+type clientCredentialsContextKey struct{}
+
+// clientIdentity 是播放器请求里带上的 Emby 身份：令牌，以及它所属的用户 ID。
+// 两者通常都有（Emby 客户端标准形态），也可能只有其一，所以分开存。
+type clientIdentity struct {
+	Token  string
+	UserID string
+}
+
+// WithClientCredentials 把「发起这次请求的播放器自己带的 Emby 身份」放进上下文。
+//
+// 播放器本来就已经向上游登录过了，它手上的令牌与 UserId 必定是该上游认可的。
+// AetherLink 回头查条目时优先复用它，于是不必另配账号密码，也省掉一次登录往返，
+// 还省掉一次 /Users —— 参考项目 LitePan 取条目时正是把原请求的
+// X-Emby-Authorization / api_key 复制过去的。
+//
+// 上游不认这枚令牌（被吊销、换了密码）时并不会卡死：配置里的静态密钥与账号密码
+// 仍然照旧生效，见 apiClient.credentials。
+func WithClientCredentials(ctx context.Context, request *http.Request) context.Context {
+	if request == nil {
+		return ctx
+	}
+	identity := clientIdentity{
+		Token:  embyTokenFromRequest(request),
+		UserID: clientUserIDFromRequest(request),
+	}
+	if identity.Token == "" && identity.UserID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, clientCredentialsContextKey{}, identity)
+}
+
+// contextClientIdentity 返回本次请求带上来的播放器身份，没有则为零值。
+func contextClientIdentity(ctx context.Context) clientIdentity {
+	identity, _ := ctx.Value(clientCredentialsContextKey{}).(clientIdentity)
+	identity.Token = strings.TrimSpace(identity.Token)
+	identity.UserID = strings.TrimSpace(identity.UserID)
+	return identity
+}
+
+// contextClientToken 返回本次请求带上来的播放器令牌，没有则返回空串。
+func contextClientToken(ctx context.Context) string {
+	return contextClientIdentity(ctx).Token
+}
+
+// embyAuthTokenRe 从 X-Emby-Authorization 里摘出 Token="…"。
+// 该请求头是 MediaBrowser 的结构化身份声明，Token 未必排在最后一位。
+var embyAuthTokenRe = regexp.MustCompile(`(?i)\bToken\s*=\s*"([^"]*)"`)
+
+// embyTokenFromRequest 按播放器的几种习惯取令牌：Emby 客户端标准的
+// X-Emby-Authorization、简写的 X-Emby-Token，以及部分播放器只带的 ?api_key=。
+// 这三种都是 Emby 系独有的，其它上游的请求不会误命中。
+func embyTokenFromRequest(request *http.Request) string {
+	if value := strings.TrimSpace(request.Header.Get("X-Emby-Authorization")); value != "" {
+		if matches := embyAuthTokenRe.FindStringSubmatch(value); matches != nil {
+			if token := strings.TrimSpace(matches[1]); token != "" {
+				return token
+			}
+		}
+	}
+	if token := strings.TrimSpace(request.Header.Get("X-Emby-Token")); token != "" {
+		return token
+	}
+	return strings.TrimSpace(request.URL.Query().Get("api_key"))
+}
+
+// clientUserIDFromRequest 取播放器请求里的 UserId。Emby 客户端多放在查询串里，
+// 也有实现放在 X-Emby-UserId 头里。
+func clientUserIDFromRequest(request *http.Request) string {
+	if userID := strings.TrimSpace(request.URL.Query().Get("UserId")); userID != "" {
+		return userID
+	}
+	return strings.TrimSpace(request.Header.Get("X-Emby-UserId"))
+}
+
 // ResponseRewriter 允许上游方言改写指定的反代响应。Emby 用它处理
 // PlaybackInfo：STRM 必须被标成可直放，否则客户端会选择 HLS 转码，之后再也
 // 不会请求能够跳转到指针目标的媒体路由。
@@ -213,6 +289,7 @@ func New(cfg config.Upstream) (Provider, error) {
 	case config.UpstreamEmby:
 		client.authHeader = "X-Emby-Token"
 		client.authQuery = "api_key"
+		client.embyDialect = true
 		return &embyProvider{providerBase: shared}, nil
 	case config.UpstreamFnos:
 		// 飞牛影视没有 Emby 控制台里那种静态 API 密钥：它的接口只认客户端
@@ -221,6 +298,7 @@ func New(cfg config.Upstream) (Provider, error) {
 		// 只是拿不到媒体库列表。
 		client.apiKeyOptional = true
 		client.embyClientAuth = true
+		client.embyDialect = true
 		client.authHeader = "X-Emby-Token"
 		client.authQuery = "api_key"
 		client.apiPrefix = fnosAPIPrefix(base.Path)
@@ -305,6 +383,9 @@ type apiClient struct {
 	// apiKeyOptional 表示这个上游不配置密钥也能直接调 API。飞牛影视没有静态
 	// 密钥，必须放行空的 apiKey，否则它会退化成纯反代，永远解析不到媒体源。
 	apiKeyOptional bool
+	// embyDialect 表示这个上游说 Emby 方言。只有 Emby 系才认识 X-Emby-Authorization
+	// 这类请求头，因此也只有它们可以复用播放器请求里带上来的令牌。
+	embyDialect bool
 	// embyClientAuth 表示 API 调用要带上完整的 X-Emby-Authorization 客户端
 	// 身份头（MediaBrowser Client="…", Device="…", Token="…"）。飞牛影视只认
 	// 这个形态：只发 X-Emby-Token 时它直接 400「X-Emby-Authorization is
@@ -321,6 +402,9 @@ type apiClient struct {
 	// loginToken 是登录换来的访问令牌，loginAt 记录它的取得时间。
 	loginToken string
 	loginAt    time.Time
+	// loginUserID 是登录响应里带回的当前用户 ID。调用 /Items/{id}/PlaybackInfo
+	// 这类需要 UserId 的接口时优先用它，比管理员 ID 更贴合登录账号的权限。
+	loginUserID string
 }
 
 // apiLoginTokenTTL 是登录令牌的复用时长。飞牛的令牌没有公开的有效期，
@@ -355,31 +439,30 @@ func (c *apiClient) getJSON(ctx context.Context, endpoint string, query url.Valu
 	if err != nil {
 		return err
 	}
-	// 登录换来的令牌会被上游吊销（改了密码、在别处登出、服务端重启）。撞上
-	// 401/403 就丢掉缓存重登一次再试，仍失败才认账 —— 直接把第一次的失败报
-	// 出去会让一次令牌过期表现为「上游坏了」。
-	if c.usesLogin() && (response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden) {
-		io.Copy(io.Discard, io.LimitReader(response.Body, 512))
-		response.Body.Close()
-		refreshed, loginErr := c.login(ctx, true)
-		if loginErr != nil {
-			return loginErr
-		}
-		if response, err = c.sendJSONGet(ctx, endpoint, query, refreshed); err != nil {
-			return err
+	// 令牌会被上游吊销（改了密码、在别处登出、服务端重启）。撞上 401/403 就换
+	// 一枚再试一次，仍失败才认账 —— 直接把第一次的失败报出去，会让一次令牌过期
+	// 表现为「上游坏了」。换哪一枚见 authRetryToken。
+	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		if retryToken, ok := c.authRetryToken(ctx); ok {
+			io.Copy(io.Discard, io.LimitReader(response.Body, 512))
+			response.Body.Close()
+			if response, err = c.sendJSONGet(ctx, endpoint, query, retryToken); err != nil {
+				return err
+			}
 		}
 	}
 	defer response.Body.Close()
 
+	requestURL := c.requestURL(endpoint)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		snippet, _ := io.ReadAll(io.LimitReader(response.Body, 512))
-		return fmt.Errorf("GET %s returned %d: %s", endpoint, response.StatusCode, strings.TrimSpace(string(snippet)))
+		return fmt.Errorf("GET %s returned %d: %s", requestURL, response.StatusCode, strings.TrimSpace(string(snippet)))
 	}
 	if out == nil {
 		io.Copy(io.Discard, io.LimitReader(response.Body, 1<<16))
 		return nil
 	}
-	return decodeJSONResponse(http.MethodGet, endpoint, response, out)
+	return decodeJSONResponse(http.MethodGet, requestURL, token, response, out)
 }
 
 // apiResponseLimit 是 API 响应体的读取上限。这些接口都返回小 JSON；读到这么多
@@ -392,30 +475,47 @@ const apiResponseLimit = 16 << 20
 // <!doctype html>），此时 encoding/json 只吐一句
 // 「invalid character '<' looking for beginning of value」——既看不出是哪一条
 // 请求，也看不出上游其实返回了网页，日志里就是这么一句，排查只能靠猜。
-// 把方法、端点、Content-Type 与响应开头一并写进去，这类问题一眼可定位。
-func decodeJSONResponse(method, endpoint string, response *http.Response, out any) error {
+// 把真实请求地址、鉴权状态、Content-Type 与响应开头一并写进去，这类问题一眼可定位。
+//
+// requestURL 必须是实际打出去的完整地址（见 apiClient.requestURL），不能只给
+// endpoint：endpoint 不含 apiPrefix，写进日志反而会把人引向「前缀没补」这个
+// 错误结论。
+func decodeJSONResponse(method, requestURL, token string, response *http.Response, out any) error {
 	body, err := io.ReadAll(io.LimitReader(response.Body, apiResponseLimit))
 	if err != nil {
-		return fmt.Errorf("读取 %s %s 的响应失败: %w", method, endpoint, err)
+		return fmt.Errorf("读取 %s %s 的响应失败: %w", method, requestURL, err)
 	}
 	// 沿用 Decoder 的宽容度：个别实现会在 JSON 之后补字节，Unmarshal 会因此失败。
 	decoder := json.NewDecoder(bytes.NewReader(bytes.TrimSpace(body)))
 	if err := decoder.Decode(out); err != nil {
-		return jsonDecodeError(method, endpoint, response.Header.Get("Content-Type"), body, err)
+		return jsonDecodeError(method, requestURL, response.Header.Get("Content-Type"), token, body, err)
 	}
 	return nil
 }
 
+// authStateNote 说明这次调用带了什么鉴权，只用于错误消息。
+//
+// 飞牛对「不认识的路径」和「没带令牌」会给出不同的回应，成因也完全不同：不带
+// 令牌是配置问题（该去补账号密码），带了还失败才说明路径或版本有问题。不区分
+// 开，用户拿着报错也不知道下一步该做什么。
+func authStateNote(token string) string {
+	if strings.TrimSpace(token) == "" {
+		return "未携带访问令牌"
+	}
+	return "已携带访问令牌"
+}
+
 // jsonDecodeError 把「解析失败」翻译成能直接定位问题的一句话。
-func jsonDecodeError(method, endpoint, contentType string, body []byte, err error) error {
+func jsonDecodeError(method, requestURL, contentType, token string, body []byte, err error) error {
 	snippet := responseSnippet(body)
+	note := authStateNote(token)
 	if looksLikeHTML(body) {
-		return fmt.Errorf("%s %s 返回的是网页而不是 JSON（Content-Type=%q，开头：%s）：上游不认识这条路径，或这条路径缺少 /emby 前缀", method, endpoint, contentType, snippet)
+		return fmt.Errorf("%s %s 返回的是网页而不是 JSON（%s，Content-Type=%q，开头：%s）：上游不认识这条路径，或缺了 /emby 前缀（错误里的地址是实际请求地址，可直接核对）", method, requestURL, note, contentType, snippet)
 	}
 	if snippet == "" {
-		return fmt.Errorf("%s %s 返回了空响应，无法解析为 JSON: %w", method, endpoint, err)
+		return fmt.Errorf("%s %s 返回了空响应，无法解析为 JSON（%s）: %w", method, requestURL, note, err)
 	}
-	return fmt.Errorf("解析 %s %s 的 JSON 响应失败（Content-Type=%q，开头：%s）: %w", method, endpoint, contentType, snippet, err)
+	return fmt.Errorf("解析 %s %s 的 JSON 响应失败（%s，Content-Type=%q，开头：%s）: %w", method, requestURL, note, contentType, snippet, err)
 }
 
 // looksLikeHTML 判断响应体是不是一整页网页。只认开头，避免把正文里偶然出现的
@@ -442,18 +542,38 @@ func responseSnippet(body []byte) string {
 	return text
 }
 
-// sendJSONGet 发一次 GET。鉴权材料由调用方算好：可能是配置里的静态密钥，
-// 可能是账号密码换来的登录令牌，也可能是空（上游不需要鉴权）。
-func (c *apiClient) sendJSONGet(ctx context.Context, endpoint string, query url.Values, token string) (*http.Response, error) {
+// target 拼出这次调用真正要打的地址。endpoint 以 / 开头，apiPrefix 与 base 的
+// 路径段都排在它前面 —— 飞牛少了 /emby 这一段就会落到 SPA 的 HTML 上。
+func (c *apiClient) target(endpoint string, query url.Values) *url.URL {
 	target := *c.base
 	target.Path = strings.TrimRight(target.Path, "/") + c.apiPrefix + endpoint
+	if query == nil {
+		query = url.Values{}
+	}
+	target.RawQuery = query.Encode()
+	return &target
+}
+
+// requestURL 返回 endpoint 对应的完整上游地址，不带查询串。
+//
+// 错误消息与日志都该用它，而不是 endpoint 参数：endpoint 不含 apiPrefix，写出来
+// 是「/Items/eb35…」，而实际请求的是「/emby/Items/eb35…」。少一段前缀的地址
+// 看上去就像「前缀没补上」，照着它排查会直奔错误结论。查询串一律不打印 ——
+// Emby 系的令牌就以 ?api_key= 的形式挂在里面。
+func (c *apiClient) requestURL(endpoint string) string {
+	return c.target(endpoint, nil).String()
+}
+
+// sendJSONGet 发一次 GET。鉴权材料由调用方算好：可能是配置里的静态密钥，
+// 可能是账号密码换来的登录令牌，也可能是播放器请求带上来的令牌。
+func (c *apiClient) sendJSONGet(ctx context.Context, endpoint string, query url.Values, token string) (*http.Response, error) {
 	if query == nil {
 		query = url.Values{}
 	}
 	if c.authQuery != "" && token != "" {
 		query.Set(c.authQuery, token)
 	}
-	target.RawQuery = query.Encode()
+	target := c.target(endpoint, query)
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
@@ -475,17 +595,53 @@ func (c *apiClient) sendJSONGet(ctx context.Context, endpoint string, query url.
 }
 
 // credentials 返回本次 API 调用应当携带的令牌。空串表示这个上游不需要鉴权。
+//
+// 只在「这个上游什么都没配」时才借用播放器请求带上来的令牌：那枚令牌必定是上游
+// 刚刚认可的身份，于是飞牛不填账号密码也能解析媒体。配了就还是用配置里的 ——
+// 配置的是管理员身份，权限比播放器更完整（例如 Emby 的 /Users 只有管理员读得到）。
 func (c *apiClient) credentials(ctx context.Context) (string, error) {
 	if c.apiKey != "" {
 		return c.apiKey, nil
 	}
 	if c.usesLogin() {
-		return c.login(ctx, false)
+		token, err := c.login(ctx, false)
+		if err != nil {
+			// 配置的账号密码可能已经不对了（改过密码、账号被停用）。播放器自己
+			// 带的令牌仍然可用，播放解析不该因为一份过期的配置而失败。
+			if clientToken := contextClientToken(ctx); clientToken != "" {
+				logx.Debugf("[upstream] 账号密码登录失败，改用播放器带上来的令牌: %v", err)
+				return clientToken, nil
+			}
+			return "", err
+		}
+		return token, nil
+	}
+	if c.embyDialect {
+		if token := contextClientToken(ctx); token != "" {
+			return token, nil
+		}
 	}
 	if c.apiKeyOptional {
 		return "", nil
 	}
 	return "", ErrNoAPIKey
+}
+
+// authRetryToken 在收到 401/403 之后给出一枚新令牌，ok 为假表示没有别的令牌可换、
+// 不必再打一次。只有「账号密码换来的令牌」能续期：丢掉缓存强制重登即可。
+//
+// 播放器带上来的令牌不归 AetherLink 管、也无从续期；而且它只在上游没配凭据时
+// 才会被借用，那种情况下也拿不出配置凭据来顶替，所以这里不必为它留分支。
+func (c *apiClient) authRetryToken(ctx context.Context) (string, bool) {
+	if !c.usesLogin() {
+		return "", false
+	}
+	token, err := c.login(ctx, true)
+	if err != nil {
+		logx.Debugf("[upstream] 令牌被上游拒绝，重新登录也失败: %v", err)
+		return "", false
+	}
+	return token, true
 }
 
 // usesLogin 报告这个上游是不是靠「账号密码换令牌」鉴权，而不是配置里的静态密钥。
@@ -510,9 +666,7 @@ func (c *apiClient) login(ctx context.Context, force bool) (string, error) {
 		return c.loginToken, nil
 	}
 
-	target := *c.base
-	target.Path = strings.TrimRight(target.Path, "/") + c.apiPrefix + "/Users/AuthenticateByName"
-	target.RawQuery = ""
+	target := c.target("/Users/AuthenticateByName", nil)
 	body, err := json.Marshal(map[string]string{"Username": c.username, "Pw": c.password})
 	if err != nil {
 		return "", err
@@ -535,19 +689,29 @@ func (c *apiClient) login(ctx context.Context, force bool) (string, error) {
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		snippet, _ := io.ReadAll(io.LimitReader(response.Body, 512))
 		c.loginToken = ""
+		c.loginUserID = ""
 		return "", fmt.Errorf("登录上游失败（HTTP %d）: %s", response.StatusCode, strings.TrimSpace(string(snippet)))
 	}
 	var payload embyLoginResponse
-	if err := decodeJSONResponse(http.MethodPost, "/Users/AuthenticateByName", response, &payload); err != nil {
+	// 登录本身还没拿到令牌，鉴权状态固定报「未携带」。
+	if err := decodeJSONResponse(http.MethodPost, c.requestURL("/Users/AuthenticateByName"), "", response, &payload); err != nil {
 		return "", fmt.Errorf("解析登录响应: %w", err)
 	}
 	if strings.TrimSpace(payload.AccessToken) == "" {
 		return "", errors.New("上游登录成功但没有返回访问令牌，请确认账号密码是否正确")
 	}
 	c.loginToken = payload.AccessToken
+	c.loginUserID = strings.TrimSpace(payload.User.ID)
 	c.loginAt = time.Now()
 	logx.Infof("[upstream] 已用账号 %s 登录 %s，取得访问令牌", c.username, c.base.Host)
 	return c.loginToken, nil
+}
+
+// loggedInUserID 返回登录时上游告知的用户 ID，没登录过则返回空串。
+func (c *apiClient) loggedInUserID() string {
+	c.loginMu.Lock()
+	defer c.loginMu.Unlock()
+	return c.loginUserID
 }
 
 // embyAuthorizationHeader 是 Emby 系登录接口要求的客户端身份声明。

@@ -648,9 +648,13 @@ func TestFnosLibrariesFallsBackToSelectableFolders(t *testing.T) {
 const fnosSPAHTML = `<!doctype html><html lang="zh-CN"><head><title>飞牛影视</title></head>` +
 	`<body><div id="app"></div></body></html>`
 
+// fnosStrmSourceJSON 是一条展开后的媒体源：Path 已经是 .strm 里的直链。
+const fnosStrmSourceJSON = `{"Id":"src-1","Path":"https://cdn.example.test/movie.mkv",` +
+	`"Protocol":"Http","Container":"strm"}`
+
 // fnosStrmItemJSON 是一条真正的条目详情：Path 是 .strm 指针，媒体源上是展开后的直链。
 const fnosStrmItemJSON = `{"Id":"42","Name":"电影","Path":"/media/movie.strm",` +
-	`"MediaSources":[{"Id":"src-1","Path":"https://cdn.example.test/movie.mkv","Protocol":"Http","Container":"strm"}]}`
+	`"MediaSources":[` + fnosStrmSourceJSON + `]}`
 
 // fakeFnosItemServer 搭一个「只实现单项路由」的假飞牛：byIDs 给集合路由
 // /Items?Ids= 的响应，byID 给单项路由 /Items/{id} 的响应。返回被请求过的路径，
@@ -677,9 +681,84 @@ func fakeFnosItemServer(t *testing.T, byID, byIDs string) (*httptest.Server, *[]
 	return server, paths
 }
 
+// fakeFnosPlaybackServer 复刻用户在飞牛上实测到的真实情况：两种条目路由都回单页
+// 应用的 HTML，只有播放协商 /Items/{id}/PlaybackInfo 是真的 JSON 接口 —— 客户端
+// 的播放流程一直在用它，所以它必定可用。
+func fakeFnosPlaybackServer(t *testing.T, playback string) (*httptest.Server, *[]string) {
+	t.Helper()
+	paths := &[]string{}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		*paths = append(*paths, request.URL.Path)
+		if strings.HasSuffix(request.URL.Path, "/PlaybackInfo") {
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(playback))
+			return
+		}
+		// 条目路由与 /Users 一概落到单页应用上。
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = writer.Write([]byte(fnosSPAHTML))
+	}))
+	t.Cleanup(server.Close)
+	return server, paths
+}
+
+// 飞牛实测：/emby/Items 与 /emby/Items/{id} 都回单页应用的 HTML，只有播放协商
+// 那条是真的。这时唯一的出路是把 PlaybackInfo 的媒体源当条目用 —— 否则解析永远
+// 断在 HTML 上，播放只能退化成透传。
+func TestFnosResolvesMediaViaPlaybackInfoWhenItemRoutesReturnHTML(t *testing.T) {
+	server, paths := fakeFnosPlaybackServer(t, `{"MediaSources":[`+fnosStrmSourceJSON+`]}`)
+	provider := newKeylessFnosProvider(t, server.URL)
+
+	target, err := provider.MediaTarget(context.Background(), MediaRef{Kind: RefStream, ItemID: "42"})
+	if err != nil {
+		t.Fatalf("MediaTarget returned error: %v", err)
+	}
+	if target.URL != "https://cdn.example.test/movie.mkv" {
+		t.Fatalf("target.URL = %q，want 直链", target.URL)
+	}
+	if !containsPath(*paths, "/emby/Items/42/PlaybackInfo") {
+		t.Fatalf("请求路径 = %v，want 含 /emby/Items/42/PlaybackInfo", *paths)
+	}
+	// 它排在最前：既然给出了媒体源，就不该再去问注定回 HTML 的条目路由。
+	for _, requestPath := range *paths {
+		if requestPath == "/emby/Items" || requestPath == "/emby/Items/42" {
+			t.Fatalf("PlaybackInfo 已经给出媒体源，不该再问条目路由，实际请求 = %v", *paths)
+		}
+	}
+}
+
+// 播放器的令牌要能一路送到 API 调用上：飞牛不填账号密码也能解析媒体。
+func TestFnosBorrowsPlayerTokenWhenNothingIsConfigured(t *testing.T) {
+	var gotToken, gotQuery, gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		gotToken = request.Header.Get("X-Emby-Token")
+		gotQuery = request.URL.Query().Get("api_key")
+		gotAuth = request.Header.Get("X-Emby-Authorization")
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	provider := newKeylessFnosProvider(t, server.URL)
+	ctx := WithClientCredentials(context.Background(), playerRequest(t))
+
+	var out map[string]any
+	if err := provider.client.getJSON(ctx, "/Items", nil, &out); err != nil {
+		t.Fatalf("getJSON returned error: %v", err)
+	}
+	if gotToken != "player-token" || gotQuery != "player-token" {
+		t.Fatalf("X-Emby-Token=%q api_key=%q，want 都是 player-token", gotToken, gotQuery)
+	}
+	if !strings.Contains(gotAuth, `Token="player-token"`) {
+		t.Fatalf("X-Emby-Authorization = %q，want 含播放器令牌", gotAuth)
+	}
+}
+
 // 客户端播放时 AetherLink 会自己回头查一次条目。飞牛没有实现集合路由
-// /Items?Ids=（回的是单页应用的 HTML），所以必须直接走单项路由 /Items/{id}：
-// 少了这一步，解析在 HTML 上就断了，用户看到的是「能进库、能浏览，一播放就失败」。
+// /Items?Ids=（回的是单页应用的 HTML），所以要换别的路由取：PlaybackInfo 优先
+// （见 TestFnosResolvesMediaViaPlaybackInfoWhenItemRoutesReturnHTML），它没给出
+// 媒体源时再退回单项路由。少了这一步，解析在 HTML 上就断了，用户看到的是
+// 「能进库、能浏览，一播放就失败」。
 func TestFnosResolvesMediaViaItemByIDRoute(t *testing.T) {
 	server, paths := fakeFnosItemServer(t, fnosStrmItemJSON, fnosSPAHTML)
 	provider := newKeylessFnosProvider(t, server.URL)
@@ -745,8 +824,8 @@ func TestEmbyPrefersItemsByIDsRoute(t *testing.T) {
 	if !containsPath(*paths, "/emby/Items") {
 		t.Fatalf("请求路径 = %v，want 走 /emby/Items", *paths)
 	}
-	if containsPath(*paths, "/emby/Items/42") {
-		t.Fatalf("集合路由已经够用，不该再打单项路由，实际请求 = %v", *paths)
+	if containsPath(*paths, "/emby/Items/42") || containsPath(*paths, "/emby/Items/42/PlaybackInfo") {
+		t.Fatalf("集合路由已经够用，不该再打单项路由或播放协商，实际请求 = %v", *paths)
 	}
 }
 

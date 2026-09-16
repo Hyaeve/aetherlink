@@ -21,9 +21,12 @@ import (
 //
 //  1. API 调用要走 /emby 前缀。飞牛把接口挂在这个前缀下，少了它 POST/GET 会
 //     落到 SPA 返回的 HTML 上，于是「看不到媒体源」→ 永远不 302。
-//  2. 取条目详情要用单项路由 /Items/{id}。飞牛只实现了它，集合路由 /Items?Ids=
-//     会回 HTML —— 而 HTML 会让 json 解析直接失败，整条解析链路断掉，
-//     表现成「客户端能进库、能浏览，但一播放就失败」。
+//  2. 取条目要走播放协商 /Items/{id}/PlaybackInfo。飞牛的 Emby 兼容层只实现了
+//     客户端真正会调的那几条路由：/Items 与 /Items/{id} 都回单页应用的 HTML
+//     （HTTP 200 + 一整页 <!doctype html>），json 解析必然失败，整条解析链路
+//     就此断掉，表现成「客户端能进库、能浏览，但一播放就失败」。PlaybackInfo
+//     返回的 MediaSources 与条目详情里的同一份，足以承接解析（见
+//     embyProvider.itemLookupOrder）。
 //  3. PlaybackInfo 里的 MediaStreams 要补齐必填字段。飞牛返回的流信息会缺
 //     少部分键或给 null，部分客户端遇到 null 会直接判定为不可播放。
 //  4. 网页播放器 basehtmlplayer.js 里的 crossorigin="anonymous" 要去掉。

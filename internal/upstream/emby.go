@@ -552,23 +552,48 @@ const (
 	embyLookupByIDs embyItemLookup = iota
 	// embyLookupByID 走单项路由 /Items/{id}。
 	embyLookupByID
+	// embyLookupPlayback 走播放协商 /Items/{id}/PlaybackInfo。它给的是媒体源，
+	// 不是条目元数据，但足以承接解析 —— 飞牛影视只剩这一条可用。
+	embyLookupPlayback
 )
 
 func (l embyItemLookup) String() string {
-	if l == embyLookupByID {
+	switch l {
+	case embyLookupByID:
 		return "/Items/{id}"
+	case embyLookupPlayback:
+		return "/Items/{id}/PlaybackInfo"
 	}
 	return "/Items?Ids="
 }
 
+// itemLookupOrder 按方言给出取条目的尝试顺序。
 func (p *embyProvider) itemLookupOrder() []embyItemLookup {
 	if p.preferItemByID {
-		return []embyItemLookup{embyLookupByID, embyLookupByIDs}
+		// 飞牛影视：两种条目路由都不实现（都回单页应用的 HTML），只有播放协商
+		// 那条是真的。所以把它排在最前 —— 既是唯一确定可用的，也省掉两次注定
+		// 失败的请求；条目路由留作兜底，万一将来版本补上了也能用。
+		return []embyItemLookup{embyLookupPlayback, embyLookupByID, embyLookupByIDs}
 	}
-	return []embyItemLookup{embyLookupByIDs, embyLookupByID}
+	// Emby 三种都支持：集合路由一次就能同时拿到元数据与媒体源，能用就不多打。
+	return []embyItemLookup{embyLookupByIDs, embyLookupByID, embyLookupPlayback}
 }
 
 func (p *embyProvider) fetchItemBy(ctx context.Context, itemID string, lookup embyItemLookup) (embyItem, error) {
+	if lookup == embyLookupPlayback {
+		sources, err := p.fetchPlaybackSources(ctx, itemID)
+		if err != nil {
+			return embyItem{}, err
+		}
+		item := embyItem{ID: itemID, MediaSources: sources}
+		// 条目本身拿不到，Path 只能从媒体源上取：调用方在没有可用媒体源时靠它
+		// 退回读指针文件，缺了它这条兜底就断了。
+		if len(sources) > 0 {
+			item.Path = sources[0].Path
+		}
+		return item, nil
+	}
+
 	query := url.Values{}
 	query.Set("Fields", "Path,MediaSources")
 	// 带上 UserId：不少 Emby 版本只在「以某个用户身份查询」时才展开 MediaSources。
@@ -624,13 +649,37 @@ func (p *embyProvider) fetchPlaybackSources(ctx context.Context, itemID string) 
 	return nil, lastErr
 }
 
-// playbackUserCandidates 返回调用 PlaybackInfo 时可用的 UserId 列表，
-// 末尾始终留一个空串，表示「不带 UserId 再试一次」。
+// playbackUserCandidates 返回调用 PlaybackInfo 时可用的 UserId 列表，末尾始终留
+// 一个空串，表示「不带 UserId 再试一次」。
+//
+// 优先用「播放器自己请求里带的 UserId」与「登录换令牌时上游告知的 UserId」：这两
+// 个都在手边，不必额外调一次 /Users，而且对飞牛尤其重要 —— 它的 Emby 兼容层只
+// 实现了客户端真正会调的接口，/Users 未必有。两者都拿不到时才回头去问 /Users
+// （结果会缓存，不会每次播放都问）。
 func (p *embyProvider) playbackUserCandidates(ctx context.Context) []string {
-	if userID := p.resolveUserID(ctx); userID != "" {
-		return []string{userID, ""}
+	found := make([]string, 0, 3)
+	if userID := contextClientIdentity(ctx).UserID; userID != "" {
+		found = append(found, userID)
 	}
-	return []string{""}
+	if userID := p.client.loggedInUserID(); userID != "" {
+		found = append(found, userID)
+	}
+	if len(found) == 0 {
+		if userID := p.resolveUserID(ctx); userID != "" {
+			found = append(found, userID)
+		}
+	}
+
+	candidates := make([]string, 0, len(found)+1)
+	seen := make(map[string]bool, len(found))
+	for _, userID := range found {
+		if seen[userID] {
+			continue
+		}
+		seen[userID] = true
+		candidates = append(candidates, userID)
+	}
+	return append(candidates, "")
 }
 
 // resolveUserID 取一个可用的 Emby 用户 ID，优先管理员。结果缓存在 provider 上，
