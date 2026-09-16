@@ -6,8 +6,7 @@ const props = defineProps({
   // upstream 为 null 表示新增。
   upstream: { type: Object, default: null },
   // 新增时预填的空闲端口，由列表页从 /upstreams 带过来。
-  suggestedPort: { type: Number, default: 0 },
-  adminPort: { type: Number, default: 0 }
+  suggestedPort: { type: Number, default: 0 }
 })
 const emit = defineEmits(['close', 'saved'])
 
@@ -53,6 +52,8 @@ const busy = ref(false)
 const error = ref('')
 const testResult = ref(null)
 const editor = ref(null)
+// 密钥默认明文显示，点小眼睛切到遮蔽（斜线眼睛表示「点一下会隐藏」）。
+const keyVisible = ref(true)
 
 const isEmby = computed(() => form.value.type === 'emby')
 const serviceOptions = [
@@ -65,12 +66,6 @@ const redirectOptions = [
   { value: 'private', label: '内网跳转' },
   { value: 'never', label: '始终中继' }
 ]
-
-const keyHint = computed(() =>
-  isEmby.value
-    ? 'Emby 控制台 → 高级 → API 密钥 → 新建 API 密钥，把生成的字符串粘到这里。'
-    : 'Audiobookshelf 后台 → 设置 → 用户 → 点开该用户 → API Token。'
-)
 
 const keyPlaceholder = computed(() => {
   if (form.value.keepApiKey) return '留空保留原密钥'
@@ -253,6 +248,36 @@ async function save() {
                 </div>
               </details>
             </div>
+            <label class="field">
+              <span>API 密钥</span>
+              <span class="secret-input">
+                <input
+                  v-model="form.apiKey"
+                  :type="keyVisible ? 'text' : 'password'"
+                  autocomplete="off"
+                  spellcheck="false"
+                  :placeholder="keyPlaceholder"
+                />
+                <button
+                  type="button"
+                  class="secret-toggle"
+                  :aria-pressed="keyVisible"
+                  :title="keyVisible ? '隐藏密钥' : '显示密钥'"
+                  :aria-label="keyVisible ? '隐藏密钥' : '显示密钥'"
+                  @click.prevent="keyVisible = !keyVisible"
+                >
+                  <svg v-if="keyVisible" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z" />
+                    <circle cx="12" cy="12" r="3.1" />
+                    <path d="m4 3.6 16 16.8" />
+                  </svg>
+                  <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z" />
+                    <circle cx="12" cy="12" r="3.1" />
+                  </svg>
+                </button>
+              </span>
+            </label>
           </div>
           <div class="row">
             <label class="inline"><input type="checkbox" v-model="form.enabled" /> 启用</label>
@@ -260,27 +285,16 @@ async function save() {
               <input type="checkbox" v-model="form.insecureSkipVerify" />
               跳过 TLS 证书校验（自签证书才需要）
             </label>
-            <span class="muted" style="font-size:12px" v-if="props.adminPort">
-              管理端口 {{ props.adminPort }} 已占用，不能复用。
-            </span>
           </div>
         </div>
 
         <div class="field-group">
-          <div class="title">{{ isEmby ? 'Emby API 密钥' : 'Audiobookshelf API 密钥' }}</div>
-          <div class="hint">{{ keyHint }}<template v-if="form.keepApiKey">留空则保留原密钥。</template></div>
-          <input v-model="form.apiKey" type="password" autocomplete="off" :placeholder="keyPlaceholder" />
-        </div>
-
-        <div class="field-group">
           <div class="title">STRM 允许根目录</div>
-          <div class="hint">只有 STRM 指向容器内文件时填写；直链 STRM 留空。</div>
           <textarea v-model="form.strmRoots" rows="3" placeholder="/NetDisk"></textarea>
         </div>
 
         <div class="field-group">
           <div class="title">路径映射</div>
-          <div class="hint">上游路径和容器路径不一致时填写，否则留空。</div>
           <div class="row" v-for="(mapping, index) in form.pathMappings" :key="index" style="margin-bottom:8px">
             <input v-model="mapping.from" :placeholder="isEmby ? '上游看到的路径，如 /media' : '上游看到的路径，如 /audiobooks'" style="flex:1;min-width:190px" />
             <span class="muted">→</span>

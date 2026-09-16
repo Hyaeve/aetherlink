@@ -622,6 +622,8 @@ code {
 
 .grid.cols-2 {
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  /* 两列之间留出更大的横向间隔，同一行的两个输入框会相应变窄。 */
+  column-gap: 40px;
 }
 
 .page-error {
@@ -824,6 +826,115 @@ code {
   line-height: 20px;
   background: rgba(253, 253, 252, 0.68);
   border: 1px solid rgba(253, 253, 252, 0.44);
+}
+
+/* 跳转模式触发器：外观沿用 mode-tag，只是变成可点的按钮。 */
+.mode-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: inherit;
+  color: #3f4550;
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+}
+
+.mode-trigger:hover:not(:disabled),
+.mode-trigger.open {
+  background: rgba(253, 253, 252, 0.95);
+  border-color: rgba(253, 253, 252, 0.95);
+  transform: translateY(-1px);
+}
+
+.mode-trigger:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.mode-caret {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.7;
+  transition: transform 0.18s ease;
+}
+
+.mode-trigger.open .mode-caret {
+  transform: rotate(180deg);
+}
+
+.mode-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 58;
+}
+
+/* 宽度由触发按钮实测宽度内联给出（和右上角模式标识同宽），这里只兜个底。 */
+.mode-menu {
+  position: fixed;
+  z-index: 62;
+  min-width: 84px;
+  display: grid;
+  gap: 2px;
+  padding: 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 13px;
+  background: rgba(253, 253, 252, 0.97);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(12px);
+  animation: mode-menu-in 0.14s ease-out;
+}
+
+@keyframes mode-menu-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* 菜单与触发按钮同宽，选项只放模式名，居中排布。 */
+.mode-option {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  text-align: center;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.mode-option:hover:not(:disabled) {
+  background: var(--accent-wash);
+  color: var(--accent-ink);
+}
+
+.mode-option.selected {
+  background: var(--accent-wash);
+  color: var(--accent-ink);
+}
+
+.mode-option:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* 菜单只列模式名，不用副标题、不用对勾，选中态靠高亮底 + 强调色文字。 */
+.mode-option-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .proxy-card-content h3 {
@@ -2524,11 +2635,47 @@ label.field {
   margin-bottom: 12px;
 }
 
-label.field > span {
+/* 网格里既有 <label class="field"> 也有 <div class="field">（下拉框不是原生控件），
+   标签样式统一按 .field 的首个子 span 给，别只认 label。
+   用 :first-child 把包输入框的容器 span（如 .secret-input）排除在外。 */
+.field > span:first-child {
   display: block;
   color: var(--muted);
   font-size: 12px;
   margin-bottom: 6px;
+}
+
+/* API 密钥：输入框右侧挂一个显隐切换的小眼睛。 */
+.secret-input {
+  position: relative;
+  display: block;
+}
+
+.secret-input input {
+  padding-right: 40px;
+}
+
+.secret-toggle {
+  position: absolute;
+  top: 50%;
+  right: 7px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.secret-toggle:hover:not(:disabled) {
+  background: var(--accent-wash);
+  border-color: transparent;
+  color: var(--accent-ink);
 }
 
 .field-note {

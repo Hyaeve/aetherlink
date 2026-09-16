@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
 import { cardStyleFor } from '../palette'
 import ContextMenu from './ContextMenu.vue'
@@ -9,7 +9,6 @@ const emit = defineEmits(['changed', 'stats'])
 
 const upstreams = ref([])
 const suggestedPort = ref(0)
-const adminPort = ref(0)
 const error = ref('')
 const notice = ref('')
 const loading = ref(true)
@@ -21,7 +20,21 @@ const menu = ref(null)
 const pendingDelete = ref(null)
 const busy = ref(false)
 
+// 卡片右上角的跳转模式下拉：modeMenu 记录锚点与当前值，modePanel 用于挂载后回折定位。
+const modeMenu = ref(null)
+const modePanel = ref(null)
+const modeBusy = ref(false)
+
 const TYPE_LABELS = { audiobookshelf: 'Audiobookshelf', emby: 'Emby' }
+
+// 与 config.RedirectMode 的四个取值一一对应（内网/公网按可信前置代理判断）。
+const REDIRECT_OPTIONS = [
+  { value: 'always', label: '始终跳转' },
+  { value: 'public', label: '公网跳转' },
+  { value: 'private', label: '内网跳转' },
+  { value: 'never', label: '始终中继' }
+]
+const REDIRECT_LABELS = Object.fromEntries(REDIRECT_OPTIONS.map((option) => [option.value, option.label]))
 
 const runningCount = computed(() => upstreams.value.filter((item) => item.enabled && item.listening).length)
 const stoppedCount = computed(() => upstreams.value.length - runningCount.value)
@@ -36,7 +49,6 @@ async function load() {
     upstreams.value = payload.upstreams || []
     emit('stats', { total: upstreams.value.length, emby: embyCount.value, abs: absCount.value, running: runningCount.value, stopped: stoppedCount.value })
     suggestedPort.value = payload.suggestedPort || 0
-    adminPort.value = payload.adminPort || 0
     error.value = ''
   } catch (loadError) {
     error.value = loadError.message
@@ -72,7 +84,7 @@ function typeLabel(type) {
 }
 
 function redirectLabel(mode) {
-  return { always: '始终跳转', public: '公网跳转', private: '内网跳转', never: '始终中继' }[mode] || '始终跳转'
+  return REDIRECT_LABELS[mode] || REDIRECT_LABELS.always
 }
 
 function openProxy(upstream) {
@@ -82,11 +94,75 @@ function openProxy(upstream) {
 }
 
 function openMenu(event, upstream) {
+  closeModeMenu()
   menu.value = { x: event.clientX, y: event.clientY, upstream }
 }
 
 function closeMenu() {
   menu.value = null
+}
+
+function closeModeMenu() {
+  modeMenu.value = null
+}
+
+// 下拉挂在卡片外层（卡片 overflow:hidden 会裁掉绝对定位的子元素），
+// 所以用 fixed 定位 + 挂载后按实际尺寸回折，贴住触发按钮的右下角。
+// 宽度直接取触发按钮的宽度，和卡片右上角的模式标识一样宽。
+async function openModeMenu(event, upstream) {
+  if (busy.value || modeBusy.value) return
+  const anchor = event.currentTarget.getBoundingClientRect()
+  modeMenu.value = {
+    name: upstream.name,
+    current: upstream.redirectMode || 'always',
+    width: Math.round(anchor.width),
+    left: anchor.right,
+    top: anchor.bottom + 8
+  }
+  await nextTick()
+  const node = modePanel.value
+  if (!node || !modeMenu.value) return
+  const { width, height } = node.getBoundingClientRect()
+  const margin = 10
+  const below = anchor.bottom + 8
+  modeMenu.value = {
+    ...modeMenu.value,
+    left: Math.min(Math.max(margin, anchor.right - width), Math.max(margin, window.innerWidth - width - margin)),
+    // 下方放不下就翻到按钮上方，免得贴着视口底边被裁掉。
+    top: below + height <= window.innerHeight - margin ? below : Math.max(margin, anchor.top - height - 8)
+  }
+}
+
+async function selectMode(mode) {
+  const target = modeMenu.value
+  if (!target) return
+  if (target.current === mode) {
+    closeModeMenu()
+    return
+  }
+  modeBusy.value = true
+  busy.value = true
+  try {
+    await api.updateUpstream(target.name, { redirectMode: mode })
+    closeModeMenu()
+    await load()
+    emit('changed')
+    notice.value = `${target.name} 的播放跳转已切换为「${redirectLabel(mode)}」`
+  } catch (modeError) {
+    error.value = modeError.message
+  } finally {
+    modeBusy.value = false
+    busy.value = false
+  }
+}
+
+// 面板是 fixed 定位，页面一滚动就会和卡片脱开，直接关掉更干净。
+function onModeViewportChange() {
+  if (modeMenu.value) closeModeMenu()
+}
+
+function onModeKeydown(event) {
+  if (event.key === 'Escape') closeModeMenu()
 }
 
 function openEditor(upstream) {
@@ -147,7 +223,18 @@ async function confirmDelete() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  window.addEventListener('resize', onModeViewportChange)
+  window.addEventListener('scroll', onModeViewportChange, true)
+  window.addEventListener('keydown', onModeKeydown)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('resize', onModeViewportChange)
+  window.removeEventListener('scroll', onModeViewportChange, true)
+  window.removeEventListener('keydown', onModeKeydown)
+})
 </script>
 
 <template>
@@ -196,7 +283,23 @@ onMounted(load)
               :alt="typeLabel(upstream.type)"
             />
           </button>
-          <span class="card-tag mode-tag">{{ redirectLabel(upstream.redirectMode) }}</span>
+          <button
+            type="button"
+            class="card-tag mode-tag mode-trigger"
+            :class="{ open: modeMenu?.name === upstream.name }"
+            :disabled="busy"
+            :title="`播放跳转：${redirectLabel(upstream.redirectMode)}，点击切换`"
+            :aria-label="`${upstream.name}，播放跳转 ${redirectLabel(upstream.redirectMode)}，点击切换`"
+            :aria-expanded="modeMenu?.name === upstream.name"
+            aria-haspopup="menu"
+            @click.stop="openModeMenu($event, upstream)"
+            @keyup.stop
+          >
+            <span>{{ redirectLabel(upstream.redirectMode) }}</span>
+            <svg class="mode-caret" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </button>
         </div>
 
         <div class="proxy-card-content">
@@ -235,6 +338,38 @@ onMounted(load)
       <strong>还没有以太链接</strong>
       <p>添加 Audiobookshelf 或 Emby 后，AetherLink 会为它建立独立反代入口。</p>
       <button class="primary" @click="openEditor(null)">添加第一条链接</button>
+    </div>
+
+    <!-- 右上角跳转模式下拉：透明遮罩兜住任意点击，保证一定能关掉。 -->
+    <div
+      v-if="modeMenu"
+      class="mode-scrim"
+      @click="closeModeMenu"
+      @contextmenu.prevent="closeModeMenu"
+      @wheel="closeModeMenu"
+    >
+      <div
+        ref="modePanel"
+        class="mode-menu"
+        role="menu"
+        :style="{ left: `${modeMenu.left}px`, top: `${modeMenu.top}px`, width: `${modeMenu.width}px` }"
+        @click.stop
+        @contextmenu.prevent.stop
+      >
+        <button
+          v-for="option in REDIRECT_OPTIONS"
+          :key="option.value"
+          type="button"
+          role="menuitemradio"
+          class="mode-option"
+          :class="{ selected: modeMenu.current === option.value }"
+          :aria-checked="modeMenu.current === option.value"
+          :disabled="modeBusy"
+          @click="selectMode(option.value)"
+        >
+          <span class="mode-option-label">{{ option.label }}</span>
+        </button>
+      </div>
     </div>
 
     <ContextMenu
@@ -276,7 +411,6 @@ onMounted(load)
       v-if="editing"
       :upstream="editing.upstream"
       :suggested-port="suggestedPort"
-      :admin-port="adminPort"
       @close="editing = null"
       @saved="onSaved"
     />
