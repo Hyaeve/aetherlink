@@ -431,6 +431,90 @@ func TestFnosReloginsWhenTokenRejected(t *testing.T) {
 	}
 }
 
+// fakeFnosClientAuthServer 复刻飞牛实测出来的鉴权口吻：所有 /emby 接口都要求
+// 完整的 X-Emby-Authorization 客户端身份头，只发 X-Emby-Token 会被直接
+// 400「X-Emby-Authorization is missing」（这正是用户试连时看到的报错）。
+// 登录接口发令牌，其余接口校验令牌；withPublicInfo 为 false 时模拟没有
+// /System/Info/Public 这条路由的版本。
+func fakeFnosClientAuthServer(t *testing.T, withPublicInfo bool) *httptest.Server {
+	t.Helper()
+	const (
+		token   = "tok-1"
+		missing = `{"error":"X-Emby-Authorization is missing"}`
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/emby/Users/AuthenticateByName" {
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"AccessToken":"` + token + `","User":{"Id":"u1","Name":"kiro"}}`))
+			return
+		}
+		if request.URL.Path == "/emby/System/Info/Public" && !withPublicInfo {
+			writer.WriteHeader(http.StatusNotFound)
+			return
+		}
+		// 只认完整身份头：缺了它，哪怕 X-Emby-Token 和 api_key 都在也照样 400。
+		if !strings.Contains(request.Header.Get("X-Emby-Authorization"), `Token="`+token+`"`) {
+			writer.WriteHeader(http.StatusBadRequest)
+			_, _ = writer.Write([]byte(missing))
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"ServerName":"飞牛NAS","Version":"1.0.1","Items":[]}`))
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// 飞牛只认完整的 X-Emby-Authorization 身份头，X-Emby-Token 那个简写形态它不认。
+// 少了这枚头，媒体库查询会 400、试连会失败 —— 而且看起来像是「没配置鉴权」，
+// 极难定位。这条断言把请求头形态钉死。
+func TestFnosSendsEmbyAuthorizationHeader(t *testing.T) {
+	var gotHeader, gotTokenHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/emby/Users/AuthenticateByName" {
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"AccessToken":"tok-1","User":{"Id":"u1"}}`))
+			return
+		}
+		gotHeader = request.Header.Get("X-Emby-Authorization")
+		gotTokenHeader = request.Header.Get("X-Emby-Token")
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	provider := newFnosProviderWithLogin(t, server.URL, "kiro", "s3cret")
+	var out map[string]any
+	if err := provider.client.getJSON(context.Background(), "/Items", nil, &out); err != nil {
+		t.Fatalf("getJSON returned error: %v", err)
+	}
+	if !strings.HasPrefix(gotHeader, "MediaBrowser ") {
+		t.Fatalf("X-Emby-Authorization = %q, want 以 MediaBrowser 开头", gotHeader)
+	}
+	if !strings.Contains(gotHeader, `Token="tok-1"`) {
+		t.Fatalf("X-Emby-Authorization = %q, want 带上登录令牌", gotHeader)
+	}
+	// 简写形态继续保留：Emby 本身认它，两枚并存最兼容。
+	if gotTokenHeader != "tok-1" {
+		t.Fatalf("X-Emby-Token = %q, want tok-1", gotTokenHeader)
+	}
+}
+
+// 试连的完整链路：登录拿令牌 → 探 /System/Info/Public（有的版本没有这条路由）
+// → 回退 /System/Info。飞牛要求带完整身份头，之前只发 X-Emby-Token 会 400，
+// 用户看到的就是「GET /System/Info returned 400: X-Emby-Authorization is missing」。
+func TestFnosPingWorksWithClientAuthDialect(t *testing.T) {
+	server := fakeFnosClientAuthServer(t, false)
+	provider := newFnosProviderWithLogin(t, server.URL, "kiro", "s3cret")
+	label, err := provider.Ping(context.Background())
+	if err != nil {
+		t.Fatalf("Ping returned error: %v", err)
+	}
+	if label != "飞牛影视 飞牛NAS v1.0.1" {
+		t.Fatalf("Ping = %q", label)
+	}
+}
+
 // 飞牛在没配账号时不接受 /System/Info，试连必须去问不需要鉴权的
 // /System/Info/Public，否则用户看到的会是「连接失败」而不是「连上了」。
 func TestFnosPingUsesPublicSystemInfo(t *testing.T) {
@@ -459,6 +543,19 @@ func TestFnosPingUsesPublicSystemInfo(t *testing.T) {
 	}
 }
 
+// 两条探测都失败、而且这个上游压根没配账号时，飞牛那句英文拒绝语
+// （X-Emby-Authorization is missing）原样丢给用户完全看不出该做什么，
+// 必须换成「要填账号密码」。
+func TestFnosPingHintWhenNoCredentials(t *testing.T) {
+	server := fakeFnosClientAuthServer(t, false)
+	provider := newKeylessFnosProvider(t, server.URL)
+	if _, err := provider.Ping(context.Background()); err == nil {
+		t.Fatal("没有账号密码时 Ping 应当报错")
+	} else if !strings.Contains(err.Error(), "登录账号与密码") {
+		t.Fatalf("错误信息应当提示要填账号密码，实际: %v", err)
+	}
+}
+
 // 没配账号密码时读媒体库必然 401，错误里要写清「该填什么」，
 // 而不是把上游的状态码原样丢给用户。
 func TestFnosLibrariesHintWhenNoCredentials(t *testing.T) {
@@ -471,7 +568,232 @@ func TestFnosLibrariesHintWhenNoCredentials(t *testing.T) {
 	provider := newKeylessFnosProvider(t, server.URL)
 	if _, err := provider.Libraries(context.Background()); err == nil {
 		t.Fatal("没有账号密码时读媒体库应当报错")
-	} else if !strings.Contains(err.Error(), "未配置登录账号") {
-		t.Fatalf("错误信息应当提示要填账号，实际: %v", err)
+	} else if !strings.Contains(err.Error(), "登录账号与密码") {
+		t.Fatalf("错误信息应当提示要填账号密码，实际: %v", err)
 	}
+}
+
+// 管理员账号读得到 /Library/VirtualFolders 时，就该只用它，不该多打一次接口。
+func TestFnosLibrariesPrefersVirtualFolders(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/emby/Users/AuthenticateByName" {
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"AccessToken":"tok-1","User":{"Id":"u1"}}`))
+			return
+		}
+		paths = append(paths, request.URL.Path)
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`[{"Name":"电影","ItemId":"lib-1","CollectionType":"movies"}]`))
+	}))
+	defer server.Close()
+
+	provider := newFnosProviderWithLogin(t, server.URL, "kiro", "s3cret")
+	libraries, err := provider.Libraries(context.Background())
+	if err != nil {
+		t.Fatalf("Libraries returned error: %v", err)
+	}
+	if len(libraries) != 1 || libraries[0].Name != "电影" || libraries[0].ID != "lib-1" {
+		t.Fatalf("libraries = %#v", libraries)
+	}
+	if len(paths) != 1 || paths[0] != "/emby/Library/VirtualFolders" {
+		t.Fatalf("请求路径 = %v，want 只问 /emby/Library/VirtualFolders", paths)
+	}
+}
+
+// 飞牛的 /Library/VirtualFolders 是管理员接口，普通账号会被 403 挡掉；这时必须
+// 退回用户级的 /Library/SelectableMediaFolders，否则「填了账号也读不到媒体库」，
+// 而账号密码的意义就没了。响应是一个扁平数组，没有 Id 的占位项要丢掉。
+func TestFnosLibrariesFallsBackToSelectableFolders(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/emby/Users/AuthenticateByName" {
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"AccessToken":"tok-1","User":{"Id":"u1"}}`))
+			return
+		}
+		paths = append(paths, request.URL.Path)
+		if request.URL.Path != "/emby/Library/SelectableMediaFolders" {
+			writer.WriteHeader(http.StatusForbidden)
+			_, _ = writer.Write([]byte(`{"error":"admin only"}`))
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`[{"Id":"lib-1","Name":"电影"},{"Id":"","Name":"占位"},{"Id":"lib-2","Name":"剧集","CollectionType":"tvshows"}]`))
+	}))
+	defer server.Close()
+
+	provider := newFnosProviderWithLogin(t, server.URL, "kiro", "s3cret")
+	libraries, err := provider.Libraries(context.Background())
+	if err != nil {
+		t.Fatalf("普通账号应当能在用户级接口上读到媒体库，实际: %v", err)
+	}
+	if len(libraries) != 2 {
+		t.Fatalf("libraries = %#v，want 2 条（没有 Id 的占位项要丢掉）", libraries)
+	}
+	if libraries[0].Name != "电影" || libraries[1].Name != "剧集" || libraries[1].MediaType != "tvshows" {
+		t.Fatalf("libraries = %#v", libraries)
+	}
+	joined := strings.Join(paths, " · ")
+	if !strings.Contains(joined, "/emby/Library/VirtualFolders") || !strings.Contains(joined, "/emby/Library/SelectableMediaFolders") {
+		t.Fatalf("请求路径 = %v", paths)
+	}
+	if paths[len(paths)-1] != "/emby/Library/SelectableMediaFolders" {
+		t.Fatalf("最后一条请求应当落在用户级接口，实际 = %v", paths)
+	}
+}
+
+// fnosSPAHTML 复刻飞牛对「不认识的路径」的回应：HTTP 200 加一整页单页应用。
+// 这正是用户看到的那条报错的来源 —— json 解析在第一个 '<' 上就失败了。
+const fnosSPAHTML = `<!doctype html><html lang="zh-CN"><head><title>飞牛影视</title></head>` +
+	`<body><div id="app"></div></body></html>`
+
+// fnosStrmItemJSON 是一条真正的条目详情：Path 是 .strm 指针，媒体源上是展开后的直链。
+const fnosStrmItemJSON = `{"Id":"42","Name":"电影","Path":"/media/movie.strm",` +
+	`"MediaSources":[{"Id":"src-1","Path":"https://cdn.example.test/movie.mkv","Protocol":"Http","Container":"strm"}]}`
+
+// fakeFnosItemServer 搭一个「只实现单项路由」的假飞牛：byIDs 给集合路由
+// /Items?Ids= 的响应，byID 给单项路由 /Items/{id} 的响应。返回被请求过的路径，
+// 便于断言到底走了哪条路由。
+func fakeFnosItemServer(t *testing.T, byID, byIDs string) (*httptest.Server, *[]string) {
+	t.Helper()
+	paths := &[]string{}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		*paths = append(*paths, request.URL.Path)
+		switch {
+		case request.URL.Path == "/emby/Items":
+			writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = writer.Write([]byte(byIDs))
+		case strings.Count(request.URL.Path, "/") == 3 && strings.HasPrefix(request.URL.Path, "/emby/Items/"):
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(byID))
+		default:
+			// /emby/Users 之类：给个空对象就够了，取用户 ID 失败不影响断言。
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{}`))
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server, paths
+}
+
+// 客户端播放时 AetherLink 会自己回头查一次条目。飞牛没有实现集合路由
+// /Items?Ids=（回的是单页应用的 HTML），所以必须直接走单项路由 /Items/{id}：
+// 少了这一步，解析在 HTML 上就断了，用户看到的是「能进库、能浏览，一播放就失败」。
+func TestFnosResolvesMediaViaItemByIDRoute(t *testing.T) {
+	server, paths := fakeFnosItemServer(t, fnosStrmItemJSON, fnosSPAHTML)
+	provider := newKeylessFnosProvider(t, server.URL)
+
+	target, err := provider.MediaTarget(context.Background(), MediaRef{Kind: RefStream, ItemID: "42"})
+	if err != nil {
+		t.Fatalf("MediaTarget returned error: %v", err)
+	}
+	if target.URL != "https://cdn.example.test/movie.mkv" {
+		t.Fatalf("target.URL = %q，want 直链", target.URL)
+	}
+	for _, requestPath := range *paths {
+		if requestPath == "/emby/Items" {
+			t.Fatalf("不该去问回 HTML 的集合路由，实际请求 = %v", *paths)
+		}
+	}
+	if !containsPath(*paths, "/emby/Items/42") {
+		t.Fatalf("请求路径 = %v，want 含 /emby/Items/42", *paths)
+	}
+}
+
+// 兜底不能只是「换个顺序」：单项路由万一也失效，另一条仍要能救回来。
+func TestFnosFallsBackWhenItemByIDReturnsHTML(t *testing.T) {
+	server, paths := fakeFnosItemServer(t, fnosSPAHTML, `{"Items":[`+fnosStrmItemJSON+`],"TotalRecordCount":1}`)
+	provider := newKeylessFnosProvider(t, server.URL)
+
+	target, err := provider.MediaTarget(context.Background(), MediaRef{Kind: RefStream, ItemID: "42"})
+	if err != nil {
+		t.Fatalf("MediaTarget returned error: %v", err)
+	}
+	if target.URL != "https://cdn.example.test/movie.mkv" {
+		t.Fatalf("target.URL = %q，want 直链", target.URL)
+	}
+	if !containsPath(*paths, "/emby/Items/42") || !containsPath(*paths, "/emby/Items") {
+		t.Fatalf("两条路由都该试过，实际请求 = %v", *paths)
+	}
+}
+
+// Emby 的路由支持与飞牛不同：集合路由能用就不该多打一次单项路由。
+//
+// 基地址带上 /emby —— 只有飞牛那条分支会自动补这个前缀（fnosAPIPrefix），
+// Emby 的 apiPrefix 是空的，接口根路径得由用户填的地址给出。
+func TestEmbyPrefersItemsByIDsRoute(t *testing.T) {
+	server, paths := fakeFnosItemServer(t, fnosStrmItemJSON, `{"Items":[`+fnosStrmItemJSON+`],"TotalRecordCount":1}`)
+	provider, err := New(config.Upstream{
+		Name:       "emby",
+		Type:       config.UpstreamEmby,
+		BaseURL:    server.URL + "/emby",
+		APIKey:     "key",
+		ListenPort: 5153,
+	})
+	if err != nil {
+		t.Fatalf("New(emby) returned error: %v", err)
+	}
+
+	target, err := provider.MediaTarget(context.Background(), MediaRef{Kind: RefStream, ItemID: "42"})
+	if err != nil {
+		t.Fatalf("MediaTarget returned error: %v", err)
+	}
+	if target.URL != "https://cdn.example.test/movie.mkv" {
+		t.Fatalf("target.URL = %q，want 直链", target.URL)
+	}
+	if !containsPath(*paths, "/emby/Items") {
+		t.Fatalf("请求路径 = %v，want 走 /emby/Items", *paths)
+	}
+	if containsPath(*paths, "/emby/Items/42") {
+		t.Fatalf("集合路由已经够用，不该再打单项路由，实际请求 = %v", *paths)
+	}
+}
+
+// 两条路由都失败时，报错必须自己说清「哪条路由、上游回了网页」。
+// 以前这里只有一句 invalid character '<' looking for beginning of value，
+// 既看不出是哪条请求，也看不出上游其实返回了 HTML。
+func TestFnosItemLookupErrorNamesRouteAndHTML(t *testing.T) {
+	server, _ := fakeFnosItemServer(t, fnosSPAHTML, fnosSPAHTML)
+	provider := newKeylessFnosProvider(t, server.URL)
+
+	_, err := provider.MediaTarget(context.Background(), MediaRef{Kind: RefStream, ItemID: "42"})
+	if err == nil {
+		t.Fatal("两条路由都返回 HTML 时 MediaTarget 应当报错")
+	}
+	message := err.Error()
+	for _, want := range []string{"/Items/{id}", "/Items?Ids=", "返回的是网页", "text/html", "/Items/42"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("错误信息缺少 %q，实际: %s", want, message)
+		}
+	}
+}
+
+// looksLikeHTML 只在响应确实是一整页网页时才成立，别把 JSON 里的尖括号也算进来。
+func TestLooksLikeHTML(t *testing.T) {
+	cases := []struct {
+		body string
+		want bool
+	}{
+		{fnosSPAHTML, true},
+		{"  \n\t<html><body>spa</body></html>", true},
+		{"<!DOCTYPE HTML>\n<html></html>", true},
+		{`{"Items":[],"Note":"a < b"}`, false},
+		{"", false},
+		{"  ", false},
+	}
+	for _, testCase := range cases {
+		if got := looksLikeHTML([]byte(testCase.body)); got != testCase.want {
+			t.Errorf("looksLikeHTML(%.40q) = %v, want %v", testCase.body, got, testCase.want)
+		}
+	}
+}
+
+func containsPath(paths []string, want string) bool {
+	for _, candidate := range paths {
+		if candidate == want {
+			return true
+		}
+	}
+	return false
 }

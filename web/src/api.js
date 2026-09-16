@@ -77,6 +77,9 @@ export const api = {
   testUpstream: (payload) => request('/upstreams/test', { method: 'POST', ...jsonBody(payload) }),
 
   ping: (name) => request(`/upstreams/${encodeURIComponent(name)}/ping`),
+  // 已保存的密钥与密码默认不回显（列表只给 hasApiKey / hasPassword），
+  // 界面上点「显示」时才走这一条取回原值。
+  upstreamCredentials: (name) => request(`/upstreams/${encodeURIComponent(name)}/credentials`),
   logs: (limit = 5000) => request(`/logs?limit=${limit}`),
   // stats 是播放事件流水：每条媒体请求最终是 302、透传还是中继都在这里。
   stats: (events = 5000) => request(`/stats?events=${events}`)

@@ -38,6 +38,10 @@ type embyProvider struct {
 	// 用来补齐该方言特有的字段（飞牛影视要给 MediaStreams 补非空值）。
 	// 返回是否改动了这个源对象。nil 表示该方言没有额外要求。
 	normalizeSource func(source map[string]any) bool
+
+	// preferItemByID 让方言优先用单项路由 /Items/{id} 取条目，而不是集合路由
+	// /Items?Ids=。飞牛影视只实现了前者，后者在它上面回的是单页应用的 HTML。
+	preferItemByID bool
 }
 
 type cachedEmbyMediaSource struct {
@@ -492,20 +496,96 @@ type embyPlaybackInfo struct {
 
 // fetchItem loads a single item including media source paths.
 //
-// /Items?Ids= is asked first because one call gives both the item metadata and
-// its sources. Several Emby builds ignore Fields=MediaSources on that route,
-// though, and an item without sources is exactly the case where AetherLink
-// cannot tell a strm apart from a real file — so PlaybackInfo is used as a
-// fallback. Without it Emby playback silently degrades to a pass-through, which
-// is what "反代成功了但不 302" looks like from the outside.
+// 两条路由都试，因为 Emby 与飞牛影视对它们的支持并不一致：
+//
+//   - /Items?Ids= 在 Emby 上最省事（一次调用同时给出条目元数据与媒体源），
+//     但飞牛影视没有实现它 —— 请求落到单页应用上回一整页 HTML（HTTP 200），
+//     json 解析必然失败，整条解析链路就此断掉，表现成「能进库、能浏览，
+//     但一播放就报 invalid character '<'」。
+//   - /Items/{id} 是标准单项路由，飞牛影视实现了它（参考项目 LitePan 取条目
+//     详情用的正是这一条）。
+//
+// 所以按方言定一个优先级再依次兜底：哪条先给出带媒体源的条目就用哪条；
+// 两条都没给出媒体源时再去问 PlaybackInfo。少了媒体源，Emby 系就永远只能看到
+// .strm 路径，于是退化成透传 —— 用户看到的「反代通了但不 302」。
 func (p *embyProvider) fetchItem(ctx context.Context, itemID string) (embyItem, error) {
+	var (
+		item     embyItem
+		found    bool
+		failures []string
+	)
+	for _, lookup := range p.itemLookupOrder() {
+		loaded, err := p.fetchItemBy(ctx, itemID, lookup)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s 路由: %v", lookup, err))
+			logx.Debugf("[%s] 取条目 %s 失败（%s 路由）: %v", p.Name(), itemID, lookup, err)
+			continue
+		}
+		if !found {
+			item, found = loaded, true
+		}
+		if len(loaded.MediaSources) > 0 {
+			return loaded, nil
+		}
+	}
+	if !found {
+		if len(failures) > 0 {
+			// 两条路由的失败原因都带上：只报最后一条，就等于把「另一条其实
+			// 能用」这类情况藏起来了，而这条错误是用户唯一能看到的线索。
+			return embyItem{}, fmt.Errorf("取条目 %s 失败（%s）", itemID, strings.Join(failures, "；"))
+		}
+		return embyItem{}, fmt.Errorf("emby item %q not found", itemID)
+	}
+	if sources, err := p.fetchPlaybackSources(ctx, itemID); err != nil {
+		logx.Debugf("[%s] item %s PlaybackInfo 取不到媒体源: %v", p.Name(), itemID, err)
+	} else {
+		item.MediaSources = sources
+	}
+	return item, nil
+}
+
+// embyItemLookup 是取单条 Item 的路由形态。
+type embyItemLookup int
+
+const (
+	// embyLookupByIDs 走集合路由 /Items?Ids=。
+	embyLookupByIDs embyItemLookup = iota
+	// embyLookupByID 走单项路由 /Items/{id}。
+	embyLookupByID
+)
+
+func (l embyItemLookup) String() string {
+	if l == embyLookupByID {
+		return "/Items/{id}"
+	}
+	return "/Items?Ids="
+}
+
+func (p *embyProvider) itemLookupOrder() []embyItemLookup {
+	if p.preferItemByID {
+		return []embyItemLookup{embyLookupByID, embyLookupByIDs}
+	}
+	return []embyItemLookup{embyLookupByIDs, embyLookupByID}
+}
+
+func (p *embyProvider) fetchItemBy(ctx context.Context, itemID string, lookup embyItemLookup) (embyItem, error) {
 	query := url.Values{}
-	query.Set("Ids", itemID)
 	query.Set("Fields", "Path,MediaSources")
 	// 带上 UserId：不少 Emby 版本只在「以某个用户身份查询」时才展开 MediaSources。
 	if userID := p.resolveUserID(ctx); userID != "" {
 		query.Set("UserId", userID)
 	}
+	if lookup == embyLookupByID {
+		var item embyItem
+		if err := p.client.getJSON(ctx, "/Items/"+url.PathEscape(itemID), query, &item); err != nil {
+			return embyItem{}, err
+		}
+		if strings.TrimSpace(item.ID) == "" {
+			return embyItem{}, fmt.Errorf("emby item %q not found", itemID)
+		}
+		return item, nil
+	}
+	query.Set("Ids", itemID)
 	var response embyItemsResponse
 	if err := p.client.getJSON(ctx, "/Items", query, &response); err != nil {
 		return embyItem{}, err
@@ -513,15 +593,7 @@ func (p *embyProvider) fetchItem(ctx context.Context, itemID string) (embyItem, 
 	if len(response.Items) == 0 {
 		return embyItem{}, fmt.Errorf("emby item %q not found", itemID)
 	}
-	item := response.Items[0]
-	if len(item.MediaSources) == 0 {
-		if sources, err := p.fetchPlaybackSources(ctx, itemID); err != nil {
-			logx.Debugf("[emby] item %s PlaybackInfo 取不到媒体源: %v", itemID, err)
-		} else {
-			item.MediaSources = sources
-		}
-	}
-	return item, nil
+	return response.Items[0], nil
 }
 
 // fetchPlaybackSources asks PlaybackInfo for the media sources of one item.

@@ -2678,6 +2678,40 @@ label.field {
   color: var(--accent-ink);
 }
 
+/* 已保存凭据的字段标题行：「显示」按钮挂在标题右侧。密钥与密码默认不回显，
+   点一下才向服务端取回原值，避免它们出现在截图、录屏或肩窥里。
+   选择器写成 span.field-label 是为了压过上面那条 .field > span:first-child
+   （它带一个伪类，特异性 (0,2,1) 比单纯两个类高），否则 display:block 会盖掉
+   这里的 flex，按钮就被挤到标题下面去了。 */
+.field > span.field-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.secret-reveal {
+  flex: none;
+  padding: 2px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--accent-ink);
+  font-size: 11px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.secret-reveal:hover:not(:disabled) {
+  background: var(--accent-wash);
+  border-color: transparent;
+}
+
+.secret-reveal:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .field-note {
   display: block;
   margin-top: 5px;

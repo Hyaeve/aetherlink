@@ -75,6 +75,8 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("DELETE "+BasePath+"/upstreams/{name}", a.protected(a.handleDeleteUpstream))
 
 	mux.HandleFunc("GET "+BasePath+"/upstreams/{name}/ping", a.protected(a.handlePing))
+	// 按需查看已保存凭据：列表接口只报「有没有」，真正取原值走这一条。
+	mux.HandleFunc("GET "+BasePath+"/upstreams/{name}/credentials", a.protected(a.handleUpstreamCredentials))
 	mux.HandleFunc("GET "+BasePath+"/upstreams/{name}/libraries", a.protected(a.handleLibraries))
 	mux.HandleFunc("GET "+BasePath+"/upstreams/{name}/items", a.protected(a.handleItems))
 	mux.HandleFunc("GET "+BasePath+"/upstreams/{name}/items/{itemId}", a.protected(a.handleItemFiles))
@@ -537,6 +539,33 @@ func (a *API) handleUpstreams(writer http.ResponseWriter, request *http.Request)
 		// 界面用它给「添加上游」预填一个不冲突的端口。
 		"suggestedPort": cfg.SuggestPort(),
 		"adminPort":     config.PortOf(cfg.Server.Listen),
+	})
+}
+
+// upstreamCredentials 是「按需查看已保存凭据」的响应体。
+//
+// 列表接口只回报 hasApiKey / hasPassword，从不回显秘密；要看原值必须显式调这
+// 一条。配置本身就明文存在 0600 的 config.yaml 里，对已登录的管理员隐藏它没
+// 有意义，但「默认不回显、要看点一下」能避免秘密悄悄出现在截图、录屏或肩窥里。
+type upstreamCredentials struct {
+	APIKey   string `json:"apiKey"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+func (a *API) handleUpstreamCredentials(writer http.ResponseWriter, request *http.Request) {
+	name := request.PathValue("name")
+	upstream := a.rt.Config().UpstreamByName(name)
+	if upstream == nil {
+		writeError(writer, http.StatusNotFound, "上游 "+name+" 不存在")
+		return
+	}
+	// 留一条审计痕迹：谁在什么时候查看过凭据，日志里能找到。
+	logx.Infof("[adminapi] 已查看上游 %s 的已保存凭据", name)
+	writeJSON(writer, http.StatusOK, upstreamCredentials{
+		APIKey:   upstream.APIKey,
+		Username: upstream.Username,
+		Password: upstream.Password,
 	})
 }
 

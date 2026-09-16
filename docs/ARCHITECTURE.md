@@ -10,7 +10,7 @@
 | `internal/urlx` | STRM 原始内容的 URL 归一化与分类。保留已有 `%XX` 转义，识别 115 pick code / openlist 形态，判断私有网段。 |
 | `internal/pathmap` | 上游媒体路径 → 容器路径的前缀重写（最长前缀优先）、本地目标的根目录白名单校验，以及 `Locate`：翻译后的路径不存在时，把上游路径逐段剥前缀，在配置根目录、映射目标与常见挂载点下 stat 定位指针，两侧挂载点不同名也不必手写映射。 |
 | `internal/strm` | 读取 `.strm` 指针（跳过注释行、限制读取长度），区分远程 URL 与容器本地文件，推导显示文件名。 |
-| `internal/upstream` | Audiobookshelf、Emby 与飞牛影视的 API 客户端：识别需要拦截的媒体请求、回答「这个媒体是什么」（`MediaTarget`：ABS 给指针路径，Emby 系给已解析的直链）、书库浏览，以及两种鉴权方式（静态密钥与账号密码登录换令牌）。Emby 与飞牛影视（`fnos.go`）还会改写客户端的 `PlaybackInfo`，只把已经通过客户端兼容性判断的 STRM 接到 302 路由。 |
+| `internal/upstream` | Audiobookshelf、Emby 与飞牛影视的 API 客户端：识别需要拦截的媒体请求、回答「这个媒体是什么」（`MediaTarget`：ABS 给指针路径，Emby 系给已解析的直链）、书库浏览，以及两种鉴权方式（静态密钥与账号密码登录换令牌 —— 飞牛还必须把令牌挂在完整的 `X-Emby-Authorization` 身份头上，`X-Emby-Token` 简写形式会被它 400 拒掉）。Emby 与飞牛影视（`fnos.go`）还会改写客户端的 `PlaybackInfo`，只把已经通过客户端兼容性判断的 STRM 接到 302 路由。 |
 | `internal/resolver` | 解析流水线：问上游 → 直链直接用 / 定位并读指针 →（可选）走完跳转链。带 TTL+LRU 缓存与并发去重。读不到指针时返回 `ErrPointerUnavailable`，由调用方退回透传。 |
 | `internal/proxy` | 反向代理与拦截决策：302、中继转发、本地直读、透传四条出口。一个 `Server` 只服务一个上游，因此不需要路径匹配。 |
 | `internal/stats` | 内存计数与最近事件环形缓冲，供日志与排障使用。 |
@@ -28,7 +28,7 @@
 | `web/src/palette.js` | 上游名称哈希到固定的莫奈三段渐变与动画相位，保证同名上游的卡片配色恒定，同时让卡片之间的流动不同步。 |
 | `web/src/components/UpstreamsView.vue` | 卡片网格：一个上游一张方卡，左键开编辑弹窗，右键出上下文菜单。 |
 | `web/src/components/ContextMenu.vue` | 通用右键菜单，含视口边缘回折与点击外部关闭。 |
-| `web/src/components/UpstreamForm.vue` | 上游详细编辑弹窗，按「基本 / 密钥 / 路径」分组；地址提示随服务端类型切换，密钥输入框只对 Audiobookshelf 与 Emby 显示，飞牛影视换成一对其登录账号密码（可留空，且必须成对填写）。 |
+| `web/src/components/UpstreamForm.vue` | 上游详细编辑弹窗，按「基本 / 密钥 / 路径」分组；地址提示随服务端类型切换，密钥输入框只对 Audiobookshelf 与 Emby 显示，飞牛影视换成一对其登录账号密码（可留空，且必须成对填写）。已保存的密钥与密码默认不回显，字段标题右侧挂一个「显示」按钮，点了才向 `GET /upstreams/{name}/credentials` 取回原值；飞牛的「试连」在账号或密码缺失时直接拦下、不发请求。 |
 | `web/src/components/LogsView.vue` | 播放流水（读 `/stats`：计数 + 逐条事件 + 无 302 时的诊断结论）与运行日志（读 `/logs`，按级别过滤）。 |
 | `web/src/components/SettingsView.vue` | 302 策略、缓存与日志、管理账号、运行信息。 |
 ## 管理账号与入口
@@ -68,7 +68,7 @@
 
 ## 关键设计取舍
 
-- **飞牛影视复用 Emby 方言，不另写一套链路**：飞牛 NAS 自带的「影视」就是 Emby 方言的服务端——播放路由（`/Videos/:id/stream`、`/Items/:id/Download`）、播放协商（`/Items/:id/PlaybackInfo`）与字段含义都和 Emby 一致。因此 `upstream.UpstreamType.IsEmbyFamily()` 把 `emby` 与 `fnos` 归为一族，拦截、解析、302、HLS 判断、UA 屏蔽名单、直链缓存策略全部共用；`fnosProvider` 只叠加三处差异：API 调用补 `/emby` 前缀（少了它会落到 SPA 的 HTML 上，表现就是「永远不 302」）、`PlaybackInfo` 的 `MediaStreams` 补齐客户端要求非空的字段、网页播放器 `basehtmlplayer.js` 去掉 `crossorigin="anonymous"`（302 出去的是跨域直链，带着它浏览器会按需要 CORS 放行处理，直链端不返回 CORS 头就播不出来）。
+- **飞牛影视复用 Emby 方言，不另写一套链路**：飞牛 NAS 自带的「影视」就是 Emby 方言的服务端——播放路由（`/Videos/:id/stream`、`/Items/:id/Download`）、播放协商（`/Items/:id/PlaybackInfo`）与字段含义都和 Emby 一致。因此 `upstream.UpstreamType.IsEmbyFamily()` 把 `emby` 与 `fnos` 归为一族，拦截、解析、302、HLS 判断、UA 屏蔽名单、直链缓存策略全部共用；`fnosProvider` 只叠加四处差异：API 调用补 `/emby` 前缀（少了它会落到 SPA 的 HTML 上，表现就是「永远不 302」）、条目查询优先走单项路由 `/Items/{id}`（飞牛没实现集合路由 `/Items?Ids=`，那条路径会落到单页应用上返回 HTTP 200 的 HTML，JSON 解析在第一个 `<` 上就断了，报错是一句无从下手的 `invalid character '<' looking for beginning of value`；用户看到的现象是「能进库、能浏览，一播放就失败」。Emby 本身两条路由都支持，所以顺序反过来、集合路由优先，且由 `preferItemByID` 显式区分，见「条目查询两条路由要排序」）、`PlaybackInfo` 的 `MediaStreams` 补齐客户端要求非空的字段、网页播放器 `basehtmlplayer.js` 去掉 `crossorigin="anonymous"`（302 出去的是跨域直链，带着它浏览器会按需要 CORS 放行处理，直链端不返回 CORS 头就播不出来）。
 - **Emby 与 ABS 的 strm 形态根本不同**：Emby 扫库时就把指针读掉了，`MediaSources[].Path` 直接是直链，AetherLink 完全不需要挂载媒体目录；Audiobookshelf 保留指针原样、播放时自己代理，AetherLink 必须能读到那个 `.strm` 才能 302。两条链路在 `resolver.resolveUncached` 里分开处理，`upstream.MediaTarget` 就是为了让这个区别显式化而存在的。
 - **指针读不到就透传，不报错**：上游自己能读到那个文件，让它继续服务比让播放失败好得多。原因记进日志与事件，用户能查到「为什么没有 302」，而不是听到一段静音。解析报错（上游 API 挂了、返回体变了）同样退回透传而不是回 502——装上 AetherLink 之后反而播不了，是最不可接受的失败模式。
 - **每条出口都必须留下日志**：`serveMedia` 里所有分支统一走一个 `finish` 闭包，记事件的同时必定打一行日志。早先只写 `stats.Collector`、成功路径一行日志都不打，结果「不能 302」这个问题在容器日志与界面里完全不可观测——排障能力本身就是功能。
@@ -77,8 +77,10 @@
 - **Emby 查媒体源要带 UserId**：不少 Emby 版本只在「以某个用户身份查询」时才展开 `MediaSources`，`PlaybackInfo` 缺 `UserId` 甚至直接 400。`resolveUserID` 取一次管理员 ID 并缓存，`/Items` 与 `PlaybackInfo` 都带上，最后再留一次不带 UserId 的重试。
 - **Emby 的 302 起点是 PlaybackInfo，不是 HLS 分片**：客户端先根据 `PlaybackInfo` 决定直放或转码。一旦选中 `/hls1/main/*.ts`，每个请求只代表一段转码数据，不可能 302 到完整媒体文件。但也不能把所有 STRM 强制直放：网页端拿到不支持的 H.265 原文件同样无法播放。因此只在上游给出 `SupportsDirectPlay=true` 时重写 `DirectStreamUrl`，其余能力字段和转码 URL 保持原样；不兼容时宁可不 302，也要让 Emby 正常转码。媒体源和兼容性判断会一起短暂缓存；不兼容的客户端即使又请求 `/stream`，也会退回上游而不会误跳原文件。
 - **基础路径不能重复拼接**：配置的 Emby / 飞牛影视地址可能已经带 `/emby`，客户端请求也可能以 `/emby` 开头。反代 `joinPath` 会先判断请求是否已含基础路径，直放 URL 也会优先复用 Emby 原本的路由前缀并折叠相邻重复段，避免生成 `/emby/emby/Videos/...`；`fnosAPIPrefix` 同样在地址已以 `/emby` 结尾时不再补前缀。
+- **条目查询两条路由要排序，不能只写一条**：`/Items?Ids=a,b`（集合）与 `/Items/{id}`（单项）是 Emby 方言里等价的两种查法，但各家实现的支持面不一样——Emby 两条都有，飞牛只有单项那条，缺的那条**不返回 404，而是返回整页单页应用的 HTML 并带上 HTTP 200**。这时 JSON 解码在第一个 `<` 上失败，抛出来的是 `invalid character '<' looking for beginning of value`：既看不出是哪条请求，也看不出上游其实回了网页。因此 `embyProvider.fetchItem` 按 `itemLookupOrder()` 依次试两条并汇总各自的失败原因，飞牛由 `preferItemByID = true` 排成「单项在前」，Emby 保持「集合在前」（能用就不多打一次）。配套的 `decodeJSONResponse` 在解码失败时把方法、endpoint、`Content-Type` 与响应开头片段一起写进错误，`looksLikeHTML` 负责识别「这其实是网页」。两处失败信息合起来，这条路由问题才可能被一眼定位——之前它只能被猜。
 - **前缀改写只给播放协商开一个口子**：飞牛的 API 只挂在 `/emby` 下，而网页控制台（`/web/...`）、封面（`/Items/:id/Images/...`）与字节接口都在根路径。因此 `RequestPathRewriter` 只在 `PlaybackInfo` 上门禁补前缀，其余路径一律原样送达——无差别加前缀会把界面整个打挂，这比「少 302」更难排查。反向断言（其余路由必须不被改写）与正向断言（少前缀时仍能 302）在 `internal/proxy/fnos_test.go` 里成对存在。
-- **飞牛的凭据是可选的，令牌只活在内存里**：飞牛影视没有 Emby 控制台里那种静态 API 密钥，它的接口只认客户端登录换来的令牌——而那份令牌由播放器自己登录取得、随请求转发，AetherLink 只是把请求转过去。所以「什么都不填」就能完成 302：`PlaybackInfo` 改写时顺手缓存下来的媒体源足够回答紧接着的 `/stream`。超出这个 10 分钟窗口、或客户端直接请求下载入口时，AetherLink 才需要自己回头查一次上游，那份查询才需要凭据。因此账号密码被设计成**可选项而非必填**：填了就用 `POST /emby/Users/AuthenticateByName` 换令牌（复用 6 小时，只存在内存里，不落盘），没填就裸调。撞上 401/403 视为令牌被吊销，丢掉缓存重登一次再重试——不这么做，一次令牌过期会表现成「上游坏了」。`HasCredentials()` 对飞牛恒为真，否则代理层会退化成纯反代，播放请求永远拿不到 302。
+- **飞牛的凭据是可选的，令牌只活在内存里**：飞牛影视没有 Emby 控制台里那种静态 API 密钥，它的接口只认客户端登录换来的令牌——而那份令牌由播放器自己登录取得、随请求转发，AetherLink 只是把请求转过去。所以「什么都不填」就能完成 302：`PlaybackInfo` 改写时顺手缓存下来的媒体源足够回答紧接着的 `/stream`。超出这个 10 分钟窗口、或客户端直接请求下载入口时，AetherLink 才需要自己回头查一次上游，那份查询才需要凭据。因此账号密码被设计成**可选项而非必填**：填了就用 `POST /emby/Users/AuthenticateByName` 换令牌（复用 6 小时，只存在内存里，不落盘），没填就裸调。撞上 401/403 视为令牌被吊销，丢掉缓存重登一次再重试——不这么做，一次令牌过期会表现成「上游坏了」。`HasCredentials()` 对飞牛恒为真，否则代理层会退化成纯反代，播放请求永远拿不到 302。既然凭据只会用在「回头查上游」这一支上，那么**试连**也必须先填账号密码才成立：没凭据时飞牛连服务信息都不给，失败说明不了地址对不对，等于白试——所以界面在发请求前就拦下并直说原因，后端 `Ping` 的兜底错误同样写成「需要先填写登录账号与密码」，而不是把上游那句 `X-Emby-Authorization is missing` 原样抛出来（它看着像「没配鉴权」，极难定位）。
+- **已保存的凭据默认不回显，要看点一下**：列表接口 `GET /upstreams` 只回报 `hasApiKey` / `hasPassword` 两个布尔，秘密真正的值只能靠显式调 `GET /upstreams/{name}/credentials` 取（同样走会话鉴权，并留一行审计日志）。配置本身就明文躺在 0600 的 `config.yaml` 里，对已登录的管理员隐藏它没有安全意义；但「默认不回显、要看点一下」能让秘密不悄悄出现在截图、录屏或肩窥里。界面上按钮挂在字段标题右侧，点开才把原值填进输入框并让服务端记一笔；收起时清空字段、恢复「留空保留原值」，**收起不会再打一次接口**。它只对「编辑一个已存过该凭据的上游」出现——新增时没有旧值可取，或该上游本就没存过，按钮毫无意义。
 - **自动定位而非要求手写映射**：`pathmap.Locate` 把上游路径逐段剥前缀，在配置根目录、映射目标与常见挂载点下 stat。白名单校验从不放宽——白名单外的候选连 stat 都不做。凡能自动化的就不要求用户填表。
 - **不缓存指针内容按 mtime**：文件系统 mtime 精度不足，同一 tick 内两次写入无法区分。缓存键是媒体引用（上游 + 条目 + 文件），TTL 到期后重新读取指针，路径白名单校验永远在缓存之外无条件执行。
 - **并发去重**：播放器 seek 时会并发发起多个 Range 请求，`resolver` 用 inflight map 让同一轨道只打一次上游 API。

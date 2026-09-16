@@ -491,6 +491,38 @@ func TestUpstreamRejectsHalfCredentials(t *testing.T) {
 	}
 }
 
+// 已保存的凭据要能按需查看：界面上点「显示」走的就是这条接口。
+// 列表接口仍然只给 hasApiKey / hasPassword，秘密不在那里出现。
+func TestUpstreamCredentialsAreRevealableOnDemand(t *testing.T) {
+	env := newEnv(t)
+	token := env.login(t, testUsername, testPassword)
+	payload := `{"name":"fnos","type":"fnos","baseUrl":"http://127.0.0.1:8005",` +
+		`"username":"kiro","password":"fnos-secret","listenPort":5154}`
+	if recorder := env.do(http.MethodPost, BasePath+"/upstreams", payload, token); recorder.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder := env.do(http.MethodGet, BasePath+"/upstreams/fnos/credentials", "", token)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("credentials status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var revealed upstreamCredentials
+	if err := json.Unmarshal(recorder.Body.Bytes(), &revealed); err != nil {
+		t.Fatalf("decode credentials: %v (body=%s)", err, recorder.Body.String())
+	}
+	if revealed.Username != "kiro" || revealed.Password != "fnos-secret" {
+		t.Fatalf("credentials = %+v，want 取回保存的账号密码", revealed)
+	}
+
+	// 没有 token 就看不到秘密 —— 这条接口不比别的接口宽松。
+	if recorder := env.do(http.MethodGet, BasePath+"/upstreams/fnos/credentials", "", ""); recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("无令牌访问 status = %d, want 401", recorder.Code)
+	}
+	if recorder := env.do(http.MethodGet, BasePath+"/upstreams/missing/credentials", "", token); recorder.Code != http.StatusNotFound {
+		t.Fatalf("不存在的上游 status = %d, want 404", recorder.Code)
+	}
+}
+
 func TestPutSettingsAppliesAndPersists(t *testing.T) {
 	env := newEnv(t)
 	token := env.login(t, testUsername, testPassword)

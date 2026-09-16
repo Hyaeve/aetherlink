@@ -17,20 +17,24 @@ import (
 // 飞牛影视本身就是一套 Emby 方言的服务端：播放路由（/Videos/:id/stream、
 // /Items/:id/Download）、播放协商（/Items/:id/PlaybackInfo）与字段含义都和
 // Emby 一致，所以拦截、解析、302 这些主体逻辑直接复用 embyProvider，
-// 只在三处做飞牛特有的适配（这三处正是 LitePan 的 internal/fnosproxy 所做的事）：
+// 只在四处做飞牛特有的适配（前三处正是 LitePan 的 internal/fnosproxy 所做的事）：
 //
 //  1. API 调用要走 /emby 前缀。飞牛把接口挂在这个前缀下，少了它 POST/GET 会
 //     落到 SPA 返回的 HTML 上，于是「看不到媒体源」→ 永远不 302。
-//  2. PlaybackInfo 里的 MediaStreams 要补齐必填字段。飞牛返回的流信息会缺
+//  2. 取条目详情要用单项路由 /Items/{id}。飞牛只实现了它，集合路由 /Items?Ids=
+//     会回 HTML —— 而 HTML 会让 json 解析直接失败，整条解析链路断掉，
+//     表现成「客户端能进库、能浏览，但一播放就失败」。
+//  3. PlaybackInfo 里的 MediaStreams 要补齐必填字段。飞牛返回的流信息会缺
 //     少部分键或给 null，部分客户端遇到 null 会直接判定为不可播放。
-//  3. 网页播放器 basehtmlplayer.js 里的 crossorigin="anonymous" 要去掉。
+//  4. 网页播放器 basehtmlplayer.js 里的 crossorigin="anonymous" 要去掉。
 //     302 出去的是跨域直链，带着 anonymous 会让浏览器把播放请求当成需要
 //     CORS 放行的请求，直链服务端不返回 CORS 头时视频就播不出来。
 //
 // 鉴权上飞牛和 Emby 也不同：它没有 Emby 控制台里那种静态 API 密钥，接口只认
-// 客户端登录换来的令牌。所以账号密码是「填了更好、不填也能播」的可选项——
-// 不填时 302 主链路照常（靠 PlaybackInfo 改写 + 缓存），填了才多出媒体库列表
-// 和缓存未命中时的兜底解析。
+// 客户端登录换来的令牌。而且令牌必须挂在完整的 X-Emby-Authorization 身份头上，
+// Emby 那种 X-Emby-Token 简写形态会被 400 挡掉（见 apiClient.embyClientAuth）。
+// 所以账号密码是「填了更好、不填也能播」的可选项——不填时 302 主链路照常
+// （靠 PlaybackInfo 改写 + 缓存），填了才多出媒体库列表和缓存未命中时的兜底解析。
 type fnosProvider struct {
 	embyProvider
 }
@@ -119,13 +123,20 @@ func (p *fnosProvider) RewriteResponse(originalPath string, response *http.Respo
 // Ping 先问不需要鉴权的 /System/Info/Public。
 //
 // Emby 默认探的 /System/Info 要带令牌，而飞牛在没配账号密码时不会给 ——
-// 但飞牛无论如何都愿意回答 /System/Info/Public，返回的服务器名与版本和
+// 飞牛无论如何都愿意回答 /System/Info/Public，返回的服务器名与版本和
 // /System/Info 一致。所以先探它，没有这条路由的旧版本再退回 /System/Info。
+//
+// 两条都失败时，若这个上游根本没配账号密码，就把「该填什么」补进错误里：
+// 飞牛的拒绝语是「X-Emby-Authorization is missing」，原样抛给用户完全看不出
+// 该做什么。配了账号还失败就是真实故障，如实上报。
 func (p *fnosProvider) Ping(ctx context.Context) (string, error) {
 	var info embySystemInfo
 	err := p.client.getJSON(ctx, "/System/Info/Public", nil, &info)
 	if err != nil {
 		if err = p.client.getJSON(ctx, "/System/Info", nil, &info); err != nil {
+			if !p.client.authenticated() {
+				return "", fmt.Errorf("飞牛影视需要先填写登录账号与密码：它没有静态密钥，未登录时连服务信息都读不到（%w）", err)
+			}
 			return "", err
 		}
 	}
@@ -134,15 +145,54 @@ func (p *fnosProvider) Ping(ctx context.Context) (string, error) {
 
 // Libraries 读飞牛的媒体库列表。
 //
-// 这条接口要求以某个用户身份登录，只填地址不填账号密码时上游只会回 401。
-// 这时把「该填什么」补进错误里，比原样抛一串状态码有用得多；已经配了账号
-// 密码却还失败，那就是真实故障，如实上报。
+// 先走 Emby 的 /Library/VirtualFolders。它在 Emby 里是管理员接口，用飞牛的普通
+// 账号登录时会被拒；这种账号能读的是用户级的 /Library/SelectableMediaFolders
+// （扁平数组，参考项目 LitePan 列库用的也是它）。所以再兜一次，两条都失败才
+// 认账并报第一条错误 —— 凭据不对时，那一条才是准确的解释。
+//
+// 没有账号密码时上游只会回 401，这时把「该填什么」补进错误里，比原样抛一串
+// 状态码有用得多；已经配了账号密码却还失败，那就是真实故障，如实上报。
 func (p *fnosProvider) Libraries(ctx context.Context) ([]Library, error) {
 	libraries, err := p.embyProvider.Libraries(ctx)
-	if err != nil && !p.client.authenticated() {
-		return nil, fmt.Errorf("飞牛影视未配置登录账号，无法读取媒体库（%w）", err)
+	if err == nil {
+		return libraries, nil
 	}
-	return libraries, err
+	if fallback, fallbackErr := p.selectableLibraries(ctx); fallbackErr == nil {
+		return fallback, nil
+	}
+	if !p.client.authenticated() {
+		return nil, fmt.Errorf("飞牛影视需要登录账号与密码才能读取媒体库（%w）", err)
+	}
+	return nil, err
+}
+
+// selectableLibraries 走用户级接口 /Library/SelectableMediaFolders，
+// 响应是一个 {Id,Name,CollectionType} 的扁平数组。
+func (p *fnosProvider) selectableLibraries(ctx context.Context) ([]Library, error) {
+	var folders []struct {
+		ID             string `json:"Id"`
+		Name           string `json:"Name"`
+		CollectionType string `json:"CollectionType"`
+	}
+	if err := p.client.getJSON(ctx, "/Library/SelectableMediaFolders", nil, &folders); err != nil {
+		return nil, err
+	}
+	libraries := make([]Library, 0, len(folders))
+	for _, folder := range folders {
+		id := strings.TrimSpace(folder.ID)
+		name := strings.TrimSpace(folder.Name)
+		// 这条接口偶尔会夹带没有 Id 的占位项，丢掉它们。
+		if id == "" || name == "" {
+			continue
+		}
+		libraries = append(libraries, Library{
+			ID:        id,
+			Name:      name,
+			MediaType: folder.CollectionType,
+			Provider:  string(p.kind),
+		})
+	}
+	return libraries, nil
 }
 
 // rewriteFnosBaseHTMLPlayer 去掉网页播放器给 media 元素加的 crossorigin 属性。

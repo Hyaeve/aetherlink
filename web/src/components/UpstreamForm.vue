@@ -63,6 +63,9 @@ const editor = ref(null)
 // 密码反过来默认遮蔽——它是口令，不该一打开弹窗就摊在屏幕上。
 const keyVisible = ref(true)
 const passwordVisible = ref(false)
+// 已保存的凭据默认不回显，点字段标题上的「显示」才向服务端取一次。
+const revealBusy = ref(false)
+const revealed = ref(false)
 
 const serviceOptions = [
   { value: 'audiobookshelf', label: 'Audiobookshelf' },
@@ -110,6 +113,64 @@ const passwordPlaceholder = computed(() => {
   return serviceHint.value.password
 })
 
+// 已保存的密钥/密码默认不回显，只在字段标题上留一个「显示」按钮，点了才向
+// 服务端取一次原值。列表接口从不回显秘密，所以这里必须单独请求；取回来就填进
+// 输入框，保存时原样送回，值不变。新增上游没有可取的旧值，按钮不出现。
+const canReveal = computed(() => {
+  if (isCreate.value) return false
+  if (showCredentials.value) return Boolean(props.upstream?.hasPassword)
+  return Boolean(props.upstream?.hasApiKey)
+})
+
+const revealLabel = computed(() => (revealed.value ? '收起' : '显示'))
+
+// 取回的秘密填回输入框，并把「保留原值」摘掉 —— 现在字段里是真实内容，
+// 保存时直接送回去即可，语义上和留空保留等价。
+function applyRevealed(credentials) {
+  const key = (credentials?.apiKey || '').trim()
+  form.value.apiKey = key
+  form.value.keepApiKey = !key
+  form.value.password = credentials?.password || ''
+  form.value.keepPassword = !form.value.password
+  // 既然用户主动点了「显示」，就把字段一并切成明文，否则取回来仍是圆点。
+  keyVisible.value = true
+  passwordVisible.value = true
+  revealed.value = true
+}
+
+// 收起时把两个字段都清空，并恢复「留空保留原值」—— 这才是加载时的初始状态。
+// 两个字段都清是刻意的：切换上游类型后可见的那一项会变，只清当前这一项会漏。
+function clearRevealed() {
+  form.value.apiKey = ''
+  form.value.keepApiKey = Boolean(props.upstream?.hasApiKey)
+  form.value.password = ''
+  form.value.keepPassword = Boolean(props.upstream?.hasPassword)
+  keyVisible.value = true
+  passwordVisible.value = false
+  revealed.value = false
+}
+
+async function toggleReveal() {
+  if (revealed.value) {
+    clearRevealed()
+    return
+  }
+  revealBusy.value = true
+  error.value = ''
+  try {
+    applyRevealed(await api.upstreamCredentials(props.upstream.name))
+  } catch (revealError) {
+    error.value = `读取已保存的凭据失败：${revealError.message}`
+  } finally {
+    revealBusy.value = false
+  }
+}
+
+// 换服务端类型时收起：取回来的是上一个类型的秘密，留着会张冠李戴。
+function hideReveal() {
+  if (revealed.value) clearRevealed()
+}
+
 // 飞牛影视的账号与密码必须成对。后端会拒掉「只有一半」的配置，这里先给一句
 // 更直白的提示，免得用户对着 400 猜。清空账号等于删除凭据，是允许的，
 // 但那时不能再留着密码。
@@ -139,6 +200,7 @@ function optionLabel(options, value) {
 
 function selectOption(field, value, event) {
   form.value[field] = value
+  if (field === 'type') hideReveal()
   const dropdown = event.currentTarget.closest('details')
   dropdown?.removeAttribute('open')
   dropdown?.querySelector('summary')?.focus()
@@ -223,8 +285,22 @@ function buildPayload() {
   return payload
 }
 
+// 飞牛影视的试连必须带上登录凭据：它没有静态密钥，未登录时上游连服务信息都
+// 不给，试连必然失败 —— 那种失败说明不了地址对不对，等于白试。已经保存过密码
+// 时字段留空是允许的（后端会沿用原值），所以「已保存」也算作有密码。
+function testCredentialError() {
+  if (!showCredentials.value) return ''
+  if (!form.value.username.trim()) {
+    return '飞牛影视需要先填写登录账号与密码：它没有静态密钥，未登录无法连接'
+  }
+  if (!form.value.password && !props.upstream?.hasPassword) {
+    return '飞牛影视需要先填写登录密码，否则试连没有意义'
+  }
+  return ''
+}
+
 async function test() {
-  error.value = credentialError()
+  error.value = credentialError() || testCredentialError()
   if (error.value) return
   testResult.value = { loading: true }
   try {
@@ -319,7 +395,18 @@ async function save() {
               </details>
             </div>
             <label class="field" v-if="showApiKey">
-              <span>API 密钥</span>
+              <span class="field-label">
+                <span>API 密钥</span>
+                <button
+                  v-if="canReveal"
+                  type="button"
+                  class="secret-reveal"
+                  :disabled="revealBusy"
+                  :aria-pressed="revealed"
+                  :title="revealed ? '收起已保存的密钥' : '查看已保存的密钥'"
+                  @click.prevent="toggleReveal"
+                >{{ revealBusy ? '读取中…' : revealLabel }}</button>
+              </span>
               <span class="secret-input">
                 <input
                   v-model="form.apiKey"
@@ -351,10 +438,21 @@ async function save() {
             <label class="field" v-if="showCredentials">
               <span>登录账号</span>
               <input v-model="form.username" autocomplete="off" spellcheck="false" :placeholder="serviceHint.account" />
-              <small class="field-note">可留空：不填也不影响播放跳转，只是读不到媒体库</small>
+              <small class="field-note">试连与媒体库读取都需要它；只留空不填则只能靠播放协商跳转</small>
             </label>
             <label class="field" v-if="showCredentials">
-              <span>登录密码</span>
+              <span class="field-label">
+                <span>登录密码</span>
+                <button
+                  v-if="canReveal"
+                  type="button"
+                  class="secret-reveal"
+                  :disabled="revealBusy"
+                  :aria-pressed="revealed"
+                  :title="revealed ? '收起已保存的密码' : '查看已保存的密码'"
+                  @click.prevent="toggleReveal"
+                >{{ revealBusy ? '读取中…' : revealLabel }}</button>
+              </span>
               <span class="secret-input">
                 <input
                   v-model="form.password"

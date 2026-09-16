@@ -220,10 +220,14 @@ func New(cfg config.Upstream) (Provider, error) {
 		// 令牌，什么都没配就裸调（放行空密钥），后者不影响 302 主链路，
 		// 只是拿不到媒体库列表。
 		client.apiKeyOptional = true
+		client.embyClientAuth = true
 		client.authHeader = "X-Emby-Token"
 		client.authQuery = "api_key"
 		client.apiPrefix = fnosAPIPrefix(base.Path)
 		provider := &fnosProvider{embyProvider: embyProvider{providerBase: shared}}
+		// 飞牛没有实现集合路由 /Items?Ids=：请求会落到单页应用上回一整页 HTML，
+		// 解析必然失败。单项路由 /Items/{id} 它有，所以优先用它。
+		provider.preferItemByID = true
 		provider.normalizeSource = normalizeFnosMediaStreams
 		return provider, nil
 	default:
@@ -301,6 +305,12 @@ type apiClient struct {
 	// apiKeyOptional 表示这个上游不配置密钥也能直接调 API。飞牛影视没有静态
 	// 密钥，必须放行空的 apiKey，否则它会退化成纯反代，永远解析不到媒体源。
 	apiKeyOptional bool
+	// embyClientAuth 表示 API 调用要带上完整的 X-Emby-Authorization 客户端
+	// 身份头（MediaBrowser Client="…", Device="…", Token="…"）。飞牛影视只认
+	// 这个形态：只发 X-Emby-Token 时它直接 400「X-Emby-Authorization is
+	// missing」，媒体库查询与试连全部失败，而且那句话看起来像「没配鉴权」，
+	// 极难定位。Emby 本身两种都认，所以只有飞牛打开它。
+	embyClientAuth bool
 
 	// username / password 是账号密码登录用的凭据（见 config.Upstream 的说明）。
 	username string
@@ -369,7 +379,67 @@ func (c *apiClient) getJSON(ctx context.Context, endpoint string, query url.Valu
 		io.Copy(io.Discard, io.LimitReader(response.Body, 1<<16))
 		return nil
 	}
-	return json.NewDecoder(response.Body).Decode(out)
+	return decodeJSONResponse(http.MethodGet, endpoint, response, out)
+}
+
+// apiResponseLimit 是 API 响应体的读取上限。这些接口都返回小 JSON；读到这么多
+// 字节说明上游回的是意料之外的东西（最典型的是整页 HTML），继续读只会白占内存。
+const apiResponseLimit = 16 << 20
+
+// decodeJSONResponse 读取响应体并解析成 out，失败时给出能自解释的错误。
+//
+// 关键在错误信息。上游对不认识的路径经常回单页应用的 HTML（HTTP 200 + 一整页
+// <!doctype html>），此时 encoding/json 只吐一句
+// 「invalid character '<' looking for beginning of value」——既看不出是哪一条
+// 请求，也看不出上游其实返回了网页，日志里就是这么一句，排查只能靠猜。
+// 把方法、端点、Content-Type 与响应开头一并写进去，这类问题一眼可定位。
+func decodeJSONResponse(method, endpoint string, response *http.Response, out any) error {
+	body, err := io.ReadAll(io.LimitReader(response.Body, apiResponseLimit))
+	if err != nil {
+		return fmt.Errorf("读取 %s %s 的响应失败: %w", method, endpoint, err)
+	}
+	// 沿用 Decoder 的宽容度：个别实现会在 JSON 之后补字节，Unmarshal 会因此失败。
+	decoder := json.NewDecoder(bytes.NewReader(bytes.TrimSpace(body)))
+	if err := decoder.Decode(out); err != nil {
+		return jsonDecodeError(method, endpoint, response.Header.Get("Content-Type"), body, err)
+	}
+	return nil
+}
+
+// jsonDecodeError 把「解析失败」翻译成能直接定位问题的一句话。
+func jsonDecodeError(method, endpoint, contentType string, body []byte, err error) error {
+	snippet := responseSnippet(body)
+	if looksLikeHTML(body) {
+		return fmt.Errorf("%s %s 返回的是网页而不是 JSON（Content-Type=%q，开头：%s）：上游不认识这条路径，或这条路径缺少 /emby 前缀", method, endpoint, contentType, snippet)
+	}
+	if snippet == "" {
+		return fmt.Errorf("%s %s 返回了空响应，无法解析为 JSON: %w", method, endpoint, err)
+	}
+	return fmt.Errorf("解析 %s %s 的 JSON 响应失败（Content-Type=%q，开头：%s）: %w", method, endpoint, contentType, snippet, err)
+}
+
+// looksLikeHTML 判断响应体是不是一整页网页。只认开头，避免把正文里偶然出现的
+// 尖括号当成 HTML。
+func looksLikeHTML(body []byte) bool {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return false
+	}
+	if len(trimmed) > 512 {
+		trimmed = trimmed[:512]
+	}
+	lowered := bytes.ToLower(trimmed)
+	return bytes.HasPrefix(lowered, []byte("<!doctype html")) || bytes.HasPrefix(lowered, []byte("<html"))
+}
+
+// responseSnippet 把响应开头压成一行短文本，只用于错误消息。
+func responseSnippet(body []byte) string {
+	const maxSnippet = 120
+	text := strings.Join(strings.Fields(string(body)), " ")
+	if len(text) > maxSnippet {
+		text = text[:maxSnippet] + "…"
+	}
+	return text
 }
 
 // sendJSONGet 发一次 GET。鉴权材料由调用方算好：可能是配置里的静态密钥，
@@ -391,8 +461,15 @@ func (c *apiClient) sendJSONGet(ctx context.Context, endpoint string, query url.
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("User-Agent", contextUserAgent(ctx))
-	if c.authHeader != "" && token != "" {
-		request.Header.Set(c.authHeader, c.authHeaderValue(token))
+	if token != "" {
+		if c.authHeader != "" {
+			request.Header.Set(c.authHeader, c.authHeaderValue(token))
+		}
+		// 飞牛只认完整的客户端身份头。与上面那枚简写形态并存：服务端各取自己
+		// 认识的那一枚，多带一枚不会有副作用。
+		if c.embyClientAuth {
+			request.Header.Set("X-Emby-Authorization", embyAuthorizationValue(token))
+		}
 	}
 	return c.http.Do(request)
 }
@@ -461,7 +538,7 @@ func (c *apiClient) login(ctx context.Context, force bool) (string, error) {
 		return "", fmt.Errorf("登录上游失败（HTTP %d）: %s", response.StatusCode, strings.TrimSpace(string(snippet)))
 	}
 	var payload embyLoginResponse
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+	if err := decodeJSONResponse(http.MethodPost, "/Users/AuthenticateByName", response, &payload); err != nil {
 		return "", fmt.Errorf("解析登录响应: %w", err)
 	}
 	if strings.TrimSpace(payload.AccessToken) == "" {
@@ -476,6 +553,25 @@ func (c *apiClient) login(ctx context.Context, force bool) (string, error) {
 // embyAuthorizationHeader 是 Emby 系登录接口要求的客户端身份声明。
 // DeviceId 固定成一个常量，避免每次连接都让上游记一条新设备。
 const embyAuthorizationHeader = `MediaBrowser Client="AetherLink", Device="AetherLink", DeviceId="aetherlink-server", Version="1.0.0"`
+
+// embyAuthorizationValue 在客户端身份声明后追加令牌，拼出
+// X-Emby-Authorization 的完整形态（登录时还没有令牌，所以那里只用声明本身）。
+func embyAuthorizationValue(token string) string {
+	return embyAuthorizationHeader + `, Token="` + sanitizeAuthToken(token) + `"`
+}
+
+// sanitizeAuthToken 摘掉会破坏这个结构化请求头的字符。令牌来自上游响应，
+// 正常是十六进制串；引号与反斜杠会让后面的 Token 值提前收尾，控制字符则会
+// 让 Go 的传输层直接拒发请求 —— 两者都只能摘掉，不能拼进去。
+func sanitizeAuthToken(token string) string {
+	return strings.Map(func(character rune) rune {
+		switch character {
+		case '"', '\\', '\r', '\n', '\t':
+			return -1
+		}
+		return character
+	}, token)
+}
 
 func (c *apiClient) authHeaderValue(token string) string {
 	if c.authHeader == "Authorization" {
