@@ -58,7 +58,7 @@ func serveIndex(writer http.ResponseWriter, request *http.Request, sub fs.FS) {
 
 const placeholderHTML = `<!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><title>AetherLink</title>
+<head><meta charset="utf-8"><title>以太链接</title>
 <style>body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;display:grid;place-items:center;height:100vh}code{background:#1e293b;padding:2px 6px;border-radius:4px}</style>
 </head>
 <body><div><h1>AetherLink 以太链接</h1>
