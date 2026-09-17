@@ -133,6 +133,9 @@ type Redirect struct {
 	BlockClientUserAgentAudiobookshelf       *bool         `yaml:"block_client_user_agent_audiobookshelf" json:"blockClientUserAgentAudiobookshelf"`
 	BlockedUserAgents                        []string      `yaml:"blocked_user_agents,omitempty" json:"blockedUserAgents,omitempty"`
 	BlockedUserAgentsEmby                    []string      `yaml:"blocked_user_agents_emby,omitempty" json:"blockedUserAgentsEmby,omitempty"`
+	BlockClientUserAgentFnos                 *bool         `yaml:"block_client_user_agent_fnos,omitempty" json:"blockClientUserAgentFnos,omitempty"`
+	BlockedUserAgentsFnos                    []string      `yaml:"blocked_user_agents_fnos,omitempty" json:"blockedUserAgentsFnos,omitempty"`
+	BlockedUserAgentsFnosUpstreams           []string      `yaml:"blocked_user_agents_fnos_upstreams,omitempty" json:"blockedUserAgentsFnosUpstreams,omitempty"`
 	BlockedUserAgentsAudiobookshelf          []string      `yaml:"blocked_user_agents_audiobookshelf,omitempty" json:"blockedUserAgentsAudiobookshelf,omitempty"`
 	BlockedUserAgentsEmbyUpstreams           []string      `yaml:"blocked_user_agents_emby_upstreams,omitempty" json:"blockedUserAgentsEmbyUpstreams,omitempty"`
 	BlockedUserAgentsAudiobookshelfUpstreams []string      `yaml:"blocked_user_agents_audiobookshelf_upstreams,omitempty" json:"blockedUserAgentsAudiobookshelfUpstreams,omitempty"`
@@ -180,9 +183,15 @@ func (r Redirect) IsBlockedClientUserAgentForUpstream(provider UpstreamType, ups
 	}
 	blockedLists := [][]string{r.BlockedUserAgents}
 	switch provider {
-	case UpstreamEmby, UpstreamFnos:
-		// 飞牛影视与 Emby 同为 Emby 方言，共用一份 UA 名单。
+	case UpstreamEmby:
 		blockedLists = append(blockedLists, r.BlockedUserAgentsEmby)
+	case UpstreamFnos:
+		// 飞牛影视有独立名单；旧配置没有飞牛专属字段时回落到 Emby 共用名单。
+		if r.BlockClientUserAgentFnos != nil || len(r.BlockedUserAgentsFnos) > 0 {
+			blockedLists = append(blockedLists, r.BlockedUserAgentsFnos)
+		} else {
+			blockedLists = append(blockedLists, r.BlockedUserAgentsEmby)
+		}
 	case UpstreamAudiobookshelf:
 		blockedLists = append(blockedLists, r.BlockedUserAgentsAudiobookshelf)
 	}
@@ -199,8 +208,15 @@ func (r Redirect) IsBlockedClientUserAgentForUpstream(provider UpstreamType, ups
 
 func (r Redirect) providerBlockSettings(provider UpstreamType) (enabled, scoped bool) {
 	switch provider {
-	case UpstreamEmby, UpstreamFnos:
-		// 飞牛影视与 Emby 同为 Emby 方言，开关、关键词与上游勾选都共用一份。
+	case UpstreamEmby:
+		if r.BlockClientUserAgentEmby != nil {
+			return *r.BlockClientUserAgentEmby, true
+		}
+	case UpstreamFnos:
+		// 飞牛影视独立开关；旧配置没有该字段时回落到 Emby 共用开关。
+		if r.BlockClientUserAgentFnos != nil {
+			return *r.BlockClientUserAgentFnos, true
+		}
 		if r.BlockClientUserAgentEmby != nil {
 			return *r.BlockClientUserAgentEmby, true
 		}
@@ -213,10 +229,16 @@ func (r Redirect) providerBlockSettings(provider UpstreamType) (enabled, scoped 
 }
 
 func providerBlockUpstreams(r Redirect, provider UpstreamType) []string {
-	if provider.IsEmbyFamily() {
+	switch provider {
+	case UpstreamEmby:
 		return r.BlockedUserAgentsEmbyUpstreams
-	}
-	if provider == UpstreamAudiobookshelf {
+	case UpstreamFnos:
+		// 飞牛影视独立勾选；旧配置没有该字段时回落到 Emby 共用勾选。
+		if r.BlockClientUserAgentFnos != nil || len(r.BlockedUserAgentsFnosUpstreams) > 0 {
+			return r.BlockedUserAgentsFnosUpstreams
+		}
+		return r.BlockedUserAgentsEmbyUpstreams
+	case UpstreamAudiobookshelf:
 		return r.BlockedUserAgentsAudiobookshelfUpstreams
 	}
 	return nil
@@ -329,6 +351,9 @@ func (c *Config) Clone() *Config {
 	copied.Redirect.BlockClientUserAgentAudiobookshelf = clonePointer(c.Redirect.BlockClientUserAgentAudiobookshelf)
 	copied.Redirect.BlockedUserAgents = append([]string(nil), c.Redirect.BlockedUserAgents...)
 	copied.Redirect.BlockedUserAgentsEmby = append([]string(nil), c.Redirect.BlockedUserAgentsEmby...)
+	copied.Redirect.BlockClientUserAgentFnos = clonePointer(c.Redirect.BlockClientUserAgentFnos)
+	copied.Redirect.BlockedUserAgentsFnos = append([]string(nil), c.Redirect.BlockedUserAgentsFnos...)
+	copied.Redirect.BlockedUserAgentsFnosUpstreams = append([]string(nil), c.Redirect.BlockedUserAgentsFnosUpstreams...)
 	copied.Redirect.BlockedUserAgentsAudiobookshelf = append([]string(nil), c.Redirect.BlockedUserAgentsAudiobookshelf...)
 	copied.Redirect.BlockedUserAgentsEmbyUpstreams = append([]string(nil), c.Redirect.BlockedUserAgentsEmbyUpstreams...)
 	copied.Redirect.BlockedUserAgentsAudiobookshelfUpstreams = append([]string(nil), c.Redirect.BlockedUserAgentsAudiobookshelfUpstreams...)
@@ -564,6 +589,15 @@ func merge(base, parsed *Config) {
 	if parsed.Redirect.BlockedUserAgentsEmby != nil {
 		base.Redirect.BlockedUserAgentsEmby = append([]string(nil), parsed.Redirect.BlockedUserAgentsEmby...)
 	}
+	if parsed.Redirect.BlockClientUserAgentFnos != nil {
+		base.Redirect.BlockClientUserAgentFnos = parsed.Redirect.BlockClientUserAgentFnos
+	}
+	if parsed.Redirect.BlockedUserAgentsFnos != nil {
+		base.Redirect.BlockedUserAgentsFnos = append([]string(nil), parsed.Redirect.BlockedUserAgentsFnos...)
+	}
+	if parsed.Redirect.BlockedUserAgentsFnosUpstreams != nil {
+		base.Redirect.BlockedUserAgentsFnosUpstreams = append([]string(nil), parsed.Redirect.BlockedUserAgentsFnosUpstreams...)
+	}
 	if parsed.Redirect.BlockedUserAgentsAudiobookshelf != nil {
 		base.Redirect.BlockedUserAgentsAudiobookshelf = append([]string(nil), parsed.Redirect.BlockedUserAgentsAudiobookshelf...)
 	}
@@ -659,9 +693,19 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("可信代理 %q 必须为明确的 IP/CIDR 网段，不能信任全部地址", value)
 		}
 	}
+	// 飞牛影视屏蔽 UA 是从 Emby 共用配置拆出来的：老配置没有飞牛专属字段，
+	// 这里照搬 Emby 的开关、名单与勾选，行为与拆分前完全一致；首次保存后
+	// 飞牛字段即显式落盘，之后两边各自独立。
+	if c.Redirect.BlockClientUserAgentFnos == nil {
+		c.Redirect.BlockClientUserAgentFnos = Bool(c.Redirect.BlockClientUserAgentEmby != nil && *c.Redirect.BlockClientUserAgentEmby)
+		c.Redirect.BlockedUserAgentsFnos = append([]string(nil), c.Redirect.BlockedUserAgentsEmby...)
+		c.Redirect.BlockedUserAgentsFnosUpstreams = append([]string(nil), c.Redirect.BlockedUserAgentsEmbyUpstreams...)
+	}
 	c.Redirect.BlockedUserAgentsEmby = normalizeUserAgentList(c.Redirect.BlockedUserAgentsEmby)
+	c.Redirect.BlockedUserAgentsFnos = normalizeUserAgentList(c.Redirect.BlockedUserAgentsFnos)
 	c.Redirect.BlockedUserAgentsAudiobookshelf = normalizeUserAgentList(c.Redirect.BlockedUserAgentsAudiobookshelf)
 	c.Redirect.BlockedUserAgentsEmbyUpstreams = normalizeStringList(c.Redirect.BlockedUserAgentsEmbyUpstreams)
+	c.Redirect.BlockedUserAgentsFnosUpstreams = normalizeStringList(c.Redirect.BlockedUserAgentsFnosUpstreams)
 	c.Redirect.BlockedUserAgentsAudiobookshelfUpstreams = normalizeStringList(c.Redirect.BlockedUserAgentsAudiobookshelfUpstreams)
 	if c.Cache.TTL < 0 {
 		c.Cache.TTL = 0

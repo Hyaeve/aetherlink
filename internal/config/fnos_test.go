@@ -125,3 +125,66 @@ func TestFnosSharesEmbyUserAgentPolicy(t *testing.T) {
 		t.Fatal("Emby 组开关关闭时 fnos 不该继续屏蔽")
 	}
 }
+
+// 飞牛影视配置了独立字段后，开关、关键词与勾选都走自己的名单，与 Emby 互不影响。
+func TestFnosHasIndependentUserAgentPolicy(t *testing.T) {
+	redirect := Redirect{
+		Mode:                               RedirectAlways,
+		BlockClientUserAgentEmby:           Bool(true),
+		BlockedUserAgentsEmby:              []string{"Infuse"},
+		BlockedUserAgentsEmbyUpstreams:     []string{"客厅 Emby"},
+		BlockClientUserAgentFnos:           Bool(true),
+		BlockedUserAgentsFnos:              []string{"Filmly"},
+		BlockedUserAgentsFnosUpstreams:     []string{"fnos"},
+		BlockClientUserAgentAudiobookshelf: Bool(false),
+	}
+	if !redirect.IsBlockedClientUserAgentForUpstream(UpstreamFnos, "fnos", "Filmly/99.0.0-217") {
+		t.Fatal("fnos 应当命中自己名单里的关键词")
+	}
+	if redirect.IsBlockedClientUserAgentForUpstream(UpstreamFnos, "fnos", "Infuse/8.0") {
+		t.Fatal("fnos 不该再命中 Emby 名单里的关键词")
+	}
+	if redirect.IsBlockedClientUserAgentForUpstream(UpstreamEmby, "客厅 Emby", "Filmly/99.0.0-217") {
+		t.Fatal("Emby 不该命中飞牛名单里的关键词")
+	}
+	if redirect.IsBlockedClientUserAgentForUpstream(UpstreamFnos, "未勾选的飞牛", "Filmly/99.0.0-217") {
+		t.Fatal("没有勾选的飞牛上游不该被屏蔽")
+	}
+	// 关掉飞牛独立开关，Emby 不受影响。
+	fnosOff := redirect
+	fnosOff.BlockClientUserAgentFnos = Bool(false)
+	if fnosOff.IsBlockedClientUserAgentForUpstream(UpstreamFnos, "fnos", "Filmly/99.0.0-217") {
+		t.Fatal("飞牛开关关闭后不该屏蔽")
+	}
+	if !fnosOff.IsBlockedClientUserAgentForUpstream(UpstreamEmby, "客厅 Emby", "Infuse/8.0") {
+		t.Fatal("飞牛开关关闭不应影响 Emby 组")
+	}
+}
+
+// 老配置没有飞牛专属字段，Validate 播种后飞牛的行为与拆分前一致。
+func TestValidateSeedsFnosPolicyFromEmby(t *testing.T) {
+	cfg := &Config{
+		Server: Server{Listen: "127.0.0.1:5199"},
+		Redirect: Redirect{
+			Mode:                           RedirectAlways,
+			BlockClientUserAgentEmby:       Bool(true),
+			BlockedUserAgentsEmby:          []string{"Filmly"},
+			BlockedUserAgentsEmbyUpstreams: []string{"fnos"},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Redirect.BlockClientUserAgentFnos == nil || !*cfg.Redirect.BlockClientUserAgentFnos {
+		t.Fatal("播种后飞牛开关应与 Emby 一致（开启）")
+	}
+	if len(cfg.Redirect.BlockedUserAgentsFnos) != 1 || cfg.Redirect.BlockedUserAgentsFnos[0] != "Filmly" {
+		t.Fatalf("播种后飞牛名单应照搬 Emby 名单，得到 %v", cfg.Redirect.BlockedUserAgentsFnos)
+	}
+	if len(cfg.Redirect.BlockedUserAgentsFnosUpstreams) != 1 || cfg.Redirect.BlockedUserAgentsFnosUpstreams[0] != "fnos" {
+		t.Fatalf("播种后飞牛勾选应照搬 Emby 勾选，得到 %v", cfg.Redirect.BlockedUserAgentsFnosUpstreams)
+	}
+	if !cfg.Redirect.IsBlockedClientUserAgentForUpstream(UpstreamFnos, "fnos", "Filmly/99.0.0-217") {
+		t.Fatal("播种后的配置应当保持原有屏蔽行为")
+	}
+}

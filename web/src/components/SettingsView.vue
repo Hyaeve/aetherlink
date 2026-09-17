@@ -23,13 +23,32 @@ const accountConfirm = ref(false)
 const blockedUserAgentText = ref('')
 const trustedProxyText = ref('')
 const blockedEmbyUserAgentText = ref('')
+const blockedFnosUserAgentText = ref('')
 const blockedAudiobookshelfUserAgentText = ref('')
 const restoreInput = ref(null)
 const backupBusy = ref(false)
+const proxySaved = ref(false)
+const proxyBusy = ref(false)
 
-// 飞牛影视与 Emby 同为 Emby 方言，共用同一份 UA 屏蔽名单，所以候选列表也合并。
-const CANDIDATE_TYPES = { emby: ['emby', 'fnos'], audiobookshelf: ['audiobookshelf'] }
-const CANDIDATE_LABELS = { emby: 'Emby / 飞牛影视', audiobookshelf: 'ABS' }
+// 飞牛影视已从 Emby 拆出独立的屏蔽 UA 配置，三种类型各自有开关、名单与勾选。
+const CANDIDATE_TYPES = { emby: ['emby'], fnos: ['fnos'], audiobookshelf: ['audiobookshelf'] }
+const CANDIDATE_LABELS = { emby: 'Emby', fnos: '飞牛影视', audiobookshelf: 'ABS' }
+
+// 每种类型对应 redirect 配置里的三个字段：开关、关键词名单、勾选的上游。
+function toggleKey(type) {
+  if (type === 'fnos') return 'blockClientUserAgentFnos'
+  return type === 'audiobookshelf' ? 'blockClientUserAgentAudiobookshelf' : 'blockClientUserAgentEmby'
+}
+
+function listKey(type) {
+  if (type === 'fnos') return 'blockedUserAgentsFnos'
+  return type === 'audiobookshelf' ? 'blockedUserAgentsAudiobookshelf' : 'blockedUserAgentsEmby'
+}
+
+function upstreamsKey(type) {
+  if (type === 'fnos') return 'blockedUserAgentsFnosUpstreams'
+  return type === 'audiobookshelf' ? 'blockedUserAgentsAudiobookshelfUpstreams' : 'blockedUserAgentsEmbyUpstreams'
+}
 
 function candidateUpstreams(type) {
   const types = CANDIDATE_TYPES[type] || [type]
@@ -37,9 +56,7 @@ function candidateUpstreams(type) {
 }
 
 function selectedUpstreams(type) {
-  const selected = type === 'emby'
-    ? settings.value?.redirect?.blockedUserAgentsEmbyUpstreams || []
-    : settings.value?.redirect?.blockedUserAgentsAudiobookshelfUpstreams || []
+  const selected = settings.value?.redirect?.[upstreamsKey(type)] || []
   return candidateUpstreams(type).filter((upstream) => selected.includes(upstream.name))
 }
 
@@ -49,12 +66,11 @@ function candidateSummary(type) {
 }
 
 function isCandidateSelected(type, name) {
-  const key = type === 'emby' ? 'blockedUserAgentsEmbyUpstreams' : 'blockedUserAgentsAudiobookshelfUpstreams'
-  return (settings.value?.redirect?.[key] || []).includes(name)
+  return (settings.value?.redirect?.[upstreamsKey(type)] || []).includes(name)
 }
 
 function toggleCandidate(type, name) {
-  const key = type === 'emby' ? 'blockedUserAgentsEmbyUpstreams' : 'blockedUserAgentsAudiobookshelfUpstreams'
+  const key = upstreamsKey(type)
   const selected = settings.value.redirect[key] || []
   settings.value.redirect[key] = selected.includes(name)
     ? selected.filter((value) => value !== name)
@@ -65,29 +81,32 @@ function preventCandidateMenu(event, enabled) {
   if (!enabled) event.preventDefault()
 }
 
+// 每种类型对应各自的输入框 ref，读写名单时统一遍历。
+const BLOCKED_LISTS = [
+  ['emby', blockedEmbyUserAgentText],
+  ['fnos', blockedFnosUserAgentText],
+  ['audiobookshelf', blockedAudiobookshelfUserAgentText],
+]
+
 function syncBlockedUserAgents(settingsPayload) {
   trustedProxyText.value = (settingsPayload?.redirect?.trustedProxyCidrs || []).join('\n')
-  if (!Array.isArray(settingsPayload?.redirect?.blockedUserAgentsEmbyUpstreams)) settingsPayload.redirect.blockedUserAgentsEmbyUpstreams = []
-  if (!Array.isArray(settingsPayload?.redirect?.blockedUserAgentsAudiobookshelfUpstreams)) settingsPayload.redirect.blockedUserAgentsAudiobookshelfUpstreams = []
+  for (const [type, key] of [['emby', 'blockedUserAgentsEmbyUpstreams'], ['fnos', 'blockedUserAgentsFnosUpstreams'], ['audiobookshelf', 'blockedUserAgentsAudiobookshelfUpstreams']]) {
+    if (!Array.isArray(settingsPayload?.redirect?.[key])) settingsPayload.redirect[key] = []
+  }
   blockedUserAgentText.value = (settingsPayload?.redirect?.blockedUserAgents || []).join('\n')
-  blockedEmbyUserAgentText.value = (settingsPayload?.redirect?.blockedUserAgentsEmby || []).join('\n')
-  blockedAudiobookshelfUserAgentText.value = (settingsPayload?.redirect?.blockedUserAgentsAudiobookshelf || []).join('\n')
+  for (const [type, textRef] of BLOCKED_LISTS) {
+    textRef.value = (settingsPayload?.redirect?.[listKey(type)] || []).join('\n')
+  }
 }
 
 function applySecurityDraft() {
   settings.value.redirect.trustedProxyCidrs = trustedProxyText.value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)
-  settings.value.redirect.blockedUserAgents = blockedUserAgentText.value
-    .split(/\r?\n/)
-    .map((value) => value.trim())
-    .filter(Boolean)
-  settings.value.redirect.blockedUserAgentsEmby = blockedEmbyUserAgentText.value
-    .split(/\r?\n/)
-    .map((value) => value.trim())
-    .filter(Boolean)
-  settings.value.redirect.blockedUserAgentsAudiobookshelf = blockedAudiobookshelfUserAgentText.value
-    .split(/\r?\n/)
-    .map((value) => value.trim())
-    .filter(Boolean)
+  for (const [type, textRef] of BLOCKED_LISTS) {
+    settings.value.redirect[listKey(type)] = textRef.value
+      .split(/\r?\n/)
+      .map((value) => value.trim())
+      .filter(Boolean)
+  }
 }
 
 async function load() {
@@ -138,6 +157,28 @@ async function saveSecurity() {
     error.value = saveError.message
   } finally {
     securityBusy.value = false
+  }
+}
+
+// 可信前置代理窗口有独立的保存按钮，只提交这一份草稿，不动屏蔽 UA。
+async function saveTrustedProxy() {
+  proxyBusy.value = true
+  proxySaved.value = false
+  error.value = ''
+  try {
+    settings.value.redirect.trustedProxyCidrs = trustedProxyText.value
+      .split(/\r?\n/)
+      .map((value) => value.trim())
+      .filter(Boolean)
+    const payload = await api.saveSettings(settings.value)
+    settings.value = payload.settings
+    syncBlockedUserAgents(settings.value)
+    proxySaved.value = true
+    emit('saved')
+  } catch (saveError) {
+    error.value = saveError.message
+  } finally {
+    proxyBusy.value = false
   }
 }
 
@@ -294,6 +335,12 @@ onMounted(load)
             <span>IP/CIDR</span>
             <textarea v-model="trustedProxyText" rows="2" placeholder="192.168.1.10/32"></textarea>
           </label>
+          <div class="trusted-proxy-foot">
+            <span v-if="proxySaved" class="save-confirm"><i></i>已保存</span>
+            <button class="primary settings-save-button" :disabled="proxyBusy" @click="saveTrustedProxy">
+              {{ proxyBusy ? '保存中…' : '保存' }}
+            </button>
+          </div>
         </section>
 
         <section class="settings-card backup-card">
@@ -390,11 +437,11 @@ onMounted(load)
               <label class="setting-toggle security-toggle">
                 <input type="checkbox" v-model="settings.redirect.blockClientUserAgentEmby" />
                 <span class="toggle-control"></span>
-                <span class="toggle-copy"><strong>Emby / 飞牛影视 屏蔽 UA</strong><small>仅作用于下面选中的 Emby 系服务</small></span>
+                <span class="toggle-copy"><strong>Emby 屏蔽 UA</strong><small>仅作用于下面选中的 Emby 服务</small></span>
               </label>
               <label class="field security-field">
                 <span>匹配片段</span>
-                <textarea v-model="blockedEmbyUserAgentText" rows="4" :disabled="!settings.redirect.blockClientUserAgentEmby" :placeholder="'Filmly\nForward\nEmby Theater'"></textarea>
+                <textarea v-model="blockedEmbyUserAgentText" rows="4" :disabled="!settings.redirect.blockClientUserAgentEmby" :placeholder="'Infuse\nForward'"></textarea>
               </label>
               <div class="candidate-box">
                 <span class="candidate-title">候选服务器</span>
@@ -412,7 +459,38 @@ onMounted(load)
                     >
                       <span>{{ upstream.name }}</span><i>{{ isCandidateSelected('emby', upstream.name) ? '已选' : '选择' }}</i>
                     </button>
-                    <small v-if="!candidateUpstreams('emby').length" class="candidate-empty">暂无 Emby / 飞牛影视服务</small>
+                    <small v-if="!candidateUpstreams('emby').length" class="candidate-empty">暂无 Emby 服务</small>
+                  </div>
+                </details>
+              </div>
+            </div>
+            <div class="ua-policy-panel">
+              <label class="setting-toggle security-toggle">
+                <input type="checkbox" v-model="settings.redirect.blockClientUserAgentFnos" />
+                <span class="toggle-control"></span>
+                <span class="toggle-copy"><strong>飞牛影视 屏蔽 UA</strong><small>仅作用于下面选中的飞牛影视服务</small></span>
+              </label>
+              <label class="field security-field">
+                <span>匹配片段</span>
+                <textarea v-model="blockedFnosUserAgentText" rows="4" :disabled="!settings.redirect.blockClientUserAgentFnos" :placeholder="'Filmly\nForward'"></textarea>
+              </label>
+              <div class="candidate-box">
+                <span class="candidate-title">候选服务器</span>
+                <details class="candidate-picker" :class="{ disabled: !settings.redirect.blockClientUserAgentFnos }">
+                  <summary @click="preventCandidateMenu($event, settings.redirect.blockClientUserAgentFnos)"><span class="candidate-summary-text">{{ candidateSummary('fnos') }}</span><b>{{ selectedUpstreams('fnos').length }}</b></summary>
+                  <div class="candidate-menu">
+                    <button
+                      v-for="upstream in candidateUpstreams('fnos')"
+                      :key="upstream.name"
+                      type="button"
+                      class="candidate-option"
+                      :class="{ selected: isCandidateSelected('fnos', upstream.name) }"
+                      :disabled="!settings.redirect.blockClientUserAgentFnos"
+                      @click="toggleCandidate('fnos', upstream.name)"
+                    >
+                      <span>{{ upstream.name }}</span><i>{{ isCandidateSelected('fnos', upstream.name) ? '已选' : '选择' }}</i>
+                    </button>
+                    <small v-if="!candidateUpstreams('fnos').length" class="candidate-empty">暂无飞牛影视服务</small>
                   </div>
                 </details>
               </div>

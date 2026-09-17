@@ -1495,6 +1495,16 @@ td.target-cell {
   margin-top: 0;
 }
 
+/* 备份配置窗口按内容自然收紧不再撑高，冗余高度交给可信前置代理窗口吸收。 */
+.settings-sidebar > .backup-card {
+  flex: 0 0 auto;
+}
+
+.settings-sidebar > .trusted-proxy-card {
+  display: flex;
+  flex-direction: column;
+}
+
 .settings-card {
   border-radius: var(--radius-lg);
   border: 1px solid var(--border);
@@ -1509,6 +1519,12 @@ td.target-cell {
   align-items: center;
   gap: 12px;
   margin-bottom: 18px;
+}
+
+/* 卡片与弹窗的标题禁止选中，双击不会高亮出文字。 */
+.settings-card-head,
+.modal-head {
+  user-select: none;
 }
 
 .settings-card-head.compact {
@@ -1796,8 +1812,22 @@ td.target-cell {
 }
 
 .compact-save-button {
-  min-width: 68px;
+  min-width: 84px;
   justify-content: center;
+}
+
+/* 可信前置代理窗口的保存按钮沉到卡片底部，吸收侧栏的冗余高度。 */
+.trusted-proxy-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: auto;
+  padding-top: 14px;
+}
+
+.trusted-proxy-foot .settings-save-button {
+  min-width: 96px;
 }
 
 .settings-sidebar .account-card { order: 0; }
@@ -1806,7 +1836,7 @@ td.target-cell {
 
 .ua-block-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
   flex: 1 1 auto;
   min-height: 0;
@@ -2068,12 +2098,12 @@ td.target-cell {
   justify-content: center;
 }
 
-/* 设置页的操作按钮统一采用略小于常规表单按钮的尺寸。 */
+/* 设置页的操作按钮统一比常规表单按钮小半档，但保证好点、字看得清。 */
 .settings-save-button {
-  min-height: 40px;
-  padding: 8px 15px;
-  border-radius: 11px;
-  font-size: 12px;
+  min-height: 46px;
+  padding: 10px 20px;
+  border-radius: 12px;
+  font-size: 13.5px;
   font-weight: 600;
 }
 
