@@ -1,6 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
-import { api } from '../api'
+import { api, visibleMessage } from '../api'
 import { cardStyleFor } from '../palette'
 import ContextMenu from './ContextMenu.vue'
 import FloatToast from './FloatToast.vue'
@@ -58,7 +58,8 @@ async function load() {
     suggestedPort.value = payload.suggestedPort || 0
     error.value = ''
   } catch (loadError) {
-    error.value = loadError.message
+    // 会话失效（容器重启等）已由 api 层处理成回登录页，这里不显示任何文案。
+    error.value = visibleMessage(loadError)
   } finally {
     loading.value = false
   }
@@ -160,7 +161,7 @@ async function selectMode(mode) {
     await load()
     emit('changed')
   } catch (modeError) {
-    error.value = modeError.message
+    error.value = visibleMessage(modeError)
   } finally {
     modeBusy.value = false
     busy.value = false
@@ -211,7 +212,7 @@ async function toggleEnabled(upstream) {
     await load()
     emit('changed')
   } catch (toggleError) {
-    error.value = toggleError.message
+    error.value = visibleMessage(toggleError)
   } finally {
     busy.value = false
   }
@@ -224,6 +225,8 @@ async function ping(upstream) {
     const result = await api.ping(upstream.name)
     showToast(`${upstream.name} 连接正常 · ${result.info}`, { tone: 'ok' })
   } catch (pingError) {
+    // 会话失效已经回登录页了，别再弹一条「连接失败」出来误导人。
+    if (pingError.sessionExpired) return
     // 失败信息通常更长，多留一会儿再隐去。
     showToast(`${upstream.name} 连接失败：${pingError.message}`, { tone: 'danger', duration: 6000 })
   }
@@ -243,7 +246,7 @@ async function confirmDelete() {
     await load()
     emit('changed')
   } catch (deleteError) {
-    error.value = deleteError.message
+    error.value = visibleMessage(deleteError)
     pendingDelete.value = null
   } finally {
     busy.value = false

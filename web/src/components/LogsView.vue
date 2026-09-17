@@ -1,6 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { api } from '../api'
+import { api, visibleMessage } from '../api'
 
 // 这一页有两块：上半是「播放流水」，下半是「运行日志」。
 // 播放流水来自 /stats，逐条记录每个媒体请求最终是 302、透传还是中继；
@@ -46,7 +46,10 @@ async function load() {
     })
     error.value = ''
   } catch (loadError) {
-    error.value = loadError.message
+    // 这个页面每 5 秒轮询一次，容器一重启它往往比其他请求更早撞上 401。会话失效
+    // 已经由 api 层处理成「清令牌 + 回登录页」，这里必须显示空串，否则那句
+    // 「会话无效或已过期，请重新登录」会先挂成一条横栏，等主状态轮询（15 秒）才消失。
+    error.value = visibleMessage(loadError)
   }
 }
 

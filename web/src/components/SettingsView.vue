@@ -1,6 +1,6 @@
 <script setup>
 import { onMounted, ref } from 'vue'
-import { api } from '../api'
+import { api, visibleMessage } from '../api'
 
 defineProps({ status: { type: Object, default: null } })
 const emit = defineEmits(['saved', 'account-changed'])
@@ -122,7 +122,9 @@ async function load() {
     username.value = payload.account?.username || ''
     error.value = ''
   } catch (loadError) {
-    error.value = loadError.message
+    // 会话失效（容器重启、令牌到期）由 api 层处理成「清令牌 + 回登录页」，
+    // visibleMessage 在这里返回空串，页面不会先挂出一条「会话无效或已过期」。
+    error.value = visibleMessage(loadError)
   }
 }
 
@@ -138,7 +140,7 @@ async function save() {
     saved.value = true
     emit('saved')
   } catch (saveError) {
-    error.value = saveError.message
+    error.value = visibleMessage(saveError)
   } finally {
     busy.value = false
   }
@@ -156,7 +158,7 @@ async function saveSecurity() {
     securitySaved.value = true
     emit('saved')
   } catch (saveError) {
-    error.value = saveError.message
+    error.value = visibleMessage(saveError)
   } finally {
     securityBusy.value = false
   }
@@ -178,7 +180,7 @@ async function saveTrustedProxy() {
     proxySaved.value = true
     emit('saved')
   } catch (saveError) {
-    error.value = saveError.message
+    error.value = visibleMessage(saveError)
   } finally {
     proxyBusy.value = false
   }
@@ -196,7 +198,7 @@ async function downloadBackup() {
     anchor.click()
     URL.revokeObjectURL(url)
   } catch (backupError) {
-    error.value = backupError.message
+    error.value = visibleMessage(backupError)
   } finally {
     backupBusy.value = false
   }
@@ -220,7 +222,7 @@ async function restoreBackup(event) {
     await load()
     emit('saved')
   } catch (restoreError) {
-    error.value = restoreError.message
+    error.value = visibleMessage(restoreError)
   } finally {
     backupBusy.value = false
   }
@@ -245,7 +247,7 @@ async function confirmAccountSave() {
     passwordVisible.value = false
     emit('account-changed')
   } catch (saveError) {
-    accountError.value = saveError.message
+    accountError.value = visibleMessage(saveError)
   } finally {
     accountBusy.value = false
   }

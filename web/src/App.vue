@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { api, getToken, setToken } from './api'
+import { api, getToken, setToken, setSessionExpiredHandler, visibleMessage } from './api'
 import UpstreamsView from './components/UpstreamsView.vue'
 import LogsView from './components/LogsView.vue'
 import SettingsView from './components/SettingsView.vue'
@@ -106,8 +106,10 @@ async function bootstrap() {
     status.value = await api.status()
     enterApp()
   } catch {
+    // 令牌已经失效（401 已由 api 层清掉令牌并切回登录页），或者后端暂时不可达：
+    // 两种情况都停在登录页，并且不显示任何错误文案。
     setToken('')
-    gate.value = 'login'
+    resetToLogin()
   }
 }
 
@@ -129,16 +131,9 @@ async function refreshStatus() {
     status.value = await api.status()
     statusError.value = ''
   } catch (error) {
-    if (error.status === 401) {
-      // 会话失效是正常流转（容器重启、令牌到期）：清掉本地令牌回登录页，
-      // 不显示任何错误文案。
-      setToken('')
-      status.value = null
-      statusError.value = ''
-      gate.value = 'login'
-      return
-    }
-    statusError.value = error.message
+    // 会话失效（401）已经由 api 层统一处理成「清令牌 + 回登录页」，这里不再重复
+    // 判断，也不要把后端那句「会话无效或已过期，请重新登录」挂到界面上。
+    statusError.value = visibleMessage(error)
   }
 }
 
@@ -158,6 +153,27 @@ async function submitLogin() {
   }
 }
 
+// resetToLogin 把界面退回登录页：停掉状态轮询、丢掉缓存的状态。会话失效、主动
+// 退出、改完账号都走这里，区别只在要不要在登录页留一条说明文案。
+function resetToLogin() {
+  accountMenuOpen.value = false
+  status.value = null
+  statusError.value = ''
+  if (statusTimer) {
+    clearInterval(statusTimer)
+    statusTimer = null
+  }
+  gate.value = 'login'
+}
+
+// 令牌失效由 api 层统一上报（见 api.js 的 request）。这里只把界面收干净：不显示
+// 任何错误文案，直接回登录页——容器重启后用户看到的就是干净的登录页，而不是一句
+// 「会话无效或已过期，请重新登录」。
+setSessionExpiredHandler(() => {
+  authError.value = ''
+  resetToLogin()
+})
+
 async function logout() {
   accountMenuOpen.value = false
   try {
@@ -166,18 +182,14 @@ async function logout() {
     // 令牌可能已经过期，本地清掉就够了。
   }
   setToken('')
-  status.value = null
-  if (statusTimer) clearInterval(statusTimer)
-  gate.value = 'login'
+  resetToLogin()
 }
 
 async function onAccountChanged() {
   setToken('')
-  status.value = null
-  if (statusTimer) clearInterval(statusTimer)
   password.value = ''
   authError.value = '账号已更新，请重新登录'
-  gate.value = 'login'
+  resetToLogin()
 }
 const uptime = computed(() => {
   const seconds = status.value?.uptimeSeconds || 0

@@ -5,6 +5,23 @@
 const BASE = '/aetherlink/api'
 const TOKEN_KEY = 'aetherlink.session'
 
+// 会话失效（容器重启、令牌到期、账号改过）时的回调，由 App 注册：清掉界面状态、
+// 退回登录页。判断集中在这里——否则每个页面都要各判一次，还容易把后端那句
+// 「会话无效或已过期，请重新登录」当成普通错误挂在界面上。
+let sessionExpiredHandler = null
+
+export function setSessionExpiredHandler(handler) {
+  sessionExpiredHandler = handler
+}
+
+// visibleMessage 给出适合直接显示的错误文案：会话失效返回空串，调用方的
+// `v-if="error"` 自然就不渲染了——那一刻界面已经回登录页，再挂一条错误只会让人
+// 以为出了别的问题。其它错误原样返回。
+export function visibleMessage(error) {
+  if (error && error.sessionExpired) return ''
+  return (error && error.message) || ''
+}
+
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY) || ''
 }
@@ -43,6 +60,14 @@ async function request(path, options = {}) {
     error.status = response.status
     // code 让界面区分不同的失败原因（目前只有 unauthorized）。
     error.code = payload?.code || ''
+    // 带着令牌还被回 401，就是会话失效：清掉本地令牌并让界面直接回登录页，而不是
+    // 把后端的 401 文案当错误显示出来。（不带令牌的 401 是登录口令错误，交给登录
+    // 表单自己处理，不走这条路。）
+    if (response.status === 401 && token) {
+      error.sessionExpired = true
+      setToken('')
+      if (sessionExpiredHandler) sessionExpiredHandler()
+    }
     throw error
   }
   return payload

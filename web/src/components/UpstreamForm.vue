@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { api } from '../api'
+import { api, visibleMessage } from '../api'
 
 const props = defineProps({
   // upstream 为 null 表示新增。
@@ -136,7 +136,10 @@ async function loadSavedSecrets() {
     form.value.apiKey = (credentials?.apiKey || '').trim()
     form.value.keepApiKey = !form.value.apiKey
   } catch (loadError) {
-    error.value = `读取已保存的凭据失败，直接保存会保留原值：${loadError.message}`
+    // 会话失效已经由 api 层处理成回登录页，不必再挂一句「读取凭据失败」。
+    if (!loadError.sessionExpired) {
+      error.value = `读取已保存的凭据失败，直接保存会保留原值：${loadError.message}`
+    }
   } finally {
     secretsLoading.value = false
   }
@@ -277,7 +280,8 @@ async function test() {
   try {
     testResult.value = await api.testUpstream(buildPayload())
   } catch (testError) {
-    testResult.value = { ok: false, error: testError.message }
+    // 会话失效已经回登录页了，别在结果框里留一条空错误。
+    testResult.value = testError.sessionExpired ? null : { ok: false, error: testError.message }
   }
 }
 
@@ -294,7 +298,7 @@ async function save() {
     }
     emit('saved')
   } catch (saveError) {
-    error.value = saveError.message
+    error.value = visibleMessage(saveError)
   } finally {
     busy.value = false
   }
