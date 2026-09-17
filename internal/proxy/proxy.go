@@ -1060,41 +1060,72 @@ func (s *Server) relayRemote(writer http.ResponseWriter, request *http.Request, 
 	defer response.Body.Close()
 
 	copyResponseHeaders(writer.Header(), response.Header)
-	if writer.Header().Get("Content-Type") == "" || writer.Header().Get("Content-Type") == "application/octet-stream" {
-		if mimeType := mimeTypeForURL(target); mimeType != "" {
-			writer.Header().Set("Content-Type", mimeType)
+
+	// 上游给不出有效类型时（网盘 / CDN 直链一律回 application/octet-stream）才替它
+	// 判断。顺序是「扩展名 → 字节」：扩展名能分出 m4a/m4b 这类纯音频容器（别把
+	// 有声书当视频），而直链路径常常只有一串 ID、根本没有扩展名可猜——线上就有
+	// 「文件名写着 .iso、字节其实是 MP4」的直链，那种情况只能看响应体开头的魔数。
+	var prefix []byte
+	if upstreamType := writer.Header().Get("Content-Type"); upstreamType == "" || strings.EqualFold(upstreamType, "application/octet-stream") {
+		if guessed := mimeTypeForURL(target); guessed != "" {
+			writer.Header().Set("Content-Type", guessed)
+		} else if rangeStartsAtZero(request.Header.Get("Range")) {
+			prefix = readSniffPrefix(response.Body)
+			if sniffed := sniffContentType(prefix); sniffed != "" {
+				writer.Header().Set("Content-Type", sniffed)
+			}
 		}
 	}
-	// 回给客户端的 Content-Type 必须进日志：网盘直链多回 application/octet-stream，
-	// 最终类型由上面那段兜底决定，而「播放器读完响应头就断开」恰恰是它决定的。
-	sentType := writer.Header().Get("Content-Type")
+	// 回给客户端的头必须进日志：中继排障时播放器只看得到这半边，差一个字段的表现
+	// 都是「读了少量字节就断开」，不写下来就只能靠猜。
+	sentNote := sentHeaderNote(writer.Header())
 	writer.WriteHeader(response.StatusCode)
 	if request.Method == http.MethodHead {
 		return response.StatusCode, nil
 	}
+	if len(prefix) > 0 {
+		if _, err := writer.Write(prefix); err != nil {
+			return response.StatusCode, err
+		}
+	}
 	recorder := &readErrorRecorder{reader: response.Body}
-	written, copyErr := io.Copy(writer, recorder)
+	copied, copyErr := io.Copy(writer, recorder)
+	written := copied + int64(len(prefix))
 	elapsed := time.Since(started).Round(time.Millisecond)
-	// 顺序有讲究：客户端主动断开（拖动进度条、切集）是常态，先排除掉；然后才
-	// 区分「上游断流」与「写回客户端失败」——前者的锅在媒体源（OpenList /
-	// 网盘），后者在播放器或网络，混成一条日志会把排查方向带反。
-	//
-	// 「客户端主动断开」不再只记 debug：中继模式下它是「播放器不认我们回的响应」
-	// 与「正常拖动进度条」共用的出口，而两者在日志里的形态一模一样（上一级只留
-	// 一行「状态 206」）。开了 Info 并带上字节数与 Content-Type 才能区分开。
+	// 三条出口分开报，谁也别盖住谁：
+	//   · 客户端还在等、上游先读失败 —— 确定是源头的事（网盘断流、直链过期）；
+	//   · 客户端断开 —— 拖进度条、切集，或者读了一点就不认这个响应；
+	//   · 只写回失败 —— 客户端先走，上游没问题。
+	// 关键在上一版把顺序写反了：客户端断开会让上游请求一起被取消，读端必然也报错，
+	// 于是「先判客户端」就把每一次拖进度条都写成源头故障。反过来「先判上游」也不对，
+	// 会把客户端读了一点就放弃写成「上游断流」。所以上游断流只有在客户端还在等时
+	// 才算定论，客户端断开那一支只把读到的错误附带提一句。
+	clientGone := request.Context().Err() != nil
 	switch {
-	case request.Context().Err() != nil:
-		logx.Infof("[%s] 中继被客户端中断 %s -> %s：已转发 %s（上游 %d 声明 %s），客户端 Range=%q，回给客户端的 Content-Type=%q，用时 %s；客户端主动断开，只吃了少量字节就断开通常是不认这个响应，拖进度条与切集则是正常形态", s.provider.Name(), request.URL.Path, target, formatBytes(written), response.StatusCode, formatBytes(response.ContentLength), request.Header.Get("Range"), sentType, elapsed)
-	case recorder.err != nil:
-		logx.Warnf("[%s] 中继上游断流 %s -> %s：上游 %d 声明 %s，只转发出去 %s，客户端会卡住或播不动；客户端 Range=%q，Content-Range=%q，回给客户端的 Content-Type=%q，用时 %s，原因：%v", s.provider.Name(), request.URL.Path, target, response.StatusCode, formatBytes(response.ContentLength), formatBytes(written), request.Header.Get("Range"), response.Header.Get("Content-Range"), sentType, elapsed, recorder.err)
+	case recorder.err != nil && !clientGone:
+		logx.Warnf("[%s] 中继上游断流 %s -> %s：上游 %d 声明 %s，只转发出去 %s，客户端还在等剩下的字节，播放必然卡住或失败；客户端 Range=%q，%s，用时 %s，原因：%v", s.provider.Name(), request.URL.Path, target, response.StatusCode, formatBytes(response.ContentLength), formatBytes(written), request.Header.Get("Range"), sentNote, elapsed, recorder.err)
+	case clientGone:
+		aside := ""
+		if recorder.err != nil {
+			aside = fmt.Sprintf("；同时读到上游错误：%v（客户端断开会让上游请求一起取消，多为连带现象）", recorder.err)
+		}
+		logx.Infof("[%s] 中继被客户端中断 %s：已转发 %s（上游 %d 声明 %s），客户端 Range=%q，%s，用时 %s%s；客户端主动断开，只吃了少量字节通常是不认这个响应，拖进度条与切集则是正常形态", s.provider.Name(), request.URL.Path, formatBytes(written), response.StatusCode, formatBytes(response.ContentLength), request.Header.Get("Range"), sentNote, elapsed, aside)
 	case copyErr != nil:
-		logx.Warnf("[%s] 中继写回客户端失败 %s：已转发 %s，回给客户端的 Content-Type=%q，用时 %s，原因：%v", s.provider.Name(), request.URL.Path, formatBytes(written), sentType, elapsed, copyErr)
+		logx.Infof("[%s] 中继写回客户端结束 %s：已转发 %s，客户端 Range=%q，%s，用时 %s，原因：%v", s.provider.Name(), request.URL.Path, formatBytes(written), request.Header.Get("Range"), sentNote, elapsed, copyErr)
 	case response.ContentLength > 0 && written < response.ContentLength:
-		logx.Warnf("[%s] 中继不完整 %s -> %s：上游 %d 声明 %s，只转发出去 %s，客户端会卡住或播不动；客户端 Range=%q，Content-Range=%q，回给客户端的 Content-Type=%q，用时 %s", s.provider.Name(), request.URL.Path, target, response.StatusCode, formatBytes(response.ContentLength), formatBytes(written), request.Header.Get("Range"), response.Header.Get("Content-Range"), sentType, elapsed)
+		logx.Warnf("[%s] 中继不完整 %s -> %s：上游 %d 声明 %s，只转发出去 %s，客户端会卡住或播不动；客户端 Range=%q，%s，用时 %s", s.provider.Name(), request.URL.Path, target, response.StatusCode, formatBytes(response.ContentLength), formatBytes(written), request.Header.Get("Range"), sentNote, elapsed)
 	default:
-		logx.Infof("[%s] 中继完成 %s -> %s：上游 %d，转发 %s（长度 %s），客户端 Range=%q，Accept-Ranges=%q，回给客户端的 Content-Type=%q，用时 %s", s.provider.Name(), request.URL.Path, target, response.StatusCode, formatBytes(written), formatBytes(response.ContentLength), request.Header.Get("Range"), response.Header.Get("Accept-Ranges"), sentType, elapsed)
+		logx.Infof("[%s] 中继完成 %s -> %s：上游 %d，转发 %s（长度 %s），客户端 Range=%q，%s，用时 %s", s.provider.Name(), request.URL.Path, target, response.StatusCode, formatBytes(written), formatBytes(response.ContentLength), request.Header.Get("Range"), sentNote, elapsed)
 	}
 	return response.StatusCode, nil
+}
+
+// sentHeaderNote 把「回给客户端的响应头」摘成一行。中继排障里这半边一直是不可见
+// 的，而播放器只认它：类型、长度、区间、可跳转标记差一个，表现都是「读了少量
+// 字节就断开」——日志里必须能直接看到我们到底回了什么。
+func sentHeaderNote(header http.Header) string {
+	return fmt.Sprintf("回给客户端：Content-Type=%q，Content-Length=%q，Content-Range=%q，Accept-Ranges=%q",
+		header.Get("Content-Type"), header.Get("Content-Length"), header.Get("Content-Range"), header.Get("Accept-Ranges"))
 }
 
 // readErrorRecorder 包住上游响应体，单独记下「读取失败」。io.Copy 只回一个
@@ -1238,4 +1269,80 @@ func mimeTypeForURL(target string) string {
 	default:
 		return ""
 	}
+}
+
+// sniffBytes 是判断真实容器需要读的头部字节数：ftyp、EBML、RIFF、OggS 这些魔数都在
+// 前 16 字节内，WebM 的 DocType 也在前 64 字节内。
+const sniffBytes = 128
+
+// readSniffPrefix 从响应体开头取一小段用于判断容器。读到够判断（至少 16 字节，最多
+// sniffBytes）就停，不为凑满缓冲把首字节卡在网络上；取到的字节由调用方原样写回
+// 客户端——判断容器不能吃掉任何一个字节。
+func readSniffPrefix(body io.Reader) []byte {
+	buffer := make([]byte, sniffBytes)
+	filled := 0
+	idle := 0
+	for filled < 16 {
+		read, err := body.Read(buffer[filled:])
+		if read > 0 {
+			filled += read
+			idle = 0
+		} else {
+			idle++
+		}
+		if err != nil || idle > 1 {
+			break
+		}
+	}
+	if filled == 0 {
+		return nil
+	}
+	return buffer[:filled]
+}
+
+// sniffContentType 从响应体开头的魔数判断真实容器。
+//
+// 网盘 / CDN 直链的路径常常只有一串 ID（没有扩展名可猜），回给客户端的又一律是
+// application/octet-stream——这时按扩展名猜必然落空，只能看字节。线上就有这样
+// 一条直链：路径是 /50f351580c084c969c0c84f4e500ed39086，Content-Disposition 里
+// 的文件名写着 .iso，而前 64 字节是 ftypisom…mp41——**文件名与 Content-Type 都
+// 不可信，字节可信**。
+func sniffContentType(head []byte) string {
+	switch {
+	case len(head) >= 12 && string(head[4:8]) == "ftyp":
+		// MP4 家族。品牌能分出纯音频容器（m4a/m4b）与视频，别把有声书当视频。
+		switch string(head[8:12]) {
+		case "M4A ", "M4B ", "M4P ", "F4A ":
+			return "audio/mp4"
+		}
+		return "video/mp4"
+	case len(head) >= 4 && bytes.Equal(head[:4], []byte{0x1A, 0x45, 0xDF, 0xA3}):
+		// EBML：Matroska 与 WebM 共用容器头，靠 DocType 区分。
+		if bytes.Contains(head, []byte("webm")) {
+			return "video/webm"
+		}
+		return "video/x-matroska"
+	case len(head) >= 12 && string(head[:4]) == "RIFF" && string(head[8:12]) == "AVI ":
+		return "video/x-msvideo"
+	case len(head) >= 12 && string(head[:4]) == "RIFF" && string(head[8:12]) == "WAVE":
+		return "audio/wav"
+	case len(head) >= 4 && string(head[:4]) == "OggS":
+		return "application/ogg"
+	case len(head) >= 4 && string(head[:4]) == "fLaC":
+		return "audio/flac"
+	case len(head) >= 4 && bytes.Equal(head[:4], []byte{0x30, 0x26, 0xB2, 0x75}):
+		// ASF（wmv/wma）的 16 字节 GUID 头。
+		return "video/x-ms-asf"
+	}
+	return ""
+}
+
+// rangeStartsAtZero 判断这次响应是不是从文件开头开始的。只有从头开始的字节才谈得
+// 上「看魔数」：seek 到中途的响应，开头就是媒体数据本身，判断不出容器。
+func rangeStartsAtZero(raw string) bool {
+	if raw == "" {
+		return true
+	}
+	// 多段 Range 的响应体是 multipart 拼出来的，更不能猜。
+	return strings.HasPrefix(raw, "bytes=0-") && !strings.Contains(raw, ",")
 }

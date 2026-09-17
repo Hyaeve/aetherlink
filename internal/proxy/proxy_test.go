@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -549,6 +551,149 @@ func TestRedirectNeverRelaysBytesWithRange(t *testing.T) {
 	}
 	if snapshot := collector.Snapshot(10); snapshot.ProxyStreams != 1 {
 		t.Fatalf("proxy stream count = %d, want 1", snapshot.ProxyStreams)
+	}
+}
+
+// 中继回给播放器的响应必须与 CDN 直连等价，尤其是 Content-Length：少了它，Go 会
+// 把响应改写成 chunked，播放器拿不到总长度——moov 在文件尾部的 MP4 就再也无法
+// seek，读完头部即断开，而日志里只剩一行「客户端中断」，排查方向全错。
+//
+// 这里走真实 TCP（httptest.NewServer），因为传输编码由 Go 服务端在写出时才决定，
+// ResponseRecorder 看不到。上游照着线上那条中国移动 EOS 直链的真实形态搭：206、
+// Accept-Ranges、ETag、路径无扩展名、Content-Disposition 挂着 .iso 文件名，而
+// 字节开头是 MP4 的 ftyp——「文件名说 iso、内容其实是 mp4」正是线上发生的事。
+func TestRelayWireResponseMatchesTheDirectLink(t *testing.T) {
+	const total = 1 << 20
+	body := make([]byte, total)
+	copy(body, []byte{0x00, 0x00, 0x00, 0x20, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm', 0x00, 0x00, 0x02, 0x00})
+
+	cdn := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		start, end := 0, total-1
+		partial := false
+		if raw := request.Header.Get("Range"); strings.HasPrefix(raw, "bytes=") {
+			partial = true
+			parts := strings.SplitN(strings.TrimPrefix(raw, "bytes="), "-", 2)
+			if parsed, err := strconv.Atoi(parts[0]); err == nil {
+				start = parsed
+			}
+			if len(parts) == 2 && parts[1] != "" {
+				if parsed, err := strconv.Atoi(parts[1]); err == nil {
+					end = parsed
+				}
+			}
+		}
+		writer.Header().Set("Content-Type", "application/octet-stream")
+		writer.Header().Set("Accept-Ranges", "bytes")
+		writer.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, total))
+		writer.Header().Set("Content-Length", strconv.Itoa(end-start+1))
+		writer.Header().Set("ETag", `"f13d7b17792e412feafbb91e18fe745a-337"`)
+		writer.Header().Set("Last-Modified", "Thu, 03 Sep 2026 13:27:26 GMT")
+		writer.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''01-4K.%E9%AB%98%E7%A0%81%E7%8E%87.iso")
+		if partial {
+			writer.WriteHeader(http.StatusPartialContent)
+		}
+		_, _ = writer.Write(body[start : end+1])
+	}))
+	defer cdn.Close()
+
+	// 线上那条链的路径只有一串 ID，没有扩展名——按扩展名猜类型必然落空。
+	root, strmPath, regularPath := writeStrm(t, cdn.URL+"/50f351580c084c969c0c84f4e500ed39086")
+	fake := newFakeABS(t, strmPath, regularPath)
+	redirectCfg := defaultRedirect()
+	redirectCfg.Mode = config.RedirectNever
+	server, _ := newTestServer(t, fake.server.URL, root, redirectCfg)
+
+	front := httptest.NewServer(server)
+	defer front.Close()
+
+	request, err := http.NewRequest(http.MethodGet, front.URL+"/api/items/book-1/file/ino-strm", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Range", "bytes=0-")
+	response, err := front.Client().Do(request)
+	if err != nil {
+		t.Fatalf("relay request: %v", err)
+	}
+	defer response.Body.Close()
+	payload, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read relayed body: %v", err)
+	}
+
+	for _, header := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "ETag", "Last-Modified", "Content-Disposition"} {
+		t.Logf("%-20s = %q", header, response.Header.Get(header))
+	}
+	t.Logf("status=%d transferEncoding=%v contentLength=%d bodyBytes=%d",
+		response.StatusCode, response.TransferEncoding, response.ContentLength, len(payload))
+
+	if response.StatusCode != http.StatusPartialContent {
+		t.Fatalf("status = %d, want 206", response.StatusCode)
+	}
+	if len(response.TransferEncoding) != 0 {
+		t.Fatalf("transferEncoding = %v, want 空（回给播放器必须是定长响应，chunked 会让它拿不到总长度、无法 seek）", response.TransferEncoding)
+	}
+	if response.ContentLength != total {
+		t.Fatalf("Content-Length = %d, want %d", response.ContentLength, total)
+	}
+	if got, want := response.Header.Get("Content-Range"), fmt.Sprintf("bytes 0-%d/%d", total-1, total); got != want {
+		t.Fatalf("Content-Range = %q, want %q", got, want)
+	}
+	if got := response.Header.Get("Accept-Ranges"); got != "bytes" {
+		t.Fatalf("Accept-Ranges = %q, want bytes（播放器据此判断能否 seek）", got)
+	}
+	if len(payload) != total {
+		t.Fatalf("bodyBytes = %d, want %d", len(payload), total)
+	}
+	// 路径没有扩展名可猜，但字节开头是 MP4 的 ftyp：真实容器必须压过「猜不出来」。
+	if got := response.Header.Get("Content-Type"); got != "video/mp4" {
+		t.Fatalf("Content-Type = %q, want video/mp4（按字节判断真实容器，不能把视频交成 octet-stream/音频）", got)
+	}
+}
+
+// 直链路径没有扩展名时，字节是唯一可信的容器线索。这份表把支持的魔数与「认不出来
+// 就别猜」一起钉住——真 ISO 光盘镜像就是认不出来的那类，硬塞一个类型只会误导播放器。
+func TestSniffContentTypeReadsTheContainerFromBytes(t *testing.T) {
+	cases := []struct {
+		name string
+		head []byte
+		want string
+	}{
+		{"mp4", []byte("\x00\x00\x00\x20ftypisom\x00\x00\x02\x00mp41"), "video/mp4"},
+		{"m4b 有声书", []byte("\x00\x00\x00\x20ftypM4B \x00\x00\x02\x00isom"), "audio/mp4"},
+		{"m4a", []byte("\x00\x00\x00\x18ftypM4A mp42isom"), "audio/mp4"},
+		{"matroska", []byte("\x1a\x45\xdf\xa3\x01\x00\x00\x00\x00\x00\x00\x1fB\x86\x81\x01matroska"), "video/x-matroska"},
+		{"webm", []byte("\x1a\x45\xdf\xa3\x01\x00\x00\x00\x00\x00\x00\x1fB\x86\x81\x01webm"), "video/webm"},
+		{"avi", []byte("RIFF\x00\x00\x00\x00AVI LIST"), "video/x-msvideo"},
+		{"wav", []byte("RIFF\x00\x00\x00\x00WAVEfmt "), "audio/wav"},
+		{"ogg", []byte("OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00"), "application/ogg"},
+		{"flac", []byte("fLaC\x00\x00\x00\x22\x00\x00\x00\x00\x00\x00"), "audio/flac"},
+		{"asf", []byte("\x30\x26\xb2\x75\x8e\x66\xcf\x11\xa6\xd9\x00\xaa\x00\x62\xce\x6c"), "video/x-ms-asf"},
+		{"认不出来就别猜（真 ISO 镜像）", []byte("\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b"), ""},
+		{"空响应体", nil, ""},
+	}
+	for _, testCase := range cases {
+		if got := sniffContentType(testCase.head); got != testCase.want {
+			t.Fatalf("%s: sniffContentType = %q, want %q", testCase.name, got, testCase.want)
+		}
+	}
+
+	// 只有从文件开头开始的单段请求才谈得上看魔数。
+	ranges := []struct {
+		raw  string
+		want bool
+	}{
+		{"", true},
+		{"bytes=0-", true},
+		{"bytes=0-1023", true},
+		{"bytes=100-", false},
+		{"bytes=-65536", false},
+		{"bytes=0-10,20-30", false},
+	}
+	for _, testCase := range ranges {
+		if got := rangeStartsAtZero(testCase.raw); got != testCase.want {
+			t.Fatalf("rangeStartsAtZero(%q) = %v, want %v", testCase.raw, got, testCase.want)
+		}
 	}
 }
 

@@ -52,6 +52,8 @@
 6. 指针指向容器本地文件 → `http.ServeContent` 直读（自动支持 Range/HEAD）。
 7. 远程目标 → 按 `redirect.mode` 决定 302 还是中继。
 
+中继在响应头上是**透明的**：上游的状态码、`Content-Length`、`Content-Range`、`Accept-Ranges`、`ETag`、`Last-Modified`、`Content-Disposition` 全部原样转发（只滤 hop-by-hop），因此回给播放器的一定是定长响应、不会退化成 chunked。这不是细节：`Content-Length` 一旦丢失，moov 在文件尾部的 MP4 就无法 seek（播放器要按总长度去取尾部），表现是「读了几百 KB 就断开」，而日志里只剩一行「客户端中断」。唯一被改写的是 `Content-Type`——上游给空或 `application/octet-stream` 时，先按直链扩展名、扩展名缺了就按响应体开头的魔数补，因为网盘 CDN 与移动云 EOS 的直链路径常常只有一串 ID，且它们的 `Content-Disposition` 文件名也不可信（线上出现过文件名 `.iso`、字节是 MP4 的直链）。所以**302 与中继交给播放器的响应应当等价**：两边表现不同时，先怀疑客户端对 URL / 会话的差异，而不是字节投递。
+
 ## 配置变更流程
 
 网页上的每次保存都走 `runtime.Apply`，顺序固定：
