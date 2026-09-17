@@ -215,6 +215,48 @@ func defaultRedirect() config.Redirect {
 	}
 }
 
+// 安全网：跟随上游重定向开启、直链跟到底仍是没有跳转的内网地址（OpenList
+// 本地代理形态）而客户端在外网时，「始终跳转」也不能把连不上的地址 302 出去，
+// 改由 AetherLink 中继保证能播。
+func TestIntranetLocalProxyTargetRelaysForPublicClient(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Write([]byte("origin-stream-bytes"))
+	}))
+	defer origin.Close()
+
+	root, strmPath, regularPath := writeStrm(t, origin.URL+"/d/local-proxy.m4a")
+	fake := newFakeABS(t, strmPath, regularPath)
+	redirectCfg := defaultRedirect()
+	redirectCfg.FollowUpstreamRedirects = true
+	server, collector := newTestServer(t, fake.server.URL, root, redirectCfg)
+
+	// 外网客户端（httptest 默认 192.0.2.1 属公网段）：内网直链 302 出去连不上，
+	// 必须中继出字节。
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/items/book-1/file/ino-strm", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("public client status = %d, want 200 (relay); body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Body.String() != "origin-stream-bytes" {
+		t.Fatalf("body = %q, want origin bytes", recorder.Body.String())
+	}
+	if event := collector.Snapshot(1).RecentEvents[0]; event.Outcome != stats.OutcomeProxyStream {
+		t.Fatalf("outcome = %q, want proxy", event.Outcome)
+	}
+
+	// 内网客户端连内网直链没有障碍，照常 302。
+	privateRecorder := httptest.NewRecorder()
+	privateRequest := httptest.NewRequest(http.MethodGet, "/api/items/book-1/file/ino-strm", nil)
+	privateRequest.RemoteAddr = "192.168.1.20:5000"
+	server.ServeHTTP(privateRecorder, privateRequest)
+	if privateRecorder.Code != http.StatusFound {
+		t.Fatalf("private client status = %d, want 302", privateRecorder.Code)
+	}
+	if snapshot := collector.Snapshot(10); snapshot.Redirects != 1 || snapshot.ProxyStreams != 1 {
+		t.Fatalf("redirects = %d, proxy = %d, want 1/1", snapshot.Redirects, snapshot.ProxyStreams)
+	}
+}
+
 func TestFormatCacheTTLUsesMinutesAndHoursWithoutSeconds(t *testing.T) {
 	tests := []struct {
 		seconds int64

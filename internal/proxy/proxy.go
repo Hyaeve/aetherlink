@@ -336,7 +336,20 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 		return
 	}
 
-	if s.resolver.ShouldRedirectForClient(resolution, s.redirect, event.Client) {
+	// 跳转前的安全网：跟随上游重定向已开启、却一步都没跳（说明这个地址自己在
+	// 原地出流，典型的 OpenList「本地代理」形态），而直链还是内网地址、客户端
+	// 又在外网——302 出去客户端连不上，播放必然失败。这种目标没有「真正的
+	// 直链」可拿，改由 AetherLink 中继保证能播。没开跟随时尊重原语义：
+	// 302 照发，日志里的内网提示负责解释。
+	wantRedirect := s.resolver.ShouldRedirectForClient(resolution, s.redirect, event.Client)
+	intranetTargetPublicClient := wantRedirect && s.redirect.FollowUpstreamRedirects &&
+		len(resolution.Hops) == 0 && urlx.IsPrivateHost(playURL) &&
+		resolver.ScopeOfClient(event.Client) == resolver.ClientScopePublic
+	if intranetTargetPublicClient {
+		wantRedirect = false
+	}
+
+	if wantRedirect {
 		event.StatusCode = http.StatusFound
 		note := cacheNote(event) + "；已 302 到真实地址"
 		if len(resolution.Hops) > 0 {
@@ -352,13 +365,17 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 		return
 	}
 
-	// 走到这里说明目标解析出来了，但当前的 302 策略不允许跳转，
-	// 只能由 AetherLink 中继字节。把具体原因写清楚，否则用户会以为 302 坏了。
+	// 走到中继有两种情况：302 策略不允许跳转，或者直链是内网地址而客户端在
+	// 外网（302 出去也连不上）。把具体原因写清楚，否则用户会以为 302 坏了。
 	status, err := s.relayRemote(writer, request, playURL)
 	event.StatusCode = status
 	if err != nil {
 		event.Error = err.Error()
 		finish(stats.OutcomeError, "中继 strm 目标失败")
+		return
+	}
+	if intranetTargetPublicClient {
+		finish(stats.OutcomeProxyStream, cacheNote(event)+"；直链是内网地址而客户端在外网，302 出去也连不上，改由 AetherLink 中继。若要真正的 302，请让该服务（如 OpenList）关闭本地代理输出真直链，或把它发布到公网")
 		return
 	}
 	finish(stats.OutcomeProxyStream, cacheNote(event)+"；按 302 策略不跳转，改由 AetherLink 中继："+s.noRedirectReason(resolution, event.Client)+privateTargetNote(playURL))
