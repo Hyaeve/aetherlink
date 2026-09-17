@@ -336,14 +336,14 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 		return
 	}
 
-	// 跳转前的安全网：跟随上游重定向已开启、却一步都没跳（说明这个地址自己在
-	// 原地出流，典型的 OpenList「本地代理」形态），而直链还是内网地址、客户端
-	// 又在外网——302 出去客户端连不上，播放必然失败。这种目标没有「真正的
-	// 直链」可拿，改由 AetherLink 中继保证能播。没开跟随时尊重原语义：
+	// 跳转前的安全网：直链是内网地址、客户端却在外网——302 出去客户端连不上，
+	// 播放必然失败。典型的 OpenList「本地代理」形态：它自己原地出流，跟随也就
+	// 无处可去（零跳；就算它回一跳，落点仍是自己的内网地址）。这种目标没有
+	// 「真正的直链」可拿，改由 AetherLink 中继保证能播。没开跟随时尊重原语义：
 	// 302 照发，日志里的内网提示负责解释。
 	wantRedirect := s.resolver.ShouldRedirectForClient(resolution, s.redirect, event.Client)
 	intranetTargetPublicClient := wantRedirect && s.redirect.FollowUpstreamRedirects &&
-		len(resolution.Hops) == 0 && urlx.IsPrivateHost(playURL) &&
+		urlx.IsPrivateHost(playURL) &&
 		resolver.ScopeOfClient(event.Client) == resolver.ClientScopePublic
 	if intranetTargetPublicClient {
 		wantRedirect = false
@@ -1028,6 +1028,7 @@ func userAgentNote(event stats.Event) string {
 // relayRemote streams the remote target through AetherLink, preserving Range
 // semantics so seeking keeps working.
 func (s *Server) relayRemote(writer http.ResponseWriter, request *http.Request, target string) (int, error) {
+	started := time.Now()
 	ctx := request.Context()
 	if s.redirect.StreamTimeout > 0 {
 		var cancel context.CancelFunc
@@ -1068,13 +1069,58 @@ func (s *Server) relayRemote(writer http.ResponseWriter, request *http.Request, 
 	if request.Method == http.MethodHead {
 		return response.StatusCode, nil
 	}
-	if _, err := io.Copy(writer, response.Body); err != nil {
-		if !errors.Is(err, context.Canceled) {
-			logx.Debugf("[proxy] relay copy ended early for %s: %v", target, err)
-		}
-		return response.StatusCode, nil
+	recorder := &readErrorRecorder{reader: response.Body}
+	written, copyErr := io.Copy(writer, recorder)
+	elapsed := time.Since(started).Round(time.Millisecond)
+	// 顺序有讲究：客户端主动断开（拖动进度条、切集）是常态，先排除掉；然后才
+	// 区分「上游断流」与「写回客户端失败」——前者的锅在媒体源（OpenList /
+	// 网盘），后者在播放器或网络，混成一条日志会把排查方向带反。
+	switch {
+	case request.Context().Err() != nil:
+		logx.Debugf("[%s] 中继被客户端中断 %s：已转发 %s，用时 %s", s.provider.Name(), request.URL.Path, formatBytes(written), elapsed)
+	case recorder.err != nil:
+		logx.Warnf("[%s] 中继上游断流 %s -> %s：上游 %d 声明 %s，只转发出去 %s，客户端会卡住或播不动；客户端 Range=%q，Content-Range=%q，用时 %s，原因：%v", s.provider.Name(), request.URL.Path, target, response.StatusCode, formatBytes(response.ContentLength), formatBytes(written), request.Header.Get("Range"), response.Header.Get("Content-Range"), elapsed, recorder.err)
+	case copyErr != nil:
+		logx.Warnf("[%s] 中继写回客户端失败 %s：已转发 %s，用时 %s，原因：%v", s.provider.Name(), request.URL.Path, formatBytes(written), elapsed, copyErr)
+	case response.ContentLength > 0 && written < response.ContentLength:
+		logx.Warnf("[%s] 中继不完整 %s -> %s：上游 %d 声明 %s，只转发出去 %s，客户端会卡住或播不动；客户端 Range=%q，Content-Range=%q，用时 %s", s.provider.Name(), request.URL.Path, target, response.StatusCode, formatBytes(response.ContentLength), formatBytes(written), request.Header.Get("Range"), response.Header.Get("Content-Range"), elapsed)
+	default:
+		logx.Infof("[%s] 中继完成 %s -> %s：上游 %d，转发 %s（长度 %s），客户端 Range=%q，Accept-Ranges=%q，用时 %s", s.provider.Name(), request.URL.Path, target, response.StatusCode, formatBytes(written), formatBytes(response.ContentLength), request.Header.Get("Range"), response.Header.Get("Accept-Ranges"), elapsed)
 	}
 	return response.StatusCode, nil
+}
+
+// readErrorRecorder 包住上游响应体，单独记下「读取失败」。io.Copy 只回一个
+// 错误，读失败和写失败混在一起；中继排障时两者方向完全相反——上游断流要查
+// 媒体源，写失败要查播放器与网络——所以读端必须自己留证据。
+// 只包读端不自己搬字节：io.Copy 的写侧优化（ReaderFrom / 缓冲复用）照旧有效。
+type readErrorRecorder struct {
+	reader io.Reader
+	err    error
+}
+
+func (r *readErrorRecorder) Read(buffer []byte) (int, error) {
+	read, err := r.reader.Read(buffer)
+	if err != nil && !errors.Is(err, io.EOF) {
+		r.err = err
+	}
+	return read, err
+}
+
+// formatBytes 把字节数写成日志里好读的短字符串；负数代表长度未知。
+func formatBytes(value int64) string {
+	switch {
+	case value < 0:
+		return "未知"
+	case value < 1024:
+		return fmt.Sprintf("%dB", value)
+	case value < 1024*1024:
+		return fmt.Sprintf("%.1fKiB", float64(value)/(1024))
+	case value < 1024*1024*1024:
+		return fmt.Sprintf("%.1fMiB", float64(value)/(1024*1024))
+	default:
+		return fmt.Sprintf("%.2fGiB", float64(value)/(1024*1024*1024))
+	}
 }
 
 // serveLocalFile serves a container-local strm target directly.

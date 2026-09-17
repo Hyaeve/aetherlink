@@ -787,6 +787,38 @@ func TestFnosForcesDirectPlayWhenRedirectAlways(t *testing.T) {
 	}
 }
 
+// 上游判「可直放」的 STRM 源同样要被压成 DirectStream：DirectPlay 会让客户端
+// 直连媒体源的 Path（飞牛场景 Path 就是网盘 / OpenList 直链），客户端于是绕开
+// AetherLink，既没有 302 记录，也不受内网直链安全网保护。
+// 顺带断言「为什么不能直放」的理由被清掉：已经强制接入，再留着会让
+// PlaybackInfo 自相矛盾，部分客户端会照它去要转码 HLS。
+func TestFnosReclaimsUpstreamDirectPlaySourcesUnderAlwaysRedirect(t *testing.T) {
+	provider := fnosProviderWithMode(t, "http://127.0.0.1:1", config.RedirectAlways)
+
+	const directPlaySourceJSON = `{"Id":"src-2","Path":"https://cdn.example.test/movie.mkv",` +
+		`"Protocol":"Http","Container":"strm","SupportsDirectPlay":true,` +
+		`"TranscodeReasons":"ContainerBitrateExceedsLimit"}`
+
+	changed, envelope := rewriteFnosPlaybackInfo(t, provider, directPlaySourceJSON)
+	if changed != 1 {
+		t.Fatalf("changed = %d，want 1（引回 AetherLink）", changed)
+	}
+	sources := envelope["MediaSources"].([]any)
+	source := sources[0].(map[string]any)
+	if source["SupportsDirectPlay"] != false {
+		t.Fatalf("SupportsDirectPlay = %v，want false（不许直连 Path 绕开 AetherLink）", source["SupportsDirectPlay"])
+	}
+	if source["SupportsDirectStream"] != true {
+		t.Fatalf("SupportsDirectStream = %v，want true", source["SupportsDirectStream"])
+	}
+	if reasons, ok := source["TranscodeReasons"].([]any); !ok || len(reasons) != 0 {
+		t.Fatalf("TranscodeReasons = %v，want 空数组（不再与「可直放」自相矛盾）", source["TranscodeReasons"])
+	}
+	if directURL, _ := source["DirectStreamUrl"].(string); !strings.Contains(directURL, "/Videos/42/stream") {
+		t.Fatalf("DirectStreamUrl = %q，want 含 /Videos/42/stream", directURL)
+	}
+}
+
 // 跳转模式不是 always 的卡片维持原行为：尊重上游的不可直放判定，
 // 媒体源保留给上游转码，/stream 请求也交回上游。
 func TestFnosKeepsUpstreamDirectPlayVerdictWithoutAlways(t *testing.T) {

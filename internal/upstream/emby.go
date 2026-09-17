@@ -46,8 +46,10 @@ type embyProvider struct {
 	// forceDirectPlay 是「始终跳转」的配套开关：上游（尤其飞牛对外网客户端）
 	// 常以码率限制等理由在 PlaybackInfo 里判 SupportsDirectPlay=false，客户端
 	// 于是转投转码 HLS，转码流量走上游自己——用户看到的「设了始终跳转还在
-	// 中继」就是它。开了这个开关就不再采纳上游的不可直放判定，强制把 STRM
-	// 媒体源接入 302；跳转模式不是 always 的卡片维持原有尊重上游判定的行为。
+	// 中继」就是它。开了这个开关就忽略上游判定，把 STRM 媒体源一律压成
+	// DirectStream 接入 302——上游判可直放时同样要压，否则客户端会拿
+	// DirectPlay 直连 Path 绕开 AetherLink。跳转模式不是 always 的卡片维持
+	// 原有尊重上游判定的行为。
 	forceDirectPlay bool
 }
 
@@ -87,6 +89,9 @@ func (p *embyProvider) WantsResponseRewrite(request *http.Request) bool {
 // RewriteResponse 只把 Emby 已判定为可直接播放的 STRM 接到 AetherLink 直放
 // 路由。若客户端不支持原始编码、容器或码率，必须保留 Emby 的转码能力；强行
 // 302 只会把客户端无法解码的原文件交给它，结果就是有跳转却无法播放。
+//
+// 唯一的例外是卡片的「始终跳转」（forceDirectPlay）：用户明确要求流量全经
+// AetherLink 再 302，此时不再按上游判定分流，STRM 源一律压成 DirectStream。
 func (p *embyProvider) RewriteResponse(originalPath string, response *http.Response) (int, error) {
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices || response.Body == nil {
 		return 0, nil
@@ -129,6 +134,9 @@ func (p *embyProvider) RewriteResponse(originalPath string, response *http.Respo
 	// 「接入 302 的媒体源数量」，否则日志会把没跳转的情况说成跳转了。
 	mutated := false
 	forced := 0
+	// reclaimed 记「上游判可直放、却被压成 DirectStream 引回 AetherLink」的数量：
+	// 这些源以前会让客户端直连原始地址，流量根本不经我们。
+	reclaimed := 0
 	skipped := make([]string, 0)
 	for _, source := range sources {
 		if p.normalizeSource != nil && p.normalizeSource(source) {
@@ -138,20 +146,31 @@ func (p *embyProvider) RewriteResponse(originalPath string, response *http.Respo
 			continue
 		}
 		directPlayAllowed := embyAllowsDirectPlay(source)
-		if !directPlayAllowed && p.forceDirectPlay {
-			// 卡片是「始终跳转」：上游对外网客户端的不可直放判定（码率限制、
-			// 远程访问策略等）不再采纳。不强制的话客户端会去要转码 HLS，
-			// 转码流量全走上游自己，「始终跳转」就成了空话。
+		if p.forceDirectPlay {
+			// 卡片是「始终跳转」：上游的判定不再采纳，一律把客户端引回我们
+			// 改写的 /stream 路由，由 AetherLink 解析后 302。
 			//
-			// 注意强制的是 DirectStream 而不是 DirectPlay：DirectPlay 会让
-			// 客户端绕开 AetherLink 直接连媒体源的 Path（内网地址或 UA 绑定
-			// 的网盘直链，外网多半连不上），既拿不到 302 也播不出来。
-			// DirectStream 把客户端引回我们改写的 /stream 路由，
-			// 由 AetherLink 解析后 302。
+			// 这里必须无条件处理，不能只在「上游判不可直放」时才动手：上游判
+			// 可直放时同样会把客户端带走——DirectPlay 让客户端直接连媒体源的
+			// Path（飞牛场景 Path 就是网盘 / OpenList 直链），客户端于是绕开
+			// AetherLink，既没有 302 记录，也不受内网地址安全网保护。
+			//
+			// 强制的是 DirectStream 而不是 DirectPlay：DirectStream 把客户端
+			// 引回 /stream，DirectPlay 则会直连原始地址。
+			if !directPlayAllowed {
+				// 上游的不可直放判定（码率限制、远程访问策略等）被忽略。
+				forced++
+			} else if embyBool(source, "SupportsDirectPlay") {
+				// 上游说可直放，客户端本会直连 Path 绕开 AetherLink。
+				reclaimed++
+			}
 			source["SupportsDirectPlay"] = false
 			source["SupportsDirectStream"] = true
+			// 抹掉「为什么不能直放」的理由：已经强制接入，留着会让 PlaybackInfo
+			// 自相矛盾，部分客户端仍会照它去要转码 HLS。
+			source["TranscodeReasons"] = []any{}
+			source["TranscodingReasons"] = []any{}
 			directPlayAllowed = true
-			forced++
 			mutated = true
 		}
 		p.rememberPlaybackSource(itemID, embyMediaSourceFromMap(source), directPlayAllowed)
@@ -191,9 +210,9 @@ func (p *embyProvider) RewriteResponse(originalPath string, response *http.Respo
 	response.Header.Del("ETag")
 	response.Header.Del("Content-MD5")
 	if len(skipped) > 0 {
-		logx.Infof("[%s] PlaybackInfo 已让 %d 个兼容的 STRM 媒体源接入 302，另有 %d 个保留上游转码（item=%s）：%s", p.Name(), changed, len(skipped), itemID, strings.Join(uniqueStrings(skipped), "、"))
-	} else if forced > 0 {
-		logx.Infof("[%s] PlaybackInfo 强制让 %d 个 STRM 媒体源接入 302（忽略上游的不可直放判定，item=%s）", p.Name(), forced, itemID)
+		logx.Infof("[%s] PlaybackInfo 已让 %d 个兼容的 STRM 媒体源接入 302%s，另有 %d 个保留上游转码（item=%s）：%s", p.Name(), changed, forceNote(forced, reclaimed), len(skipped), itemID, strings.Join(uniqueStrings(skipped), "、"))
+	} else if forced > 0 || reclaimed > 0 {
+		logx.Infof("[%s] PlaybackInfo 强制让 %d 个 STRM 媒体源接入 302%s（item=%s）", p.Name(), changed, forceNote(forced, reclaimed), itemID)
 	} else {
 		logx.Infof("[%s] PlaybackInfo 已让 %d 个兼容的 STRM 媒体源接入 302（item=%s），客户端下一步应请求 /Videos/%s/stream", p.Name(), changed, itemID, itemID)
 	}
@@ -292,6 +311,24 @@ func uniqueStrings(values []string) []string {
 		unique = append(unique, value)
 	}
 	return unique
+}
+
+// forceNote 把「始终跳转」下的强制明细写进日志，两个数都为 0 时返回空串。
+// 分成两个数是因为它们的处置不同：forced 是忽略了上游的不可直放判定（原本
+// 会让客户端去要转码 HLS），reclaimed 是上游说可直放（原本会让客户端直连
+// Path 绕开 AetherLink）——只报一个数会让另一种情况在日志里完全消失。
+func forceNote(forced, reclaimed int) string {
+	parts := make([]string, 0, 2)
+	if forced > 0 {
+		parts = append(parts, fmt.Sprintf("其中 %d 个忽略了上游的不可直放判定", forced))
+	}
+	if reclaimed > 0 {
+		parts = append(parts, fmt.Sprintf("%d 个由上游直放改为引回 AetherLink", reclaimed))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "（" + strings.Join(parts, "，") + "）"
 }
 
 func isEmbyStrmPlaybackSource(source map[string]any) bool {

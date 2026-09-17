@@ -3,6 +3,8 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -257,6 +259,86 @@ func TestIntranetLocalProxyTargetRelaysForPublicClient(t *testing.T) {
 	}
 }
 
+// 安全网的条件是「最终地址仍是内网」，不是「一步都没跳」：OpenList 也可能
+// 先回一跳再落到它自己的内网地址（Hops>0）。这种目标 302 给外网客户端一样
+// 连不上，必须中继。
+func TestFollowUpstreamRedirectToIntranetRelaysForPublicClient(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Write([]byte("intranet-hop-bytes"))
+	}))
+	defer origin.Close()
+
+	// 上游先回一跳，落点仍是内网地址（httptest 只能监听 loopback）。
+	hop := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		http.Redirect(writer, request, origin.URL+"/d/after-hop.m4a", http.StatusFound)
+	}))
+	defer hop.Close()
+
+	root, strmPath, regularPath := writeStrm(t, hop.URL+"/d/before-hop.m4a")
+	fake := newFakeABS(t, strmPath, regularPath)
+	redirectCfg := defaultRedirect()
+	redirectCfg.FollowUpstreamRedirects = true
+	server, collector := newTestServer(t, fake.server.URL, root, redirectCfg)
+
+	// 外网客户端（httptest 默认 192.0.2.1 属公网段）：落点是内网地址，
+	// 302 出去连不上，必须中继出字节。
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/items/book-1/file/ino-strm", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (relay); body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Body.String() != "intranet-hop-bytes" {
+		t.Fatalf("body = %q, want origin bytes", recorder.Body.String())
+	}
+	if event := collector.Snapshot(1).RecentEvents[0]; event.Outcome != stats.OutcomeProxyStream {
+		t.Fatalf("outcome = %q, want proxy", event.Outcome)
+	}
+}
+
+// 中继日志要能区分「上游断流」与「写回客户端失败」，靠的就是读端单独记错：
+// 只有非 EOF 的读错误才算上游断流，写端失败不能被算到媒体源头上。
+func TestReadErrorRecorderKeepsReadFailuresApartFromEOF(t *testing.T) {
+	// 读到正常结束（EOF）：不是失败。
+	complete := &readErrorRecorder{reader: strings.NewReader("0123456789")}
+	if _, err := io.Copy(io.Discard, complete); err != nil {
+		t.Fatalf("copy returned error: %v", err)
+	}
+	if complete.err != nil {
+		t.Fatalf("err = %v，want nil（EOF 不算上游断流）", complete.err)
+	}
+
+	// 读到一半断流：必须留下证据。
+	broken := errors.New("connection reset by peer")
+	partial := &readErrorRecorder{reader: io.MultiReader(strings.NewReader("012"), stubFailingReader{err: broken})}
+	written, err := io.Copy(io.Discard, partial)
+	if !errors.Is(err, broken) {
+		t.Fatalf("copy error = %v，want %v", err, broken)
+	}
+	if written != 3 {
+		t.Fatalf("written = %d，want 3（首段读出的 3 字节已经写出去了）", written)
+	}
+	if !errors.Is(partial.err, broken) {
+		t.Fatalf("err = %v，want %v（上游断流要能归因）", partial.err, broken)
+	}
+
+	// 写端失败：读端保持干净，日志才会去怪播放器而不是媒体源。
+	writeFail := &readErrorRecorder{reader: strings.NewReader("0123456789")}
+	if _, err := io.Copy(stubFailingWriter{}, writeFail); err == nil {
+		t.Fatal("copy to a failing writer returned nil error")
+	}
+	if writeFail.err != nil {
+		t.Fatalf("err = %v，want nil（写失败不该记成上游断流）", writeFail.err)
+	}
+}
+
+type stubFailingReader struct{ err error }
+
+func (r stubFailingReader) Read([]byte) (int, error) { return 0, r.err }
+
+type stubFailingWriter struct{}
+
+func (stubFailingWriter) Write([]byte) (int, error) { return 0, errors.New("client went away") }
+
 func TestFormatCacheTTLUsesMinutesAndHoursWithoutSeconds(t *testing.T) {
 	tests := []struct {
 		seconds int64
@@ -270,6 +352,25 @@ func TestFormatCacheTTLUsesMinutesAndHoursWithoutSeconds(t *testing.T) {
 	for _, test := range tests {
 		if got := formatCacheTTL(test.seconds); got != test.want {
 			t.Fatalf("formatCacheTTL(%d) = %q, want %q", test.seconds, got, test.want)
+		}
+	}
+}
+
+func TestFormatBytesReadsLikeALogLine(t *testing.T) {
+	tests := []struct {
+		value int64
+		want  string
+	}{
+		{value: -1, want: "未知"},
+		{value: 0, want: "0B"},
+		{value: 512, want: "512B"},
+		{value: 2048, want: "2.0KiB"},
+		{value: 5 * 1024 * 1024, want: "5.0MiB"},
+		{value: 3 * 1024 * 1024 * 1024, want: "3.00GiB"},
+	}
+	for _, test := range tests {
+		if got := formatBytes(test.value); got != test.want {
+			t.Fatalf("formatBytes(%d) = %q, want %q", test.value, got, test.want)
 		}
 	}
 }
@@ -531,8 +632,14 @@ func TestFollowUpstreamRedirectsResolvesFinalURL(t *testing.T) {
 	redirectCfg.FollowUpstreamRedirects = true
 	server, _ := newTestServer(t, fake.server.URL, root, redirectCfg)
 
+	// 本用例只看「跟随重定向是否把最终签名地址 302 出去」，与客户端内外网无关。
+	// 但 httptest 只能监听 loopback，落点必然是内网地址，对外网客户端会命中
+	// 内网直链安全网改走中继（见 TestFollowUpstreamRedirectToIntranetRelaysForPublicClient），
+	// 所以这里用内网客户端，避免两件事互相干扰。
 	recorder := httptest.NewRecorder()
-	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/items/book-1/file/ino-strm", nil))
+	request := httptest.NewRequest(http.MethodGet, "/api/items/book-1/file/ino-strm", nil)
+	request.RemoteAddr = "192.168.1.20:5000"
+	server.ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusFound {
 		t.Fatalf("status = %d, want 302", recorder.Code)
