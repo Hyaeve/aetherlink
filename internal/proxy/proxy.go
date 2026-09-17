@@ -1065,6 +1065,9 @@ func (s *Server) relayRemote(writer http.ResponseWriter, request *http.Request, 
 			writer.Header().Set("Content-Type", mimeType)
 		}
 	}
+	// 回给客户端的 Content-Type 必须进日志：网盘直链多回 application/octet-stream，
+	// 最终类型由上面那段兜底决定，而「播放器读完响应头就断开」恰恰是它决定的。
+	sentType := writer.Header().Get("Content-Type")
 	writer.WriteHeader(response.StatusCode)
 	if request.Method == http.MethodHead {
 		return response.StatusCode, nil
@@ -1075,17 +1078,21 @@ func (s *Server) relayRemote(writer http.ResponseWriter, request *http.Request, 
 	// 顺序有讲究：客户端主动断开（拖动进度条、切集）是常态，先排除掉；然后才
 	// 区分「上游断流」与「写回客户端失败」——前者的锅在媒体源（OpenList /
 	// 网盘），后者在播放器或网络，混成一条日志会把排查方向带反。
+	//
+	// 「客户端主动断开」不再只记 debug：中继模式下它是「播放器不认我们回的响应」
+	// 与「正常拖动进度条」共用的出口，而两者在日志里的形态一模一样（上一级只留
+	// 一行「状态 206」）。开了 Info 并带上字节数与 Content-Type 才能区分开。
 	switch {
 	case request.Context().Err() != nil:
-		logx.Debugf("[%s] 中继被客户端中断 %s：已转发 %s，用时 %s", s.provider.Name(), request.URL.Path, formatBytes(written), elapsed)
+		logx.Infof("[%s] 中继被客户端中断 %s -> %s：已转发 %s（上游 %d 声明 %s），客户端 Range=%q，回给客户端的 Content-Type=%q，用时 %s；客户端主动断开，只吃了少量字节就断开通常是不认这个响应，拖进度条与切集则是正常形态", s.provider.Name(), request.URL.Path, target, formatBytes(written), response.StatusCode, formatBytes(response.ContentLength), request.Header.Get("Range"), sentType, elapsed)
 	case recorder.err != nil:
-		logx.Warnf("[%s] 中继上游断流 %s -> %s：上游 %d 声明 %s，只转发出去 %s，客户端会卡住或播不动；客户端 Range=%q，Content-Range=%q，用时 %s，原因：%v", s.provider.Name(), request.URL.Path, target, response.StatusCode, formatBytes(response.ContentLength), formatBytes(written), request.Header.Get("Range"), response.Header.Get("Content-Range"), elapsed, recorder.err)
+		logx.Warnf("[%s] 中继上游断流 %s -> %s：上游 %d 声明 %s，只转发出去 %s，客户端会卡住或播不动；客户端 Range=%q，Content-Range=%q，回给客户端的 Content-Type=%q，用时 %s，原因：%v", s.provider.Name(), request.URL.Path, target, response.StatusCode, formatBytes(response.ContentLength), formatBytes(written), request.Header.Get("Range"), response.Header.Get("Content-Range"), sentType, elapsed, recorder.err)
 	case copyErr != nil:
-		logx.Warnf("[%s] 中继写回客户端失败 %s：已转发 %s，用时 %s，原因：%v", s.provider.Name(), request.URL.Path, formatBytes(written), elapsed, copyErr)
+		logx.Warnf("[%s] 中继写回客户端失败 %s：已转发 %s，回给客户端的 Content-Type=%q，用时 %s，原因：%v", s.provider.Name(), request.URL.Path, formatBytes(written), sentType, elapsed, copyErr)
 	case response.ContentLength > 0 && written < response.ContentLength:
-		logx.Warnf("[%s] 中继不完整 %s -> %s：上游 %d 声明 %s，只转发出去 %s，客户端会卡住或播不动；客户端 Range=%q，Content-Range=%q，用时 %s", s.provider.Name(), request.URL.Path, target, response.StatusCode, formatBytes(response.ContentLength), formatBytes(written), request.Header.Get("Range"), response.Header.Get("Content-Range"), elapsed)
+		logx.Warnf("[%s] 中继不完整 %s -> %s：上游 %d 声明 %s，只转发出去 %s，客户端会卡住或播不动；客户端 Range=%q，Content-Range=%q，回给客户端的 Content-Type=%q，用时 %s", s.provider.Name(), request.URL.Path, target, response.StatusCode, formatBytes(response.ContentLength), formatBytes(written), request.Header.Get("Range"), response.Header.Get("Content-Range"), sentType, elapsed)
 	default:
-		logx.Infof("[%s] 中继完成 %s -> %s：上游 %d，转发 %s（长度 %s），客户端 Range=%q，Accept-Ranges=%q，用时 %s", s.provider.Name(), request.URL.Path, target, response.StatusCode, formatBytes(written), formatBytes(response.ContentLength), request.Header.Get("Range"), response.Header.Get("Accept-Ranges"), elapsed)
+		logx.Infof("[%s] 中继完成 %s -> %s：上游 %d，转发 %s（长度 %s），客户端 Range=%q，Accept-Ranges=%q，回给客户端的 Content-Type=%q，用时 %s", s.provider.Name(), request.URL.Path, target, response.StatusCode, formatBytes(written), formatBytes(response.ContentLength), request.Header.Get("Range"), response.Header.Get("Accept-Ranges"), sentType, elapsed)
 	}
 	return response.StatusCode, nil
 }
@@ -1184,6 +1191,13 @@ func isHopHeader(name string) bool {
 // mimeTypeForURL guesses a media content type from a URL or path extension.
 // Playable extensions are listed explicitly because Go's mime package returns
 // nothing useful for m4b and several audiobook containers.
+//
+// 音频与视频必须分开写。网盘 CDN（115 等）对视频一律回
+// `application/octet-stream`，中继因此总会走到这里取兜底值：把 .mp4 猜成
+// `audio/mp4` 等于告诉播放器「这是音轨」，而真实内容是 2160p 视频，播放器
+// 会在读完响应头后立刻断开——日志里只剩一行「状态 206」，看不出原因。
+// 容器扩展名相同（mp4/m4v）但语义不同时，按视频处理：audio 侧只保留
+// 真正的纯音频容器（m4a/m4b/m4p）。
 func mimeTypeForURL(target string) string {
 	candidate := target
 	if parsed, err := url.Parse(target); err == nil && parsed.Path != "" {
@@ -1191,8 +1205,10 @@ func mimeTypeForURL(target string) string {
 	}
 	extension := strings.ToLower(path.Ext(candidate))
 	switch extension {
-	case ".m4b", ".m4a", ".mp4", ".m4p", ".m4v":
+	case ".m4a", ".m4b", ".m4p":
 		return "audio/mp4"
+	case ".mp4", ".m4v":
+		return "video/mp4"
 	case ".mp3":
 		return "audio/mpeg"
 	case ".flac":
@@ -1207,8 +1223,10 @@ func mimeTypeForURL(target string) string {
 		return "audio/wav"
 	case ".wma":
 		return "audio/x-ms-wma"
-	case ".webm", ".webma":
+	case ".webma":
 		return "audio/webm"
+	case ".webm":
+		return "video/webm"
 	case ".mka":
 		return "audio/x-matroska"
 	case ".mkv":

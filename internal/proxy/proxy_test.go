@@ -375,6 +375,31 @@ func TestFormatBytesReadsLikeALogLine(t *testing.T) {
 	}
 }
 
+// 网盘 CDN 对视频一律回 application/octet-stream（115 实测如此），中继因此总会
+// 走到 mimeTypeForURL 取兜底值，这张表直接决定播放器看到的类型。曾把 .mp4/.webm
+// 也归进 audio/*，播放器读到「这是音轨」后立刻断开，日志里只剩一行「状态 206」。
+func TestMimeTypeForURLKeepsVideoAndAudioApart(t *testing.T) {
+	tests := []struct {
+		target string
+		want   string
+	}{
+		{target: "https://cdnfhnfile.115cdn.net/6a9d/%E4%BA%A4%E9%94%8B.S01E01.2160p.mp4?t=1790000978&k=abc", want: "video/mp4"},
+		{target: "/vol1/1000/NetDisk/交锋.S01E01.m4v", want: "video/mp4"},
+		{target: "https://cdn.example.com/clip.webm", want: "video/webm"},
+		{target: "https://cdn.example.com/movie.mkv", want: "video/x-matroska"},
+		{target: "https://cdn.example.com/book.m4b", want: "audio/mp4"},
+		{target: "https://cdn.example.com/song.m4a", want: "audio/mp4"},
+		{target: "https://cdn.example.com/speech.webma", want: "audio/webm"},
+		// 认不出的扩展名不猜：宁可把上游自己的类型透给客户端。
+		{target: "https://cdn.example.com/api/items/ino-strm", want: ""},
+	}
+	for _, test := range tests {
+		if got := mimeTypeForURL(test.target); got != test.want {
+			t.Fatalf("mimeTypeForURL(%q) = %q, want %q", test.target, got, test.want)
+		}
+	}
+}
+
 // writeStrm creates a .strm pointer and a sibling regular audio file.
 func writeStrm(t *testing.T, contents string) (root, strmPath, regularPath string) {
 	t.Helper()
@@ -521,6 +546,45 @@ func TestRedirectNeverRelaysBytesWithRange(t *testing.T) {
 	}
 	if recorder.Header().Get("Content-Range") != "bytes 2-5/11" {
 		t.Fatalf("Content-Range not copied: %v", recorder.Header())
+	}
+	if snapshot := collector.Snapshot(10); snapshot.ProxyStreams != 1 {
+		t.Fatalf("proxy stream count = %d, want 1", snapshot.ProxyStreams)
+	}
+}
+
+// 115 这类网盘 CDN 对视频回 Content-Type: application/octet-stream（实测），中继
+// 因此必定替它猜类型。客户端请求 /stream.mkv、真实字节是 MP4 时，Content-Type 是
+// 它唯一的格式线索——猜成 audio/mp4 会让播放器读完响应头就断开，日志里只剩一行
+// 「状态 206」。这里把「视频直链必须回视频类型」钉住。
+func TestRelayDoesNotLabelVideoDirectLinkAsAudio(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/octet-stream")
+		writer.Header().Set("Content-Range", "bytes 0-3/6953811142")
+		writer.Header().Set("Accept-Ranges", "bytes")
+		writer.WriteHeader(http.StatusPartialContent)
+		writer.Write([]byte("fLaG"))
+	}))
+	defer backend.Close()
+
+	root, strmPath, regularPath := writeStrm(t, backend.URL+"/d/video.mp4")
+	fake := newFakeABS(t, strmPath, regularPath)
+	redirectCfg := defaultRedirect()
+	redirectCfg.Mode = config.RedirectNever
+	server, collector := newTestServer(t, fake.server.URL, root, redirectCfg)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/items/book-1/file/ino-strm", nil)
+	request.Header.Set("Range", "bytes=0-3")
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusPartialContent {
+		t.Fatalf("status = %d, want 206", recorder.Code)
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "video/mp4" {
+		t.Fatalf("Content-Type = %q, want video/mp4（视频直链不能标成音频）", got)
+	}
+	if recorder.Body.String() != "fLaG" {
+		t.Fatalf("body = %q, want relayed bytes", recorder.Body.String())
 	}
 	if snapshot := collector.Snapshot(10); snapshot.ProxyStreams != 1 {
 		t.Fatalf("proxy stream count = %d, want 1", snapshot.ProxyStreams)
