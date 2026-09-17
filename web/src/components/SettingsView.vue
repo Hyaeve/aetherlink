@@ -337,8 +337,8 @@ onMounted(load)
           </label>
           <div class="trusted-proxy-foot">
             <span v-if="proxySaved" class="save-confirm"><i></i>已保存</span>
-            <button class="primary settings-save-button" :disabled="proxyBusy" @click="saveTrustedProxy">
-              {{ proxyBusy ? '保存中…' : '保存' }}
+            <button class="primary settings-save-button wide-action" :disabled="proxyBusy" @click="saveTrustedProxy">
+              {{ proxyBusy ? '保存中…' : '保存设置' }}
             </button>
           </div>
         </section>

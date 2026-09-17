@@ -60,11 +60,13 @@ const activeTab = ref(tabFromPath(window.location.pathname))
 const railOpen = ref(localStorage.getItem(RAIL_KEY) === 'open')
 const accountMenuOpen = ref(false)
 
-const username = ref('')
+// 账号框常驻显示当前账号：先用本地记录立刻填上（不等网络往返，登录页就不会先闪
+// 一下空白），后端 bootstrap 回来后再用服务端的当前账号名纠正。
+const username = ref(localStorage.getItem(ACCOUNT_KEY) || '')
 const password = ref('')
-// 登录窗口的密码默认不遮蔽：这里的框在打开时是空的，遮蔽只影响「打字时看不看得见」，
-// 所以默认让你看清自己输的是什么，右侧斜线小眼睛点一下就变回圆点。
-const passwordVisible = ref(true)
+// 密码与上游编辑窗口同一套约定：默认就是一串圆点，右侧小眼睛点一下显示明文、
+// 图标变成斜线眼睛，再点一下回到圆点。
+const passwordVisible = ref(false)
 const authBusy = ref(false)
 const authError = ref('')
 
@@ -130,8 +132,8 @@ function enterApp() {
   statusError.value = ''
   authError.value = ''
   password.value = ''
-  // 密码框回到「默认不遮蔽」，不让上一次手动隐藏的选择一直留到下一次登录。
-  passwordVisible.value = true
+  // 密码框回到默认的圆点状态，不让上一次手动显示明文的选择留到下一次登录。
+  passwordVisible.value = false
   if (statusTimer) clearInterval(statusTimer)
   statusTimer = setInterval(refreshStatus, 15000)
 }
