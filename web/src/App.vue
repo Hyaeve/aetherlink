@@ -36,9 +36,6 @@ const tabs = [
 ]
 
 const RAIL_KEY = 'aetherlink.rail'
-// 上次登录成功用过的账号名。后端的 bootstrap 会带当前账号名过来，这个只是
-// 后端不可达（或接口拿不到）时的兜底。
-const ACCOUNT_KEY = 'aetherlink.account'
 const APP_BASE = '/aetherlink/'
 const TAB_IDS = new Set(tabs.map((tab) => tab.id))
 const primaryTabs = tabs.filter((tab) => tab.id !== 'settings')
@@ -60,9 +57,8 @@ const activeTab = ref(tabFromPath(window.location.pathname))
 const railOpen = ref(localStorage.getItem(RAIL_KEY) === 'open')
 const accountMenuOpen = ref(false)
 
-// 账号框常驻显示当前账号：先用本地记录立刻填上（不等网络往返，登录页就不会先闪
-// 一下空白），后端 bootstrap 回来后再用服务端的当前账号名纠正。
-const username = ref(localStorage.getItem(ACCOUNT_KEY) || '')
+// 登录页就是每个浏览器各自输一次：账号框留空，不预填任何名字。
+const username = ref('')
 const password = ref('')
 // 密码与上游编辑窗口同一套约定：默认就是一串圆点，右侧小眼睛点一下显示明文、
 // 图标变成斜线眼睛，再点一下回到圆点。
@@ -94,22 +90,12 @@ function handlePopState() {
   pageStats.value = null
 }
 
-// 登录窗口的账号预填：后端的 bootstrap 会带上当前账号名（账号不是秘密，配置里
-// 就写明它是要显示在登录页上的），改过名也能对上；拿不到时退回这个浏览器上次
-// 登录成功用过的那个，避免把已经输进去的内容清空。
-function applyAccount(account) {
-  const name = (account || '').trim() || localStorage.getItem(ACCOUNT_KEY) || ''
-  if (name) username.value = name
-}
-
 async function bootstrap() {
   try {
     // 只是探一下后端在不在，拿不到就把原因直接显示在登录页上。
-    const info = await api.bootstrap()
-    applyAccount(info && info.account)
+    await api.bootstrap()
   } catch (error) {
     authError.value = error.message
-    applyAccount('')
   }
   if (!getToken()) {
     gate.value = 'login'
@@ -162,8 +148,6 @@ async function submitLogin() {
   try {
     const result = await api.login(username.value, password.value)
     setToken(result.token)
-    // 记住这次用的账号名，下次进登录页直接填好。
-    if (username.value.trim()) localStorage.setItem(ACCOUNT_KEY, username.value.trim())
     status.value = await api.status()
     enterApp()
   } catch (error) {
@@ -194,13 +178,6 @@ async function onAccountChanged() {
   password.value = ''
   authError.value = '账号已更新，请重新登录'
   gate.value = 'login'
-  // 账号刚改过，登录框里可能还挂着旧名字，重新取一次预填。
-  try {
-    const info = await api.bootstrap()
-    applyAccount(info && info.account)
-  } catch {
-    // 取不到就沿用本地记录，用户自己改一下即可。
-  }
 }
 const uptime = computed(() => {
   const seconds = status.value?.uptimeSeconds || 0

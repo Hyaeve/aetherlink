@@ -306,7 +306,8 @@ type Server struct {
 // Auth stores the admin password verifier. Only the derived key and its salt
 // are persisted; the password itself never touches disk.
 type Auth struct {
-	// Username is the admin account name shown on the login page.
+	// Username is the admin account name. 界面在设置页的「登录账号」卡片里回显它；
+	// 登录页不回显（那是个免鉴权页面，不给扫端口的人任何线索）。
 	Username     string `yaml:"username,omitempty" json:"username,omitempty"`
 	Algorithm    string `yaml:"algorithm,omitempty" json:"algorithm,omitempty"`
 	Iterations   int    `yaml:"iterations,omitempty" json:"-"`

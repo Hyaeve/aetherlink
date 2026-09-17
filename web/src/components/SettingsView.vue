@@ -17,6 +17,8 @@ const securityBusy = ref(false)
 
 const username = ref('')
 const password = ref('')
+// 与上游编辑窗口同一套约定：密码框默认就是一串圆点，点右侧小眼睛才看明文。
+const passwordVisible = ref(false)
 const accountError = ref('')
 const accountBusy = ref(false)
 const accountConfirm = ref(false)
@@ -239,6 +241,8 @@ async function confirmAccountSave() {
   try {
     await api.updateAccount(username.value, password.value)
     password.value = ''
+    // 存完清空输入框，顺便把可见状态拨回默认的圆点。
+    passwordVisible.value = false
     emit('account-changed')
   } catch (saveError) {
     accountError.value = saveError.message
@@ -289,7 +293,32 @@ onMounted(load)
             </label>
             <label class="field">
               <span>密码</span>
-              <input v-model="password" type="password" autocomplete="new-password" placeholder="输入新密码" />
+              <span class="secret-input">
+                <input
+                  v-model="password"
+                  :type="passwordVisible ? 'text' : 'password'"
+                  autocomplete="new-password"
+                  placeholder="输入新密码"
+                />
+                <button
+                  type="button"
+                  class="secret-toggle"
+                  :aria-pressed="passwordVisible"
+                  :title="passwordVisible ? '隐藏密码' : '显示密码'"
+                  :aria-label="passwordVisible ? '隐藏密码' : '显示密码'"
+                  @click.prevent="passwordVisible = !passwordVisible"
+                >
+                  <svg v-if="passwordVisible" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z" />
+                    <circle cx="12" cy="12" r="3.1" />
+                    <path d="m4 3.6 16 16.8" />
+                  </svg>
+                  <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z" />
+                    <circle cx="12" cy="12" r="3.1" />
+                  </svg>
+                </button>
+              </span>
             </label>
           </div>
 

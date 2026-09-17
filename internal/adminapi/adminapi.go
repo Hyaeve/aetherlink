@@ -134,14 +134,13 @@ func (a *API) handleHealth(writer http.ResponseWriter, request *http.Request) {
 	writeJSON(writer, http.StatusOK, map[string]any{"status": "ok", "version": Version})
 }
 
-// handleBootstrap 返回登录页真正需要的东西：版本、密码长度下限，以及账号名。
-// 账号名不是秘密（config.Auth.Username 的注释就写明它是要显示在登录页上的），
-// 登录页拿它预填账号输入框，改过名也能对上。密码校验材料一律不出现在这里。
+// handleBootstrap 只返回登录页确认后端可达所需的东西：版本与密码长度下限。
+// 账号名、凭据、密码校验材料一律不出现——否则扫端口的人等于被告知
+// 「这里 admin/password 就能进」。当前账号名只在登录之后由 /config 提供。
 func (a *API) handleBootstrap(writer http.ResponseWriter, request *http.Request) {
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"version":           Version,
 		"minPasswordLength": auth.MinPasswordLength,
-		"account":           a.rt.Config().Auth.Username,
 	})
 }
 
