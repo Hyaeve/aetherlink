@@ -765,8 +765,14 @@ func TestFnosForcesDirectPlayWhenRedirectAlways(t *testing.T) {
 	}
 	sources := envelope["MediaSources"].([]any)
 	source := sources[0].(map[string]any)
-	if source["SupportsDirectPlay"] != true {
-		t.Fatalf("SupportsDirectPlay = %v，want true", source["SupportsDirectPlay"])
+	// 强制的是 DirectStream 而不是 DirectPlay：DirectPlay 会让客户端绕开
+	// AetherLink 直连媒体源的 Path（内网地址或 UA 绑定的网盘直链），
+	// 既不会有 302 也多半播不出来。
+	if source["SupportsDirectPlay"] != false {
+		t.Fatalf("SupportsDirectPlay = %v，want false（客户端不许绕开 AetherLink 直连）", source["SupportsDirectPlay"])
+	}
+	if source["SupportsDirectStream"] != true {
+		t.Fatalf("SupportsDirectStream = %v，want true（客户端应走改写的 /stream 路由）", source["SupportsDirectStream"])
 	}
 	if directURL, _ := source["DirectStreamUrl"].(string); !strings.Contains(directURL, "/Videos/42/stream") {
 		t.Fatalf("DirectStreamUrl = %q，want 含 /Videos/42/stream", directURL)

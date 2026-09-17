@@ -142,7 +142,14 @@ func (p *embyProvider) RewriteResponse(originalPath string, response *http.Respo
 			// 卡片是「始终跳转」：上游对外网客户端的不可直放判定（码率限制、
 			// 远程访问策略等）不再采纳。不强制的话客户端会去要转码 HLS，
 			// 转码流量全走上游自己，「始终跳转」就成了空话。
-			source["SupportsDirectPlay"] = true
+			//
+			// 注意强制的是 DirectStream 而不是 DirectPlay：DirectPlay 会让
+			// 客户端绕开 AetherLink 直接连媒体源的 Path（内网地址或 UA 绑定
+			// 的网盘直链，外网多半连不上），既拿不到 302 也播不出来。
+			// DirectStream 把客户端引回我们改写的 /stream 路由，
+			// 由 AetherLink 解析后 302。
+			source["SupportsDirectPlay"] = false
+			source["SupportsDirectStream"] = true
 			directPlayAllowed = true
 			forced++
 			mutated = true
