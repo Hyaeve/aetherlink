@@ -434,27 +434,50 @@ func (r *Resolver) ShouldRedirectForClient(resolution *Resolution, redirectCfg c
 	if playURL == "" {
 		return false
 	}
-	address, err := netip.ParseAddr(client)
-	if err != nil {
-		if endpoint, endpointErr := netip.ParseAddrPort(client); endpointErr == nil {
-			address = endpoint.Addr()
-		}
-	}
-	address = address.Unmap()
-	known := address.IsValid() && !address.IsUnspecified() && !address.IsMulticast()
-	private := address.IsPrivate() || address.IsLoopback() || address.IsLinkLocalUnicast()
 	switch redirectCfg.Mode {
 	case config.RedirectNever:
 		return false
 	case config.RedirectPublic:
-		return known && !private
+		return ScopeOfClient(client) == ClientScopePublic
 	case config.RedirectPrivate:
-		return known && private
+		return ScopeOfClient(client) == ClientScopePrivate
 	case config.RedirectAlways:
 		return true
 	default:
 		return false
 	}
+}
+
+// ClientScope 是一个客户端 IP 的内外网归属，用于跳转策略与日志展示。
+// 302 与否的判定依据是客户端所在的网络位置（README「跳转模式」一节），
+// 与媒体直链指向哪台服务器无关。
+type ClientScope string
+
+const (
+	// ClientScopePublic 是可全球路由的公网地址。
+	ClientScopePublic ClientScope = "公网"
+	// ClientScopePrivate 是 RFC1918 / 回环 / 链路本地等内网地址。
+	ClientScopePrivate ClientScope = "内网"
+	// ClientScopeUnknown 表示地址缺失或无法解析。条件跳转模式对它一律中继。
+	ClientScopeUnknown ClientScope = "无法识别"
+)
+
+// ScopeOfClient 把一条客户端地址（裸 IP 或 ip:port）归类为公网、内网或无法识别。
+func ScopeOfClient(client string) ClientScope {
+	address, err := netip.ParseAddr(strings.TrimSpace(client))
+	if err != nil {
+		if endpoint, endpointErr := netip.ParseAddrPort(strings.TrimSpace(client)); endpointErr == nil {
+			address = endpoint.Addr()
+		}
+	}
+	address = address.Unmap()
+	if !address.IsValid() || address.IsUnspecified() || address.IsMulticast() {
+		return ClientScopeUnknown
+	}
+	if address.IsPrivate() || address.IsLoopback() || address.IsLinkLocalUnicast() {
+		return ClientScopePrivate
+	}
+	return ClientScopePublic
 }
 
 func resolveRelative(base, location string) (string, error) {

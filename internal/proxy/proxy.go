@@ -30,6 +30,7 @@ import (
 	"github.com/aetherlink/aetherlink/internal/stats"
 	"github.com/aetherlink/aetherlink/internal/strm"
 	"github.com/aetherlink/aetherlink/internal/upstream"
+	"github.com/aetherlink/aetherlink/internal/urlx"
 )
 
 // hopHeaders are per-connection headers that must not be forwarded.
@@ -337,7 +338,12 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 
 	if s.resolver.ShouldRedirectForClient(resolution, s.redirect, event.Client) {
 		event.StatusCode = http.StatusFound
-		finish(stats.OutcomeRedirect, cacheNote(event)+"；已 302 到真实地址")
+		note := cacheNote(event) + "；已 302 到真实地址"
+		if len(resolution.Hops) > 0 {
+			note += fmt.Sprintf("（直链为跟随上游 %d 次重定向后的最终地址，客户端无需再跳）", len(resolution.Hops))
+		}
+		note += privateTargetNote(playURL)
+		finish(stats.OutcomeRedirect, note)
 		// 302 keeps the request method for GET/HEAD and is what media players
 		// (Emby clients, ABS apps, browsers) handle most reliably.
 		writer.Header().Set("Location", playURL)
@@ -355,26 +361,58 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 		finish(stats.OutcomeError, "中继 strm 目标失败")
 		return
 	}
-	finish(stats.OutcomeProxyStream, cacheNote(event)+"；按 302 策略不跳转，改由 AetherLink 中继："+s.noRedirectReason(resolution))
+	finish(stats.OutcomeProxyStream, cacheNote(event)+"；按 302 策略不跳转，改由 AetherLink 中继："+s.noRedirectReason(resolution, event.Client)+privateTargetNote(playURL))
+}
+
+// privateTargetNote 在直链指向内网服务时提示一个常见误会：302 出去的地址是
+// OpenList 这类内网服务时，若它的网盘驱动开了「本地代理」，播放流量会经该服务
+// 中转——用户看到中转常以为 AetherLink 没把 302 发出去，实际中转发生在直链侧。
+func privateTargetNote(playURL string) string {
+	if urlx.IsPrivateHost(playURL) {
+		return "；直链是内网地址，若该服务（如 OpenList）的网盘驱动开了本地代理，播放流量会经它中转"
+	}
+	return ""
 }
 
 // noRedirectReason 说明为什么一个已经解析成功的目标没有被 302 出去。
-func (s *Server) noRedirectReason(resolution *resolver.Resolution) string {
+// 注意：跳转策略按客户端 IP 的内外网归属判定（README「跳转模式」一节），
+// 与媒体直链指向哪台服务器无关；这里必须把客户端的情况说清楚，
+// 之前写成「而目标是内网地址」让用户对着公网直链排查目标，方向全错。
+func (s *Server) noRedirectReason(resolution *resolver.Resolution, client string) string {
 	if resolution == nil || resolution.Target == nil {
 		return "没有解析出可跳转的地址"
 	}
 	if resolution.Target.Type != strm.TargetRemote {
 		return "目标不是 http 地址"
 	}
+	scope := resolver.ScopeOfClient(client)
+	shown := client
+	if shown == "" {
+		shown = "空"
+	}
 	switch s.redirect.Mode {
 	case config.RedirectNever:
-		return "302 模式为 never"
+		return "跳转模式为 never，任何客户端都不 302"
 	case config.RedirectPublic:
-		return "302 模式为 public，而目标是内网地址"
+		switch scope {
+		case resolver.ClientScopePrivate:
+			return fmt.Sprintf("跳转模式为 public，而客户端 %s 是内网地址（只有公网客户端才 302）", shown)
+		case resolver.ClientScopeUnknown:
+			return fmt.Sprintf("跳转模式为 public，而客户端 IP 无法识别（若 AetherLink 前面还有反代，请把它加入 trusted_proxy_cidrs）")
+		default:
+			return fmt.Sprintf("跳转模式为 public，而客户端 %s 未知", shown)
+		}
 	case config.RedirectPrivate:
-		return "302 模式为 private，而目标不是内网地址"
+		switch scope {
+		case resolver.ClientScopePublic:
+			return fmt.Sprintf("跳转模式为 private，而客户端 %s 是公网地址（只有内网客户端才 302）", shown)
+		case resolver.ClientScopeUnknown:
+			return fmt.Sprintf("跳转模式为 private，而客户端 IP 无法识别（若 AetherLink 前面还有反代，请把它加入 trusted_proxy_cidrs）")
+		default:
+			return fmt.Sprintf("跳转模式为 private，而客户端 %s 未知", shown)
+		}
 	default:
-		return "302 模式未启用"
+		return "跳转模式未启用"
 	}
 }
 

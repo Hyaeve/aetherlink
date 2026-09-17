@@ -384,6 +384,36 @@ func TestRedirectNeverRelaysBytesWithRange(t *testing.T) {
 	}
 }
 
+func TestNoRedirectReasonNamesTheClientNotTheTarget(t *testing.T) {
+	resolution := &resolver.Resolution{Target: &strm.Target{Type: strm.TargetRemote, URL: "https://cdn.115.com/video.mkv"}}
+	cases := []struct {
+		mode   config.RedirectMode
+		client string
+		want   string
+	}{
+		{config.RedirectPublic, "192.168.1.3", "跳转模式为 public，而客户端 192.168.1.3 是内网地址（只有公网客户端才 302）"},
+		{config.RedirectPrivate, "8.8.8.8", "跳转模式为 private，而客户端 8.8.8.8 是公网地址（只有内网客户端才 302）"},
+		{config.RedirectPublic, "", "跳转模式为 public，而客户端 IP 无法识别（若 AetherLink 前面还有反代，请把它加入 trusted_proxy_cidrs）"},
+		{config.RedirectNever, "8.8.8.8", "跳转模式为 never，任何客户端都不 302"},
+	}
+	for _, test := range cases {
+		server := &Server{redirect: config.Redirect{Mode: test.mode}}
+		got := server.noRedirectReason(resolution, test.client)
+		if got != test.want {
+			t.Errorf("mode %s client %q reason = %q, want %q", test.mode, test.client, got, test.want)
+		}
+	}
+}
+
+func TestPrivateTargetNoteMentionsIntranetRelay(t *testing.T) {
+	if privateTargetNote("http://10.0.0.31:5244/d/%E7%94%B5%E5%BD%B1.mkv") == "" {
+		t.Fatal("private host should produce a note")
+	}
+	if privateTargetNote("https://cdn.115.com/video.mkv") != "" {
+		t.Fatal("public host should not produce a note")
+	}
+}
+
 func TestRedirectPrivateOnlyRedirectsPrivateClients(t *testing.T) {
 	publicBackend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Write([]byte("public-bytes"))

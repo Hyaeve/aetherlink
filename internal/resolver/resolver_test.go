@@ -176,6 +176,31 @@ func TestRedirectModesApplyToClientIPRegardlessOfTarget(t *testing.T) {
 	}
 }
 
+func TestScopeOfClient(t *testing.T) {
+	cases := []struct {
+		client string
+		want   ClientScope
+	}{
+		{"8.8.8.8", ClientScopePublic},
+		{"2001:4860:4860::8888", ClientScopePublic},
+		{"192.168.1.3", ClientScopePrivate},
+		{"10.0.0.31", ClientScopePrivate},
+		{"::ffff:192.168.1.3", ClientScopePrivate},
+		{"fd00::1", ClientScopePrivate},
+		{"127.0.0.1", ClientScopePrivate},
+		{"fe80::1", ClientScopePrivate},
+		{"", ClientScopeUnknown},
+		{"example.org", ClientScopeUnknown},
+		{"0.0.0.0", ClientScopeUnknown},
+		{"::", ClientScopeUnknown},
+	}
+	for _, test := range cases {
+		if got := ScopeOfClient(test.client); got != test.want {
+			t.Errorf("ScopeOfClient(%q) = %q, want %q", test.client, got, test.want)
+		}
+	}
+}
+
 func TestBlockedClientUserAgentUsesFallback(t *testing.T) {
 	resolver := New(config.Cache{TTL: time.Hour, MaxSize: 4}, config.Redirect{
 		ForwardUserAgent:     config.Bool(true),
