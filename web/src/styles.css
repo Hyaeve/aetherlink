@@ -1190,7 +1190,9 @@ code {
 .activity-card {
   display: flex;
   flex-direction: column;
-  height: 556px;
+  /* 播放流水卡：高度跟随视口伸缩，比旧版固定 556px 高出一截，
+     一屏能看到更多播放记录。 */
+  height: clamp(600px, 66vh, 800px);
   border-radius: var(--radius-lg);
   border: 1px solid var(--border);
   background: rgba(253, 253, 252, 0.86);
@@ -1203,7 +1205,7 @@ code {
 /* 服务日志卡：比播放流水卡更高，给长日志更多纵向空间；
    高度跟随视口伸缩，屏幕越高一次能看到的日志行越多。 */
 .activity-card.log-card {
-  height: clamp(620px, 76vh, 840px);
+  height: clamp(700px, 88vh, 1000px);
 }
 
 .activity-head {
