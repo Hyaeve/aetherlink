@@ -146,15 +146,30 @@ func TestHealthAndBootstrapNeedNoToken(t *testing.T) {
 	}
 }
 
-// bootstrap 免鉴权，所以既不能回显内置凭据，也不能透露还在用默认账号——
-// 否则等于告诉扫端口的人「这里 admin/password 就能进」。
-func TestBootstrapNeverMentionsCredentials(t *testing.T) {
+// bootstrap 免鉴权，回显什么要格外小心。**账号名是唯一有意暴露的一项**：登录页
+// 要拿它预填账号输入框，而它本身不是秘密（config.Auth.Username 的注释就写明它
+// 是要显示在登录页上的），改过名也能对上。除此之外一律不得出现——尤其不能透露
+// 「还在用内置账号」，否则等于告诉扫端口的人「这里 admin/password 就能进」。
+func TestBootstrapOnlyRevealsTheAccountName(t *testing.T) {
 	for name, env := range map[string]*testEnv{"fresh": newFreshEnv(t), "changed": newEnv(t)} {
-		body := env.do(http.MethodGet, BasePath+"/bootstrap", "", "").Body.String()
-		for _, leak := range []string{"defaultUsername", "defaultPassword", "defaultCredentials", "username", auth.DefaultPassword} {
+		recorder := env.do(http.MethodGet, BasePath+"/bootstrap", "", "")
+		body := recorder.Body.String()
+		for _, leak := range []string{
+			"defaultUsername", "defaultPassword", "defaultCredentials", "default_credentials",
+			"password_hash", "PasswordHash", "salt", "iterations", auth.DefaultPassword,
+		} {
 			if strings.Contains(body, leak) {
 				t.Fatalf("%s: bootstrap leaked %q: %s", name, leak, body)
 			}
+		}
+		var payload struct {
+			Account string `json:"account"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("%s: decode bootstrap: %v (body=%s)", name, err, body)
+		}
+		if want := env.rt.Config().Auth.Username; payload.Account != want {
+			t.Fatalf("%s: account = %q, want %q", name, payload.Account, want)
 		}
 	}
 }

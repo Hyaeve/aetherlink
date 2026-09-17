@@ -1819,17 +1819,23 @@ td.target-cell {
 }
 
 /* 可信前置代理窗口的保存按钮沉到卡片底部，吸收侧栏的冗余高度。 */
+/* 保存按钮与卡片等宽：提示语单独一行居中，按钮铺满整行。 */
 .trusted-proxy-foot {
   display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
   margin-top: auto;
   padding-top: 14px;
 }
 
+.trusted-proxy-foot .save-confirm {
+  justify-content: center;
+}
+
 .trusted-proxy-foot .settings-save-button {
-  min-width: 96px;
+  width: 100%;
+  min-width: 0;
 }
 
 .settings-sidebar .account-card { order: 0; }
@@ -2272,6 +2278,116 @@ td.target-cell {
   color: var(--muted);
 }
 
+/* ---------- 悬浮提示（毛玻璃） ---------- */
+
+/* 不占布局的页面级反馈：浮在内容之上，亮完自己隐去。
+   底色是半透明白 + backdrop-filter 模糊，靠白色高光描边勾出圆角轮廓；
+   正文保持常规字色，只有图标与描边染色——整块变红会把长错误信息糊掉。 */
+.float-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 30px;
+  transform: translateX(-50%);
+  z-index: 70;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: min(560px, calc(100vw - 40px));
+  padding: 11px 17px;
+  border-radius: var(--radius-lg);
+  background: rgba(253, 253, 252, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.55;
+  box-shadow: 0 18px 40px rgba(63, 69, 80, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(16px) saturate(160%);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+}
+
+.float-toast.ok {
+  border-color: rgba(125, 155, 138, 0.42);
+  box-shadow: 0 18px 40px rgba(63, 69, 80, 0.14), 0 0 0 3px rgba(125, 155, 138, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+.float-toast.danger {
+  border-color: rgba(185, 134, 140, 0.46);
+  box-shadow: 0 18px 40px rgba(63, 69, 80, 0.14), 0 0 0 3px rgba(185, 134, 140, 0.11),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+.float-toast-indicator {
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  flex: none;
+  /* 与正文首行对齐（正文行盒约 20px，图标 17px，往下压 1px 更居中）。 */
+  margin-top: 1px;
+  color: var(--muted);
+}
+
+.float-toast.ok .float-toast-indicator {
+  color: var(--ok);
+}
+
+.float-toast.danger .float-toast-indicator {
+  color: var(--danger);
+}
+
+.float-toast-indicator svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.float-toast-indicator .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.float-toast-indicator .spinner {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid rgba(143, 137, 184, 0.22);
+  border-top-color: var(--accent);
+  animation: float-toast-spin 0.7s linear infinite;
+}
+
+.float-toast-text {
+  min-width: 0;
+  word-break: break-word;
+}
+
+@keyframes float-toast-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 进出都只动透明度加一点点位移，隐去时不闪、不留白。 */
+.float-toast-enter-active {
+  transition: opacity 0.22s ease, transform 0.22s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+.float-toast-leave-active {
+  transition: opacity 0.45s ease, transform 0.45s ease;
+}
+
+.float-toast-enter-from,
+.float-toast-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(10px);
+}
+
 /* ---------- 弹窗 ---------- */
 
 .modal-backdrop {
@@ -2673,8 +2789,10 @@ label.field {
   margin-bottom: 6px;
 }
 
-/* API 密钥与登录密码：输入框右侧挂一个显隐切换的小眼睛。两个字段都默认遮蔽成
-   圆点（普通眼睛 = 点一下显示，斜线眼睛 = 再点回圆点），所以不需要额外的标题栏按钮。 */
+/* 密文字段：输入框右侧挂一个显隐切换的小眼睛。上游编辑窗口的 API 密钥 / 登录密码
+   默认遮蔽成圆点（普通眼睛 = 点一下显示，斜线眼睛 = 再点回圆点）；登录页的密码框
+   相反，默认就是明文（那里打开时是空的，遮蔽只影响打字时看不看得见），初始是斜线
+   眼睛。两个方向都靠同一套按钮样式，状态由组件自己给。 */
 .secret-input {
   position: relative;
   display: block;
@@ -2863,7 +2981,8 @@ label.inline input[type='checkbox'] {
   .status-pill i,
   .live-badge i,
   .skeleton-line,
-  .loading-orb {
+  .loading-orb,
+  .float-toast-indicator .spinner {
     animation: none;
   }
 }

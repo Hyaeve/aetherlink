@@ -36,6 +36,9 @@ const tabs = [
 ]
 
 const RAIL_KEY = 'aetherlink.rail'
+// 上次登录成功用过的账号名。后端的 bootstrap 会带当前账号名过来，这个只是
+// 后端不可达（或接口拿不到）时的兜底。
+const ACCOUNT_KEY = 'aetherlink.account'
 const APP_BASE = '/aetherlink/'
 const TAB_IDS = new Set(tabs.map((tab) => tab.id))
 const primaryTabs = tabs.filter((tab) => tab.id !== 'settings')
@@ -59,6 +62,9 @@ const accountMenuOpen = ref(false)
 
 const username = ref('')
 const password = ref('')
+// 登录窗口的密码默认不遮蔽：这里的框在打开时是空的，遮蔽只影响「打字时看不看得见」，
+// 所以默认让你看清自己输的是什么，右侧斜线小眼睛点一下就变回圆点。
+const passwordVisible = ref(true)
 const authBusy = ref(false)
 const authError = ref('')
 
@@ -86,12 +92,22 @@ function handlePopState() {
   pageStats.value = null
 }
 
+// 登录窗口的账号预填：后端的 bootstrap 会带上当前账号名（账号不是秘密，配置里
+// 就写明它是要显示在登录页上的），改过名也能对上；拿不到时退回这个浏览器上次
+// 登录成功用过的那个，避免把已经输进去的内容清空。
+function applyAccount(account) {
+  const name = (account || '').trim() || localStorage.getItem(ACCOUNT_KEY) || ''
+  if (name) username.value = name
+}
+
 async function bootstrap() {
   try {
     // 只是探一下后端在不在，拿不到就把原因直接显示在登录页上。
-    await api.bootstrap()
+    const info = await api.bootstrap()
+    applyAccount(info && info.account)
   } catch (error) {
     authError.value = error.message
+    applyAccount('')
   }
   if (!getToken()) {
     gate.value = 'login'
@@ -114,6 +130,8 @@ function enterApp() {
   statusError.value = ''
   authError.value = ''
   password.value = ''
+  // 密码框回到「默认不遮蔽」，不让上一次手动隐藏的选择一直留到下一次登录。
+  passwordVisible.value = true
   if (statusTimer) clearInterval(statusTimer)
   statusTimer = setInterval(refreshStatus, 15000)
 }
@@ -142,6 +160,8 @@ async function submitLogin() {
   try {
     const result = await api.login(username.value, password.value)
     setToken(result.token)
+    // 记住这次用的账号名，下次进登录页直接填好。
+    if (username.value.trim()) localStorage.setItem(ACCOUNT_KEY, username.value.trim())
     status.value = await api.status()
     enterApp()
   } catch (error) {
@@ -172,6 +192,13 @@ async function onAccountChanged() {
   password.value = ''
   authError.value = '账号已更新，请重新登录'
   gate.value = 'login'
+  // 账号刚改过，登录框里可能还挂着旧名字，重新取一次预填。
+  try {
+    const info = await api.bootstrap()
+    applyAccount(info && info.account)
+  } catch {
+    // 取不到就沿用本地记录，用户自己改一下即可。
+  }
 }
 const uptime = computed(() => {
   const seconds = status.value?.uptimeSeconds || 0
@@ -276,7 +303,32 @@ function toggleAccountMenu() {
       </label>
       <label class="field">
         <span>密码</span>
-        <input v-model="password" type="password" autocomplete="current-password" @keyup.enter="submitLogin" />
+        <span class="secret-input">
+          <input
+            v-model="password"
+            :type="passwordVisible ? 'text' : 'password'"
+            autocomplete="current-password"
+            @keyup.enter="submitLogin"
+          />
+          <button
+            type="button"
+            class="secret-toggle"
+            :aria-pressed="passwordVisible"
+            :title="passwordVisible ? '隐藏密码' : '显示密码'"
+            :aria-label="passwordVisible ? '隐藏密码' : '显示密码'"
+            @click.prevent="passwordVisible = !passwordVisible"
+          >
+            <svg v-if="passwordVisible" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z" />
+              <circle cx="12" cy="12" r="3.1" />
+              <path d="m4 3.6 16 16.8" />
+            </svg>
+            <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z" />
+              <circle cx="12" cy="12" r="3.1" />
+            </svg>
+          </button>
+        </span>
       </label>
       <button class="primary block" :disabled="authBusy" @click="submitLogin">
         {{ authBusy ? '登录中…' : '登录' }}

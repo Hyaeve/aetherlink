@@ -346,24 +346,6 @@ async function save() {
                      :placeholder="props.suggestedPort ? String(props.suggestedPort) : '如 5152'" />
               <small class="field-note">保存后把宿主机端口映射到这个端口</small>
             </label>
-            <div class="field">
-              <span>播放跳转</span>
-              <details class="form-select" @keydown="handleDropdownKey">
-                <summary :aria-label="`播放跳转：${optionLabel(redirectOptions, form.redirectMode)}`">{{ optionLabel(redirectOptions, form.redirectMode) }}</summary>
-                <div class="form-select-options">
-                  <button
-                    v-for="option in redirectOptions"
-                    :key="option.value"
-                    type="button"
-                    :aria-pressed="form.redirectMode === option.value"
-                    :class="{ selected: form.redirectMode === option.value }"
-                    @click="selectOption('redirectMode', option.value, $event)"
-                  >
-                    {{ option.label }}
-                  </button>
-                </div>
-              </details>
-            </div>
             <label class="field" v-if="showApiKey">
               <span>API 密钥</span>
               <span class="secret-input">
@@ -430,6 +412,26 @@ async function save() {
                 </button>
               </span>
             </label>
+            <!-- 播放跳转排在账号密码之后：飞牛影视没有 API 密钥这一项，
+                 账号密码因此并排落在同一行，跳转选择框跟在它们后面。 -->
+            <div class="field">
+              <span>播放跳转</span>
+              <details class="form-select" @keydown="handleDropdownKey">
+                <summary :aria-label="`播放跳转：${optionLabel(redirectOptions, form.redirectMode)}`">{{ optionLabel(redirectOptions, form.redirectMode) }}</summary>
+                <div class="form-select-options">
+                  <button
+                    v-for="option in redirectOptions"
+                    :key="option.value"
+                    type="button"
+                    :aria-pressed="form.redirectMode === option.value"
+                    :class="{ selected: form.redirectMode === option.value }"
+                    @click="selectOption('redirectMode', option.value, $event)"
+                  >
+                    {{ option.label }}
+                  </button>
+                </div>
+              </details>
+            </div>
           </div>
           <div class="row">
             <label class="inline"><input type="checkbox" v-model="form.enabled" /> 启用</label>

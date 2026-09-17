@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
 import { cardStyleFor } from '../palette'
 import ContextMenu from './ContextMenu.vue'
+import FloatToast from './FloatToast.vue'
 import UpstreamForm from './UpstreamForm.vue'
 
 const emit = defineEmits(['changed', 'stats'])
@@ -10,7 +11,9 @@ const emit = defineEmits(['changed', 'stats'])
 const upstreams = ref([])
 const suggestedPort = ref(0)
 const error = ref('')
-const notice = ref('')
+// toast：右键菜单里「测试」的结果。浮在页面上的毛玻璃提示，亮完自己隐去，
+// 不占布局——页面顶部的横栏会把下面的卡片顶下去，只想知道结果时太吵。
+const toast = ref(null)
 const loading = ref(true)
 const startedAt = ref('')
 
@@ -173,9 +176,24 @@ function onModeKeydown(event) {
   if (event.key === 'Escape') closeModeMenu()
 }
 
+// 悬浮提示同时只留一条：新的一条直接替换旧的，不会堆成一摞。
+// 停留时长交给 FloatToast 自己计时（loading 态不计时，一直挂到结果回来）。
+function showToast(text, options = {}) {
+  toast.value = {
+    text,
+    tone: options.tone || 'info',
+    loading: Boolean(options.loading),
+    duration: options.duration || 4000
+  }
+}
+
+function hideToast() {
+  toast.value = null
+}
+
 function openEditor(upstream) {
   closeMenu()
-  notice.value = ''
+  hideToast()
   editing.value = { upstream: upstream || null }
 }
 
@@ -201,12 +219,13 @@ async function toggleEnabled(upstream) {
 
 async function ping(upstream) {
   closeMenu()
-  notice.value = `正在测试 ${upstream.name}…`
+  showToast(`正在测试 ${upstream.name}…`, { loading: true })
   try {
     const result = await api.ping(upstream.name)
-    notice.value = `${upstream.name} 连接正常 · ${result.info}`
+    showToast(`${upstream.name} 连接正常 · ${result.info}`, { tone: 'ok' })
   } catch (pingError) {
-    notice.value = `${upstream.name} 连接失败：${pingError.message}`
+    // 失败信息通常更长，多留一会儿再隐去。
+    showToast(`${upstream.name} 连接失败：${pingError.message}`, { tone: 'danger', duration: 6000 })
   }
 }
 
@@ -248,7 +267,6 @@ onUnmounted(() => {
 <template>
   <section class="upstreams-page">
     <p v-if="error" class="error page-error">{{ error }}</p>
-    <div v-if="notice" class="notice page-notice">{{ notice }}</div>
 
     <div v-if="loading" class="card-grid">
       <div v-for="index in 2" :key="index" class="proxy-card skeleton-card" aria-hidden="true">
@@ -411,6 +429,18 @@ onUnmounted(() => {
         <span>删除</span>
       </button>
     </ContextMenu>
+
+    <!-- 测试结果：浮在页面底部的毛玻璃提示，亮完自己隐去，不占布局。 -->
+    <Transition name="float-toast">
+      <FloatToast
+        v-if="toast"
+        :text="toast.text"
+        :tone="toast.tone"
+        :loading="toast.loading"
+        :duration="toast.duration"
+        @done="hideToast"
+      />
+    </Transition>
 
     <UpstreamForm
       v-if="editing"
