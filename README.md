@@ -24,7 +24,7 @@
 
 **一个上游一个端口。** 每个上游在 AetherLink 上独占一个反代端口，路径与上游完全一致——
 播放端只需要把地址里的端口从媒体服务器端口换成 AetherLink 的反代端口，别的什么都不用改。
-管理界面自己占 5151，且只服务管理页与管理 API，不做反代。
+管理界面自己占容器内的 5151（`AETHERLINK_PORT=8080` 可改），且只服务管理页与管理 API，不做反代。
 
 - **拿到账号**：Audiobookshelf 与 Emby 用的是它们自带的静态 API 密钥（Audiobookshelf 的 Key 就是一枚 JWT，可作 Bearer 使用；Emby 用 `X-Emby-Token`/`api_key`），因此 AetherLink 能以该账号权限查询书库、条目和文件真实路径。飞牛影视没有这种静态密钥——它只认客户端账号密码换来的令牌，而这条令牌由播放器自己登录取得并随请求转发，所以**什么都不填也能完成 302**；只有想让 AetherLink 自己读媒体库时才需要填上账号密码，它会走同一条登录接口换令牌。
 - **只拦截字节投递接口**，并在 Emby 系的 `PlaybackInfo` 中把客户端本来就能直放的 STRM 接到 AetherLink；其余请求（Web UI、封面、元数据、进度同步、客户端不兼容时的 HLS 转码）原样反代。
@@ -180,8 +180,9 @@ mkdir -p config && sudo chown -R 1000:1000 config
 | --- | --- |
 | `TZ` | 时区，影响日志时间戳。 |
 | `AETHERLINK_CONFIG` | 配置文件路径，镜像内已设为 `/config/config.yaml`。 |
-| `AETHERLINK_ADMIN_TOKEN` | **应急令牌**，可绕过账号登录。仅在忘记管理密码时临时加上，排障后请移除。 |
-| `AETHERLINK_LISTEN`、`AETHERLINK_LOG_LEVEL`、`AETHERLINK_REDIRECT_MODE`、`AETHERLINK_FOLLOW_REDIRECTS` | 启动期覆盖，用于排障。 |
+| `AETHERLINK_ADMIN_TOKEN` | **应急令牌**，可绕过账号登录。仅在忘记管理密码时临时加上，排障后请移除。它只在这台容器的这次启动里生效，不会被写回 `config.yaml`。 |
+| `AETHERLINK_PORT` | **容器监听端口**，只写端口号（如 `8080`），不填即默认 `5151`。compose 里同一个变量既能改容器内监听、又能改端口映射：<br>`environment: [ AETHERLINK_PORT=8080 ]` + `ports: [ "15151:8080" ]`。改完记得重启容器。 |
+| `AETHERLINK_LISTEN`、`AETHERLINK_LOG_LEVEL`、`AETHERLINK_REDIRECT_MODE`、`AETHERLINK_FOLLOW_REDIRECTS` | 启动期覆盖，用于排障。`AETHERLINK_LISTEN` 接受完整地址（`:8080`、`127.0.0.1:8080`），与 `AETHERLINK_PORT` 同时存在时以它为准。 |
 
 忘记密码的另一种恢复方式：删掉 `config/config.yaml` 里的整个 `auth:` 段并重启容器，AetherLink 会重新写入内置的 admin / password，上游配置不受影响。
 

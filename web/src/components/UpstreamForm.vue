@@ -313,7 +313,6 @@ async function save() {
       <div class="modal-body">
         <div class="field-group">
           <div class="title">基本信息</div>
-          <div class="hint">播放时把原地址端口换成反代端口，路径保持不变。</div>
           <div class="grid cols-2">
             <label class="field">
               <span>名称</span>
@@ -399,7 +398,6 @@ async function save() {
             <label class="field" v-if="showCredentials">
               <span>登录账号</span>
               <input v-model="form.username" autocomplete="off" spellcheck="false" :placeholder="serviceHint.account" />
-              <small class="field-note">试连与媒体库读取都需要它；只留空不填则只能靠播放协商跳转</small>
             </label>
             <label class="field" v-if="showCredentials">
               <span>登录密码</span>

@@ -34,11 +34,14 @@ ENV AETHERLINK_CONFIG=/config/config.yaml \
     TZ=Asia/Shanghai \
     PUID=10001 \
     PGID=10001
+# 默认容器端口。EXPOSE 只是文档性质，真正的映射由 compose 决定；
+# 用 AETHERLINK_PORT 可以改掉容器内实际监听的端口（见 README 环境变量）。
 EXPOSE 5151
 VOLUME ["/config", "/cache"]
 # 健康检查用免鉴权的存活探针，不会暴露任何配置。
+# 跟随 AETHERLINK_PORT，改成别的容器端口后探针不会失效。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD wget -qO- http://127.0.0.1:5151/aetherlink/api/health >/dev/null || exit 1
+    CMD wget -qO- "http://127.0.0.1:${AETHERLINK_PORT:-5151}/aetherlink/api/health" >/dev/null || exit 1
 # 以 root 进入 entrypoint，脚本会把 /config 的属主改成 PUID:PGID 后再降权。
 # 需要全程非 root 时在 compose 里加 user:，脚本会自动跳过 chown。
 ENTRYPOINT ["/entrypoint.sh"]

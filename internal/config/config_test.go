@@ -381,6 +381,105 @@ func TestEnvOverridesServerSettings(t *testing.T) {
 	}
 }
 
+// AETHERLINK_PORT 是给容器用的简写：不填就沿用配置文件里的监听端口，
+// 填了就改成容器内监听这个端口，方便 compose 里同一个变量既改监听又改映射。
+func TestEnvOverrideListenPort(t *testing.T) {
+	t.Setenv("AETHERLINK_PORT", "8080")
+	cfg, err := Load(writeConfig(t, "upstreams: []\n"))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Server.Listen != ":8080" {
+		t.Fatalf("listen = %q, want :8080", cfg.Server.Listen)
+	}
+	if port := PortOf(cfg.Server.Listen); port != 8080 {
+		t.Fatalf("admin port = %d, want 8080", port)
+	}
+}
+
+func TestEnvOverrideListenPortKeepsFileValueWhenUnset(t *testing.T) {
+	t.Setenv("AETHERLINK_PORT", "")
+	t.Setenv("AETHERLINK_LISTEN", "")
+	cfg, err := Load(writeConfig(t, "server:\n  listen: \":9000\"\nupstreams: []\n"))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Server.Listen != ":9000" {
+		t.Fatalf("listen = %q, want the file value :9000", cfg.Server.Listen)
+	}
+}
+
+// AETHERLINK_LISTEN 能写完整地址，比只写端口号的 AETHERLINK_PORT 更具体，
+// 两者同时存在时以它为准。
+func TestEnvOverrideListenAddressWinsOverPort(t *testing.T) {
+	t.Setenv("AETHERLINK_PORT", "8080")
+	t.Setenv("AETHERLINK_LISTEN", "127.0.0.1:9090")
+	cfg, err := Load(writeConfig(t, "upstreams: []\n"))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Server.Listen != "127.0.0.1:9090" {
+		t.Fatalf("listen = %q, want 127.0.0.1:9090", cfg.Server.Listen)
+	}
+}
+
+func TestEnvOverrideRejectsBadListenPort(t *testing.T) {
+	for _, value := range []string{"abc", "0", "65536", "-1"} {
+		t.Setenv("AETHERLINK_PORT", value)
+		if _, err := Load(writeConfig(t, "upstreams: []\n")); err == nil {
+			t.Fatalf("AETHERLINK_PORT=%q 应当报错而不是被静默忽略", value)
+		}
+	}
+}
+
+// 环境变量是「启动期覆盖」：界面保存配置时不能把监听端口顺带固化到磁盘，
+// 否则删掉 AETHERLINK_PORT 之后端口会被永久改掉，compose 映射的 5151 进不去。
+func TestEnvOverrideListenPortIsNotPersisted(t *testing.T) {
+	t.Setenv("AETHERLINK_PORT", "8080")
+	path := writeConfig(t, "server:\n  listen: \":9000\"\nupstreams: []\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Server.Listen != ":8080" {
+		t.Fatalf("生效的 listen = %q, want :8080", cfg.Server.Listen)
+	}
+	if err := cfg.Clone().Save(path); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	t.Setenv("AETHERLINK_PORT", "")
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("重新加载失败: %v", err)
+	}
+	if reloaded.Server.Listen != ":9000" {
+		t.Fatalf("写回的 listen = %q, want 文件里原本的 :9000", reloaded.Server.Listen)
+	}
+}
+
+// 应急令牌同理：它只是临时注入的绕过口令，不能因为保存一次配置就永久留盘。
+func TestEnvOverrideAdminTokenIsNotPersisted(t *testing.T) {
+	t.Setenv("AETHERLINK_ADMIN_TOKEN", "token-from-env")
+	path := writeConfig(t, "upstreams: []\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Server.AdminToken != "token-from-env" {
+		t.Fatalf("生效的 admin token = %q", cfg.Server.AdminToken)
+	}
+	if err := cfg.Save(path); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "token-from-env") {
+		t.Fatalf("应急令牌被写进了配置文件：\n%s", raw)
+	}
+}
+
 // 反代端口是每个上游的唯一入口，界面新增上游时要自动挑一个不冲突的号。
 func TestSuggestPortSkipsAdminAndTakenPorts(t *testing.T) {
 	cfg := Default()

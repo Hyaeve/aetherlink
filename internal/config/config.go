@@ -332,6 +332,17 @@ type Config struct {
 	// migrated 记录本次加载是否改写了旧版字段，由 Load 设置，调用方据此决定
 	// 是否把迁移结果落盘。
 	migrated bool `yaml:"-"`
+	// envKept 记录环境变量覆盖前的原值，Save 时用它们把「启动期覆盖」挡在
+	// 磁盘之外：详见 applyEnvOverrides 的说明。
+	envKept envKeptValues `yaml:"-"`
+}
+
+// envKeptValues 保存被环境变量覆盖掉的、原本写在配置文件里的值。
+type envKeptValues struct {
+	hasListen  bool
+	listen     string
+	hasToken   bool
+	adminToken string
 }
 
 // Path returns the file the config was loaded from.
@@ -413,7 +424,9 @@ func LoadOrCreate(path string) (*Config, bool, error) {
 	}
 	cfg = Default()
 	cfg.path = path
-	applyEnvOverrides(cfg)
+	if err := applyEnvOverrides(cfg); err != nil {
+		return nil, false, err
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, false, err
 	}
@@ -443,7 +456,9 @@ func Load(path string) (*Config, error) {
 	}
 	merge(cfg, &parsed)
 	cfg.path = path
-	applyEnvOverrides(cfg)
+	if err := applyEnvOverrides(cfg); err != nil {
+		return nil, err
+	}
 	// 旧版本用路径前缀区分上游，升级后必须先补上端口再校验，
 	// 否则一份能用的老配置会让容器直接起不来。
 	cfg.migrated = cfg.migrate()
@@ -636,14 +651,36 @@ func merge(base, parsed *Config) {
 
 // applyEnvOverrides supports a few container-level overrides. Everything else
 // is managed from the admin UI and persisted to the config file.
-func applyEnvOverrides(cfg *Config) {
+//
+// 这些覆盖只作用于本次启动：Save 会把配置文件里原本的值写回去，不让环境变量
+// 顺带固化到磁盘上。否则删掉 AETHERLINK_PORT 之后监听端口会被永久改掉（compose
+// 里映射 5151 的写法就再也进不去管理页），删掉 AETHERLINK_ADMIN_TOKEN 之后
+// 那个应急令牌还会一直留在文件里。
+func applyEnvOverrides(cfg *Config) error {
+	// AETHERLINK_PORT 是给容器用的简写：只写端口号，compose 里同一个变量既能改
+	// 容器内的监听端口、又能改端口映射。不设置时完全不介入，配置文件里的
+	// listen 照旧生效。AETHERLINK_LISTEN 接受完整地址（`:8080`、
+	// `127.0.0.1:8080`），两者同时存在以它为准。
+	if value := strings.TrimSpace(os.Getenv("AETHERLINK_PORT")); value != "" {
+		port, err := strconv.Atoi(value)
+		if err != nil || port < 1 || port > 65535 {
+			return fmt.Errorf("AETHERLINK_PORT %q 不是 1-65535 之间的端口号", value)
+		}
+		cfg.rememberFileListen()
+		cfg.Server.Listen = ":" + value
+	}
 	if value := os.Getenv("AETHERLINK_LISTEN"); value != "" {
+		cfg.rememberFileListen()
 		cfg.Server.Listen = value
 	}
 	if value := os.Getenv("AETHERLINK_LOG_LEVEL"); value != "" {
 		cfg.Server.LogLevel = value
 	}
 	if value := os.Getenv("AETHERLINK_ADMIN_TOKEN"); value != "" {
+		if !cfg.envKept.hasToken {
+			cfg.envKept.hasToken = true
+			cfg.envKept.adminToken = cfg.Server.AdminToken
+		}
 		cfg.Server.AdminToken = value
 	}
 	if value := os.Getenv("AETHERLINK_REDIRECT_MODE"); value != "" {
@@ -654,6 +691,16 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Redirect.FollowUpstreamRedirects = parsed
 		}
 	}
+	return nil
+}
+
+// rememberFileListen 在环境变量改写监听地址之前，记下配置文件里的原值。
+func (c *Config) rememberFileListen() {
+	if c.envKept.hasListen {
+		return
+	}
+	c.envKept.hasListen = true
+	c.envKept.listen = c.Server.Listen
 }
 
 // Validate normalizes and checks the configuration. Zero upstreams is a valid
@@ -848,7 +895,16 @@ func (c *Config) Save(path string) error {
 	if path == "" {
 		return errors.New("没有可写入的配置文件路径")
 	}
-	data, err := yaml.Marshal(c)
+	// 环境变量覆盖过的监听地址与应急令牌只作用于本次启动，写盘时换回文件里
+	// 原本的值，避免「临时加了个变量」变成永久改动。
+	snapshot := *c
+	if c.envKept.hasListen {
+		snapshot.Server.Listen = c.envKept.listen
+	}
+	if c.envKept.hasToken {
+		snapshot.Server.AdminToken = c.envKept.adminToken
+	}
+	data, err := yaml.Marshal(&snapshot)
 	if err != nil {
 		return err
 	}
