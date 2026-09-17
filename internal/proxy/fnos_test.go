@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -410,5 +411,62 @@ func TestFnosTunnelsWebSocketUpgrade(t *testing.T) {
 	}
 	if echoed != 'Z' {
 		t.Fatalf("隧道回显 = %q, want 'Z'", echoed)
+	}
+}
+
+// 飞牛上游的直链缓存与 Emby 共用同一套：第一次取流回头问一次上游并把直链存下，
+// 第二次直接命中，而且缓存有效期按直链上的 t 参数动态计算，不是回落到固定 2 小时。
+//
+// 这里刻意不先走 PlaybackInfo 改写：那条路会把媒体源记进 provider 的 10 分钟内存
+// 缓存，命中它根本到不了解析缓存，两条缓存就验混了。绕过它正好也是真实场景之一
+// ——客户端自己缓存了播放协商、或 AetherLink 中途重启后直接请求 /stream。
+func TestFnosReusesCachedDirectLinkForRepeatedPlayback(t *testing.T) {
+	expiry := time.Now().Add(30 * time.Minute).Unix()
+	source := fnosStrmPlaybackSource()
+	source["Path"] = fmt.Sprintf("http://10.0.0.31:25244/d/移动云盘/白色巨塔 (2003)/S01E01.再读.mkv?t=%d", expiry)
+	fake := newFakeFnos(t, []map[string]any{source})
+	server, collector := newFnosTestServer(t, fake.server.URL, defaultRedirect())
+
+	play := func() *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/Videos/movie-1/stream.mkv?MediaSourceId=source-strm", nil)
+		request.Header.Set("User-Agent", "AfuseKt/1.0")
+		server.ServeHTTP(recorder, request)
+		return recorder
+	}
+
+	first := play()
+	if first.Code != http.StatusFound {
+		t.Fatalf("首次取流状态 = %d, want 302; body = %q", first.Code, first.Body.String())
+	}
+	if _, calls, _ := fake.snapshot(); calls != 1 {
+		t.Fatalf("首次取流的 PlaybackInfo 调用 = %d, want 1（媒体源缓存为空，必然回头问一次）", calls)
+	}
+
+	second := play()
+	if second.Code != http.StatusFound {
+		t.Fatalf("第二次取流状态 = %d, want 302; body = %q", second.Code, second.Body.String())
+	}
+	if got, want := second.Header().Get("Location"), first.Header().Get("Location"); got != want {
+		t.Fatalf("两次 302 目标不一致：%q → %q", want, got)
+	}
+	if _, calls, _ := fake.snapshot(); calls != 1 {
+		t.Fatalf("第二次取流的 PlaybackInfo 调用 = %d, want 1（应命中直链缓存，不再问上游）", calls)
+	}
+
+	snapshot := collector.Snapshot(10)
+	if snapshot.CacheMisses != 1 || snapshot.CacheHits != 1 {
+		t.Fatalf("缓存未命中/命中 = %d/%d, want 1/1", snapshot.CacheMisses, snapshot.CacheHits)
+	}
+	if len(snapshot.RecentEvents) != 2 {
+		t.Fatalf("播放流水条数 = %d, want 2", len(snapshot.RecentEvents))
+	}
+	// RecentEvents 是倒序的：第 0 条就是第二次取流。
+	hit := snapshot.RecentEvents[0]
+	if hit.CacheSource != string(resolver.CacheSourceHit) {
+		t.Fatalf("第二次取流的缓存状态 = %q, want %q", hit.CacheSource, resolver.CacheSourceHit)
+	}
+	if hit.CacheTTLSeconds < 1700 || hit.CacheTTLSeconds > 1800 {
+		t.Fatalf("命中时的缓存有效期 = %ds, want 约 1800s（按直链的 t 算，而不是回落 2 小时）", hit.CacheTTLSeconds)
 	}
 }

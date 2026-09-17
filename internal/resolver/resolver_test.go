@@ -139,6 +139,42 @@ func TestEmbyCacheFallbackIsFixedAtTwoHours(t *testing.T) {
 	}
 }
 
+// 飞牛影视与 Emby 共用同一套直链缓存策略，这里把「共用」本身钉成断言。
+//
+// 摘掉这个共用关系不会有任何编译或运行报错：飞牛会静默退回配置里的 ttl，
+// 直链上的 t 参数不再被读，签名地址会被整段保留到过期之后 —— 客户端拿到的
+// 是已经失效的直链，现象是「偶尔一两条播不了」，而播放流水里还写着缓存命中。
+func TestFnosSharesEmbyFamilyDirectLinkCachePolicy(t *testing.T) {
+	fnos, err := upstream.New(config.Upstream{
+		Name:    "飞牛影视",
+		Type:    config.UpstreamFnos,
+		BaseURL: "http://127.0.0.1:8005",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 缓存文件里的 ttl 刻意配成 5 小时：它不该出现在飞牛的直链缓存上。
+	resolver := New(config.Cache{TTL: 5 * time.Hour, MaxSize: 4}, config.Redirect{})
+
+	// 直链上没有可用的 t 时与 Emby 一样固定 2 小时。
+	if got := resolver.cacheTTL(fnos); got != 2*time.Hour {
+		t.Fatalf("飞牛回退缓存 ttl = %v, want 2h（应与 Emby 一致）", got)
+	}
+
+	// 直链带了数字 t 时按该直链的实际到期时间缓存 —— 这条对飞牛的签名直链是常态。
+	expiry := time.Now().Add(40 * time.Second).Unix()
+	signed := &Resolution{
+		Target: &strm.Target{
+			Type: strm.TargetRemote,
+			URL:  fmt.Sprintf("https://cdn.example/白色巨塔/S01E01.mkv?t=%d", expiry),
+		},
+	}
+	ttl := resolver.cacheTTLFor(fnos, signed, resolver.cacheTTL(fnos))
+	if ttl < 30*time.Second || ttl > 41*time.Second {
+		t.Fatalf("飞牛签名直链的缓存 ttl = %v, want 约 40s（应按直链的 t 到期）", ttl)
+	}
+}
+
 func TestRedirectModesApplyToClientIPRegardlessOfTarget(t *testing.T) {
 	resolver := New(config.Cache{}, config.Redirect{})
 	publicResolution := &Resolution{Target: &strm.Target{Type: strm.TargetRemote, URL: "https://cdn.example/video.mkv"}}
