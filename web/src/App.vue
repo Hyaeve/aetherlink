@@ -109,6 +109,9 @@ async function bootstrap() {
 
 function enterApp() {
   gate.value = 'app'
+  // 清掉上一段会话残留的错误提示（比如容器重启导致的会话失效），
+  // 不然重新登录后旧文案还会在页面顶部挂到下次轮询成功为止。
+  statusError.value = ''
   authError.value = ''
   password.value = ''
   if (statusTimer) clearInterval(statusTimer)
@@ -120,12 +123,16 @@ async function refreshStatus() {
     status.value = await api.status()
     statusError.value = ''
   } catch (error) {
-    statusError.value = error.message
     if (error.status === 401) {
+      // 会话失效是正常流转（容器重启、令牌到期）：清掉本地令牌回登录页，
+      // 不显示任何错误文案。
       setToken('')
       status.value = null
+      statusError.value = ''
       gate.value = 'login'
+      return
     }
+    statusError.value = error.message
   }
 }
 
