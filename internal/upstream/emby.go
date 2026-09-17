@@ -42,6 +42,13 @@ type embyProvider struct {
 	// preferItemByID 让方言优先用单项路由 /Items/{id} 取条目，而不是集合路由
 	// /Items?Ids=。飞牛影视只实现了前者，后者在它上面回的是单页应用的 HTML。
 	preferItemByID bool
+
+	// forceDirectPlay 是「始终跳转」的配套开关：上游（尤其飞牛对外网客户端）
+	// 常以码率限制等理由在 PlaybackInfo 里判 SupportsDirectPlay=false，客户端
+	// 于是转投转码 HLS，转码流量走上游自己——用户看到的「设了始终跳转还在
+	// 中继」就是它。开了这个开关就不再采纳上游的不可直放判定，强制把 STRM
+	// 媒体源接入 302；跳转模式不是 always 的卡片维持原有尊重上游判定的行为。
+	forceDirectPlay bool
 }
 
 type cachedEmbyMediaSource struct {
@@ -121,6 +128,7 @@ func (p *embyProvider) RewriteResponse(originalPath string, response *http.Respo
 	// mutated 记录响应体是否需要回写：方言补齐字段也算改动，但它不该被算进
 	// 「接入 302 的媒体源数量」，否则日志会把没跳转的情况说成跳转了。
 	mutated := false
+	forced := 0
 	skipped := make([]string, 0)
 	for _, source := range sources {
 		if p.normalizeSource != nil && p.normalizeSource(source) {
@@ -130,6 +138,15 @@ func (p *embyProvider) RewriteResponse(originalPath string, response *http.Respo
 			continue
 		}
 		directPlayAllowed := embyAllowsDirectPlay(source)
+		if !directPlayAllowed && p.forceDirectPlay {
+			// 卡片是「始终跳转」：上游对外网客户端的不可直放判定（码率限制、
+			// 远程访问策略等）不再采纳。不强制的话客户端会去要转码 HLS，
+			// 转码流量全走上游自己，「始终跳转」就成了空话。
+			source["SupportsDirectPlay"] = true
+			directPlayAllowed = true
+			forced++
+			mutated = true
+		}
 		p.rememberPlaybackSource(itemID, embyMediaSourceFromMap(source), directPlayAllowed)
 		if !directPlayAllowed {
 			skipped = append(skipped, embyDirectPlayBlockReason(source))
@@ -168,6 +185,8 @@ func (p *embyProvider) RewriteResponse(originalPath string, response *http.Respo
 	response.Header.Del("Content-MD5")
 	if len(skipped) > 0 {
 		logx.Infof("[%s] PlaybackInfo 已让 %d 个兼容的 STRM 媒体源接入 302，另有 %d 个保留上游转码（item=%s）：%s", p.Name(), changed, len(skipped), itemID, strings.Join(uniqueStrings(skipped), "、"))
+	} else if forced > 0 {
+		logx.Infof("[%s] PlaybackInfo 强制让 %d 个 STRM 媒体源接入 302（忽略上游的不可直放判定，item=%s）", p.Name(), forced, itemID)
 	} else {
 		logx.Infof("[%s] PlaybackInfo 已让 %d 个兼容的 STRM 媒体源接入 302（item=%s），客户端下一步应请求 /Videos/%s/stream", p.Name(), changed, itemID, itemID)
 	}
@@ -727,7 +746,9 @@ type embyUser struct {
 // a pointer file ourselves.
 func (p *embyProvider) MediaTarget(ctx context.Context, ref MediaRef) (MediaTarget, error) {
 	if source, directPlayAllowed, ok := p.rememberedPlaybackSource(ref.ItemID, ref.MediaSourceID); ok {
-		if !directPlayAllowed {
+		// 「始终跳转」下不采纳上游的不可直放判定：客户端要的是原始文件，
+		// strm 的真实目标本来就是直链，交给 302 即可。
+		if !directPlayAllowed && !p.forceDirectPlay {
 			return MediaTarget{}, ErrDirectPlayUnsupported
 		}
 		return embyTarget(source), nil

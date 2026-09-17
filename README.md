@@ -30,7 +30,7 @@
 - **只拦截字节投递接口**，并在 Emby 系的 `PlaybackInfo` 中把客户端本来就能直放的 STRM 接到 AetherLink；其余请求（Web UI、封面、元数据、进度同步、客户端不兼容时的 HLS 转码）原样反代。
   - Audiobookshelf：`/api/items/:id/file/:ino`、`/api/items/:id/file/:ino/download`、`/public/session/:id/track/:index`
   - Emby / 飞牛影视：`/Videos|Audio/:id/stream(.ext)`、`/Items/:id/Download`
-- **两种 strm 形态都认**：Emby 与飞牛影视在扫库时就把指针读成了 `MediaSources[].Path` + `Protocol: Http`。若上游判断当前客户端支持原始文件，AetherLink 重写 `DirectStreamUrl`，下一跳即可 302；若编码、容器、分辨率或码率不兼容，则保留上游转码，优先保证能播放。Audiobookshelf 只报告指针文件路径，AetherLink 自己定位并读取那个 `.strm`。
+- **两种 strm 形态都认**：Emby 与飞牛影视在扫库时就把指针读成了 `MediaSources[].Path` + `Protocol: Http`。若上游判断当前客户端支持原始文件，AetherLink 重写 `DirectStreamUrl`，下一跳即可 302；若编码、容器、分辨率或码率不兼容，则保留上游转码，优先保证能播放。例外：卡片跳转模式为**始终跳转**时不再采纳上游的不可直放判定（飞牛对外网客户端常以码率限制为由拒绝直放，导致转码流量全走上游），强制接入 302。Audiobookshelf 只报告指针文件路径，AetherLink 自己定位并读取那个 `.strm`。
 - **非 `.strm` 文件自动透传**给上游，不影响普通有声书和普通影片。读不到指针时同样退回透传，播放不会因为少挂一个目录而失败。
 - **URL 归一化**是关键：STRM 生成器写进去的往往不是合法 URL。AetherLink 会补齐百分号编码，同时保留已编码序列，因此下面三种主流形态都能直接 302：
   - 115 pick code：`http://10.0.0.31:19527/d/bi6jeznun2rvu88v6.m4a?/001.总序.m4a`（查询串里的显示文件名会被识别为 `filename`）
@@ -118,7 +118,7 @@ docker inspect -f "{{.State.ExitCode}} {{.State.Error}}" AetherLink
 | `端口 xxxx 无法监听（可能已被其他程序占用）` | 该反代端口在容器内已被占用（多半是两个上游撞了端口，或与管理端口 5151 冲突）。在界面上改成别的端口保存即可，原有上游不受影响。 |
 | 播放端连不上反代端口 | 端口没在 compose 的 `ports` 里映射出去。加一条 `- 5152:5152` 再 `docker compose up -d`。 |
 | `读不到 strm 指针，本次退回透传` | Audiobookshelf 的媒体目录没挂进 AetherLink，只能透传（能播但没有 302）。按「挂载说明」把媒体目录挂进来即可。Emby 与飞牛影视不会出现这条。 |
-| `PlaybackInfo 保留 ... STRM 媒体源由上游转码` | 上游判断当前客户端不能直接解码原文件，日志会继续写明视频编码、容器、码率等原因。这种播放会走 HLS 而不是 302，是正常的兼容性回退。 |
+| `PlaybackInfo 保留 ... STRM 媒体源由上游转码` | 上游判断当前客户端不能直接解码原文件，日志会继续写明视频编码、容器、码率等原因。这种播放会走 HLS 而不是 302，是正常的兼容性回退。若该上游卡片的跳转模式是「始终跳转」，AetherLink 会改打 `PlaybackInfo 强制让 N 个 STRM 媒体源接入 302` 并无视该判定——外网播放不再因为飞牛的码率限制判定而走中继。 |
 | `检测到 Emby HLS 转码请求 ... hls1/main/*.ts` | HLS 分片本身不能 302。若前一条日志是「保留转码」，说明客户端不支持原始文件，继续让上游转码即可；若前一条已经显示「兼容的 STRM 媒体源接入 302」却仍走 HLS，再停止并重新开始播放。飞牛影视的 HLS 请求也会打这条日志。 |
 | 能播但日志里全是 `passthrough`，没有 302 | 上游把这一轨报告成了普通文件。Emby / 飞牛影视侧检查项目是不是真的 `.strm` 库（AetherLink 认 `Protocol: Http` 或 `Container: strm`）；Audiobookshelf 侧确认媒体目录已挂载。飞牛影视的接口都挂在 `/emby` 前缀下，AetherLink 对自己发出的 API 调用和转发的播放协商请求都会自动补上这个前缀，不必改播放器配置。界面「运行日志」页的播放流水里，这一行的「目标」列会写明具体原因。 |
 | 飞牛影视偶尔只有一两条播放不跳转 | PlaybackInfo 改写后的媒体源只缓存 10 分钟，之后要么由客户端重新协商、要么由 AetherLink 自己回头查一次上游。这次回头查走的是飞牛的播放协商路由（不是条目路由），正常情况下不依赖账号密码：播放器自己的令牌会随请求带进来，AetherLink 直接借用。装上账号密码只是让这条查询改用管理员身份，不是必需。 |
@@ -197,7 +197,7 @@ mkdir -p config && sudo chown -R 1000:1000 config
 ## 已知取值边界
 
 - Audiobookshelf 的 `/public/session/:id/track/:index` 走的是「打开会话」接口，只有会话属主或管理员可读。若配置的 API 密钥不属于管理员，该路径会退化为普通反代（普通播放走 `/api/items/:id/file/:ino`，不受影响）。
-- Emby 的 HLS/转码分段路由不拦截：客户端支持原始文件的 STRM 才走 302；像网页端无法解码 H.265 这类情况会继续由 Emby 转码，因此不会 302，但可以正常播放。飞牛影视同理；它的网页播放器还会被改写掉 `crossorigin="anonymous"`，否则浏览器会拒绝播放 302 出去的跨域直链。
+- Emby 的 HLS/转码分段路由不拦截：客户端支持原始文件的 STRM 才走 302；像网页端无法解码 H.265 这类情况会继续由 Emby 转码，因此不会 302，但可以正常播放。飞牛影视同理；它的网页播放器还会被改写掉 `crossorigin="anonymous"`，否则浏览器会拒绝播放 302 出去的跨域直链。例外是卡片跳转模式为「始终跳转」时：PlaybackInfo 里的不可直放判定（码率限制、远程访问策略等）会被忽略，STRM 媒体源强制接入 302——转码 HLS 分片请求自然也就不会再出现。
 - 中继模式转发 `Range`、`If-Range`、`Content-Range`，seek 行为与直连一致。
 - 飞牛影视的登录令牌由 AetherLink 自己换取并缓存 6 小时，全程只在内存里，不落盘。飞牛只认 `X-Emby-Authorization` 这个**完整**的客户端身份头，Emby 那种 `X-Emby-Token` 简写形式会被它直接 400 拒掉（报「X-Emby-Authorization is missing」），所以 AetherLink 两枚一起发。令牌被上游吊销（改密码、在别处登出、服务端重启）后的第一次调用会撞 401，AetherLink 会自动重登一次再重试，不会把一次令牌过期表现成「上游坏了」。
 - 管理端口无法热改：在配置里改了 `server.listen` 之后界面会提示需要重启容器。上游的反代端口可以热改热增删，但新端口要在 compose 里映射出来才能从外部访问。

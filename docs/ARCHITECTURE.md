@@ -42,7 +42,7 @@
 ## 请求判定顺序
 
 1. 请求落在哪个反代端口上，就是哪个上游（`runtime.handlerFor`，一端口一上游，路径不参与选择）。
-2. Emby 系（`emby` / `fnos`）的 `/Items/:id/PlaybackInfo` 先原样请求上游。STRM 源只有在 `SupportsDirectPlay=true` 时才重写 `DirectStreamUrl`，三个 `Supports*` 能力字段与 `TranscodingUrl` 全部保留；若上游判断客户端不兼容，则响应逐字节不改并继续 HLS 转码。普通媒体源始终不修改。飞牛影视同一个响应里还会顺手给 `MediaStreams` 补上非空字段，并在转发前把这条请求钉到 `/emby` 前缀下（`upstream.RequestPathRewriter`）——少了前缀飞牛返回的是单页应用 HTML，拿不到 `MediaSources` 就永远不 302。
+2. Emby 系（`emby` / `fnos`）的 `/Items/:id/PlaybackInfo` 先原样请求上游。STRM 源只有在 `SupportsDirectPlay=true` 时才重写 `DirectStreamUrl`，三个 `Supports*` 能力字段与 `TranscodingUrl` 全部保留；若上游判断客户端不兼容，则响应逐字节不改并继续 HLS 转码。例外：该上游的跳转模式为 always（卡片「始终跳转」）时忽略不可直放判定，强制标记 `SupportsDirectPlay=true` 并补 `DirectStreamUrl`，否则飞牛对外网客户端的码率限制判定会让转码流量全部走上游自己。普通媒体源始终不修改。飞牛影视同一个响应里还会顺手给 `MediaStreams` 补上非空字段，并在转发前把这条请求钉到 `/emby` 前缀下（`upstream.RequestPathRewriter`）——少了前缀飞牛返回的是单页应用 HTML，拿不到 `MediaSources` 就永远不 302。
 3. 交给该上游的 `Match` 判断是否为媒体字节接口，不是则直接反代。未命中但路径看起来像播放请求（含 `/stream`、`/track/`、媒体扩展名等）时记一条 info 日志；Emby HLS 清单或分片会单独说明「分片本身不能 302，应重新播放以重新协商直放」。
 4. 上游没有可用凭据、且该类型必需凭据（Audiobookshelf / Emby）→ 记为 `passthrough` 并反代（无法查询媒体信息）。飞牛影视属于「凭据可选」：它没有静态密钥，什么都没配也照常查询，不会落到这一支（见「飞牛的凭据是可选的」）。
 5. 问上游 `MediaTarget`，按回答分三条路：

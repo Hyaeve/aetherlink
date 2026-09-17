@@ -3,6 +3,8 @@ package upstream
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -700,6 +702,104 @@ func fakeFnosPlaybackServer(t *testing.T, playback string) (*httptest.Server, *[
 	}))
 	t.Cleanup(server.Close)
 	return server, paths
+}
+
+// blockedStrmSourceJSON 模拟飞牛对外网客户端的判定：SupportsDirectPlay=false
+// 且带转码原因（码率超限最常见）。
+const blockedStrmSourceJSON = `{"Id":"src-1","Path":"https://cdn.example.test/movie.mkv",` +
+	`"Protocol":"Http","Container":"strm","SupportsDirectPlay":false,` +
+	`"TranscodeReasons":"ContainerBitrateExceedsLimit"}`
+
+func fnosProviderWithMode(t *testing.T, baseURL string, mode config.RedirectMode) *fnosProvider {
+	t.Helper()
+	provider, err := New(config.Upstream{
+		Name:         "fnos",
+		Type:         config.UpstreamFnos,
+		BaseURL:      baseURL,
+		ListenPort:   5154,
+		RedirectMode: mode,
+	})
+	if err != nil {
+		t.Fatalf("New(fnos) returned error: %v", err)
+	}
+	fnos, ok := provider.(*fnosProvider)
+	if !ok {
+		t.Fatalf("New(fnos) returned %T, want *fnosProvider", provider)
+	}
+	return fnos
+}
+
+func rewriteFnosPlaybackInfo(t *testing.T, provider *fnosProvider, sourceJSON string) (int, map[string]any) {
+	t.Helper()
+	body := `{"MediaSources":[` + sourceJSON + `]}`
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	changed, err := provider.RewriteResponse("/emby/Items/42/PlaybackInfo", response)
+	if err != nil {
+		t.Fatalf("RewriteResponse returned error: %v", err)
+	}
+	rewritten, readErr := io.ReadAll(response.Body)
+	if readErr != nil {
+		t.Fatalf("读改写后的响应体失败: %v", readErr)
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal(rewritten, &envelope); err != nil {
+		t.Fatalf("改写后的响应不是 JSON: %v", err)
+	}
+	return changed, envelope
+}
+
+// 外网播放走中继的根因：飞牛对外网客户端常在 PlaybackInfo 里判
+// SupportsDirectPlay=false（码率限制等），客户端于是转投转码 HLS，
+// 转码流量全走飞牛自己。卡片是「始终跳转」时必须无视该判定：
+// 强制补 DirectStreamUrl 并记住可直放，/stream 请求才会被 302。
+func TestFnosForcesDirectPlayWhenRedirectAlways(t *testing.T) {
+	provider := fnosProviderWithMode(t, "http://127.0.0.1:1", config.RedirectAlways)
+
+	changed, envelope := rewriteFnosPlaybackInfo(t, provider, blockedStrmSourceJSON)
+	if changed != 1 {
+		t.Fatalf("changed = %d，want 1（强制接入 302）", changed)
+	}
+	sources := envelope["MediaSources"].([]any)
+	source := sources[0].(map[string]any)
+	if source["SupportsDirectPlay"] != true {
+		t.Fatalf("SupportsDirectPlay = %v，want true", source["SupportsDirectPlay"])
+	}
+	if directURL, _ := source["DirectStreamUrl"].(string); !strings.Contains(directURL, "/Videos/42/stream") {
+		t.Fatalf("DirectStreamUrl = %q，want 含 /Videos/42/stream", directURL)
+	}
+
+	target, err := provider.MediaTarget(context.Background(), MediaRef{Kind: RefStream, ItemID: "42", MediaSourceID: "src-1"})
+	if err != nil {
+		t.Fatalf("MediaTarget returned error: %v", err)
+	}
+	if target.URL != "https://cdn.example.test/movie.mkv" {
+		t.Fatalf("target.URL = %q，want 直链", target.URL)
+	}
+}
+
+// 跳转模式不是 always 的卡片维持原行为：尊重上游的不可直放判定，
+// 媒体源保留给上游转码，/stream 请求也交回上游。
+func TestFnosKeepsUpstreamDirectPlayVerdictWithoutAlways(t *testing.T) {
+	provider := fnosProviderWithMode(t, "http://127.0.0.1:1", config.RedirectPublic)
+
+	changed, envelope := rewriteFnosPlaybackInfo(t, provider, blockedStrmSourceJSON)
+	if changed != 0 {
+		t.Fatalf("changed = %d，want 0（保留上游转码）", changed)
+	}
+	sources := envelope["MediaSources"].([]any)
+	source := sources[0].(map[string]any)
+	if _, has := source["DirectStreamUrl"]; has {
+		t.Fatal("不该给被判定不可直放的源补 DirectStreamUrl")
+	}
+
+	_, err := provider.MediaTarget(context.Background(), MediaRef{Kind: RefStream, ItemID: "42", MediaSourceID: "src-1"})
+	if !errors.Is(err, ErrDirectPlayUnsupported) {
+		t.Fatalf("MediaTarget error = %v，want ErrDirectPlayUnsupported", err)
+	}
 }
 
 // 飞牛实测：/emby/Items 与 /emby/Items/{id} 都回单页应用的 HTML，只有播放协商

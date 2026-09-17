@@ -290,7 +290,7 @@ func New(cfg config.Upstream) (Provider, error) {
 		client.authHeader = "X-Emby-Token"
 		client.authQuery = "api_key"
 		client.embyDialect = true
-		return &embyProvider{providerBase: shared}, nil
+		return &embyProvider{providerBase: shared, forceDirectPlay: cfg.RedirectMode == config.RedirectAlways}, nil
 	case config.UpstreamFnos:
 		// 飞牛影视没有 Emby 控制台里那种静态 API 密钥：它的接口只认客户端
 		// 登录换来的令牌。所以两种鉴权都留着 —— 地址里配了账号密码就用登录
@@ -302,7 +302,7 @@ func New(cfg config.Upstream) (Provider, error) {
 		client.authHeader = "X-Emby-Token"
 		client.authQuery = "api_key"
 		client.apiPrefix = fnosAPIPrefix(base.Path)
-		provider := &fnosProvider{embyProvider: embyProvider{providerBase: shared}}
+		provider := &fnosProvider{embyProvider: embyProvider{providerBase: shared, forceDirectPlay: cfg.RedirectMode == config.RedirectAlways}}
 		// 飞牛没有实现集合路由 /Items?Ids=：请求会落到单页应用上回一整页 HTML，
 		// 解析必然失败。单项路由 /Items/{id} 它有，所以优先用它。
 		provider.preferItemByID = true
