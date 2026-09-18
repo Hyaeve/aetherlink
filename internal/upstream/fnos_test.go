@@ -752,38 +752,75 @@ func rewriteFnosPlaybackInfo(t *testing.T, provider *fnosProvider, sourceJSON st
 	return changed, envelope
 }
 
-// 外网播放走中继的根因：飞牛对外网客户端常在 PlaybackInfo 里判
-// SupportsDirectPlay=false（码率限制等），客户端于是转投转码 HLS，
-// 转码流量全走飞牛自己。卡片是「始终跳转」时必须无视该判定：
-// 强制补 DirectStreamUrl 并记住可直放，/stream 请求才会被 302。
-func TestFnosForcesDirectPlayWhenRedirectAlways(t *testing.T) {
-	provider := fnosProviderWithMode(t, "http://127.0.0.1:1", config.RedirectAlways)
+// 「始终跳转」与「始终中继」都必须无视上游的不可直放判定。飞牛对外网客户端常
+// 在 PlaybackInfo 里判 SupportsDirectPlay=false（码率限制等），一旦采纳，客户端
+// 就转投上游自己的转码 HLS：
+//   - 始终跳转下流量不经 AetherLink，卡片等于没设；
+//   - 始终中继下更彻底 —— AetherLink 解析 /stream 时读到这个判定，直接透传，
+//     中继链路压根不启动，日志里只剩一行「透传」。
+//
+// 所以两档都要强制补 DirectStreamUrl 并记住可直放，客户端下一步才会来请求
+// AetherLink 的 /stream。
+func TestFnosForcesDirectPlayUnderAlwaysAndNever(t *testing.T) {
+	for _, mode := range []config.RedirectMode{config.RedirectAlways, config.RedirectNever} {
+		t.Run(string(mode), func(t *testing.T) {
+			provider := fnosProviderWithMode(t, "http://127.0.0.1:1", mode)
 
-	changed, envelope := rewriteFnosPlaybackInfo(t, provider, blockedStrmSourceJSON)
-	if changed != 1 {
-		t.Fatalf("changed = %d，want 1（强制接入 302）", changed)
-	}
-	sources := envelope["MediaSources"].([]any)
-	source := sources[0].(map[string]any)
-	// 强制的是 DirectStream 而不是 DirectPlay：DirectPlay 会让客户端绕开
-	// AetherLink 直连媒体源的 Path（内网地址或 UA 绑定的网盘直链），
-	// 既不会有 302 也多半播不出来。
-	if source["SupportsDirectPlay"] != false {
-		t.Fatalf("SupportsDirectPlay = %v，want false（客户端不许绕开 AetherLink 直连）", source["SupportsDirectPlay"])
-	}
-	if source["SupportsDirectStream"] != true {
-		t.Fatalf("SupportsDirectStream = %v，want true（客户端应走改写的 /stream 路由）", source["SupportsDirectStream"])
-	}
-	if directURL, _ := source["DirectStreamUrl"].(string); !strings.Contains(directURL, "/Videos/42/stream") {
-		t.Fatalf("DirectStreamUrl = %q，want 含 /Videos/42/stream", directURL)
-	}
+			changed, envelope := rewriteFnosPlaybackInfo(t, provider, blockedStrmSourceJSON)
+			if changed != 1 {
+				t.Fatalf("changed = %d，want 1（强制接入 AetherLink）", changed)
+			}
+			sources := envelope["MediaSources"].([]any)
+			source := sources[0].(map[string]any)
+			// 强制的是 DirectStream 而不是 DirectPlay：DirectPlay 会让客户端
+			// 绕开 AetherLink 直连媒体源的 Path（内网地址或 UA 绑定的网盘直链），
+			// 既不会有播放记录也多半播不出来。
+			if source["SupportsDirectPlay"] != false {
+				t.Fatalf("SupportsDirectPlay = %v，want false（客户端不许绕开 AetherLink 直连）", source["SupportsDirectPlay"])
+			}
+			if source["SupportsDirectStream"] != true {
+				t.Fatalf("SupportsDirectStream = %v，want true（客户端应走改写的 /stream 路由）", source["SupportsDirectStream"])
+			}
+			if directURL, _ := source["DirectStreamUrl"].(string); !strings.Contains(directURL, "/Videos/42/stream") {
+				t.Fatalf("DirectStreamUrl = %q，want 含 /Videos/42/stream", directURL)
+			}
 
-	target, err := provider.MediaTarget(context.Background(), MediaRef{Kind: RefStream, ItemID: "42", MediaSourceID: "src-1"})
-	if err != nil {
-		t.Fatalf("MediaTarget returned error: %v", err)
+			// 这一步才是「中继能不能播」的分水岭：判定被推翻之后，/stream
+			// 请求必须解析得出直链，而不是回 ErrDirectPlayUnsupported——
+			// 后者正是「透传」的成因。
+			target, err := provider.MediaTarget(context.Background(), MediaRef{Kind: RefStream, ItemID: "42", MediaSourceID: "src-1"})
+			if err != nil {
+				t.Fatalf("MediaTarget returned error: %v", err)
+			}
+			if target.URL != "https://cdn.example.test/movie.mkv" {
+				t.Fatalf("target.URL = %q，want 直链", target.URL)
+			}
+		})
 	}
-	if target.URL != "https://cdn.example.test/movie.mkv" {
-		t.Fatalf("target.URL = %q，want 直链", target.URL)
+}
+
+// 四档模式里，「听不听上游判定」与「字节去向」是两张独立的表：前两档必须强制、
+// 后两档必须尊重，否则会静默改掉现有卡片的行为。
+func TestForceDirectPlayCoversExplicitDeliveryModes(t *testing.T) {
+	cases := []struct {
+		mode     config.RedirectMode
+		forces   bool
+		delivery string
+	}{
+		{config.RedirectAlways, true, "302"},
+		{config.RedirectNever, true, "中继"},
+		{config.RedirectPublic, false, ""},
+		{config.RedirectPrivate, false, ""},
+	}
+	for _, test := range cases {
+		if got := forcesDirectPlay(test.mode); got != test.forces {
+			t.Errorf("forcesDirectPlay(%s) = %v，want %v", test.mode, got, test.forces)
+		}
+		if test.forces {
+			if got := forcedDelivery(test.mode); got != test.delivery {
+				t.Errorf("forcedDelivery(%s) = %q，want %q", test.mode, got, test.delivery)
+			}
+		}
 	}
 }
 
@@ -819,24 +856,29 @@ func TestFnosReclaimsUpstreamDirectPlaySourcesUnderAlwaysRedirect(t *testing.T) 
 	}
 }
 
-// 跳转模式不是 always 的卡片维持原行为：尊重上游的不可直放判定，
-// 媒体源保留给上游转码，/stream 请求也交回上游。
-func TestFnosKeepsUpstreamDirectPlayVerdictWithoutAlways(t *testing.T) {
-	provider := fnosProviderWithMode(t, "http://127.0.0.1:1", config.RedirectPublic)
+// 「公网跳转」「内网跳转」只在 302 与中继之间按客户端来源二选一，因此维持
+// 尊重上游判定：媒体源保留给上游转码，/stream 请求也交回上游。网页端这类
+// 真的解不了原始文件的客户端靠的就是这条。
+func TestFnosKeepsUpstreamDirectPlayVerdictUnderSourceBasedRedirect(t *testing.T) {
+	for _, mode := range []config.RedirectMode{config.RedirectPublic, config.RedirectPrivate} {
+		t.Run(string(mode), func(t *testing.T) {
+			provider := fnosProviderWithMode(t, "http://127.0.0.1:1", mode)
 
-	changed, envelope := rewriteFnosPlaybackInfo(t, provider, blockedStrmSourceJSON)
-	if changed != 0 {
-		t.Fatalf("changed = %d，want 0（保留上游转码）", changed)
-	}
-	sources := envelope["MediaSources"].([]any)
-	source := sources[0].(map[string]any)
-	if _, has := source["DirectStreamUrl"]; has {
-		t.Fatal("不该给被判定不可直放的源补 DirectStreamUrl")
-	}
+			changed, envelope := rewriteFnosPlaybackInfo(t, provider, blockedStrmSourceJSON)
+			if changed != 0 {
+				t.Fatalf("changed = %d，want 0（保留上游转码）", changed)
+			}
+			sources := envelope["MediaSources"].([]any)
+			source := sources[0].(map[string]any)
+			if _, has := source["DirectStreamUrl"]; has {
+				t.Fatal("不该给被判定不可直放的源补 DirectStreamUrl")
+			}
 
-	_, err := provider.MediaTarget(context.Background(), MediaRef{Kind: RefStream, ItemID: "42", MediaSourceID: "src-1"})
-	if !errors.Is(err, ErrDirectPlayUnsupported) {
-		t.Fatalf("MediaTarget error = %v，want ErrDirectPlayUnsupported", err)
+			_, err := provider.MediaTarget(context.Background(), MediaRef{Kind: RefStream, ItemID: "42", MediaSourceID: "src-1"})
+			if !errors.Is(err, ErrDirectPlayUnsupported) {
+				t.Fatalf("MediaTarget error = %v，want ErrDirectPlayUnsupported", err)
+			}
+		})
 	}
 }
 
