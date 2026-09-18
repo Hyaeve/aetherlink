@@ -1432,6 +1432,14 @@ input:focus-visible + .toggle-control {
   transform: translateY(0);
 }
 
+/* 「UA」栏同时显示客户端 UA 与实际发出的 UA，悬停提示末行写明点下去复制的是哪一个。 */
+.log-floating-tooltip-hint {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .log-message-tooltip {
   position: relative;
   padding: 3px 7px;

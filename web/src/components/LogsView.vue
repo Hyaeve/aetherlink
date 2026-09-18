@@ -16,6 +16,7 @@ const pageSize = 25
 const eventPage = ref(1)
 const logPage = ref(1)
 const copiedTarget = ref('')
+const copiedUserAgent = ref('')
 const hoverTooltip = ref(null)
 const tooltipElement = ref(null)
 let timer = null
@@ -157,25 +158,66 @@ function copyableTarget(event) {
   return event.target || ''
 }
 
-async function copyTarget(event) {
-  const target = copyableTarget(event)
-  if (!target) return
+// 「UA」栏能复制的是客户端发来的原始 UA，也就是表格里箭头左边那半：它是客户端的
+// 身份，也是唯一能直接粘进「屏蔽 UA」名单或上游 UA 匹配里的值。箭头右边是我们按
+// 配置改写后发给上游的 UA（由「转发客户端 UA」与回退 UA 共同决定），派生自左边，
+// 复制它没有意义。客户端压根没带 UA 时不可点——与「目标」栏没有可跳转地址时一致。
+function copyableUserAgent(event) {
+  return event.userAgent || ''
+}
 
+// 这一栏同时显示两个 UA，所以悬停提示要写明点下去复制的是哪一个，否则用户得去记
+// 「复制的是左边那个」这种没写在界面上的规矩。
+function copyHint(event) {
+  if (!copyableUserAgent(event)) return ''
+  return event.effectiveUserAgent && event.effectiveUserAgent !== event.userAgent
+    ? '点击复制左侧的客户端 UA'
+    : '点击复制 UA'
+}
+
+function copiedLabel(copied, value, fallback) {
+  return copied && copied === value ? '已复制' : fallback
+}
+
+// 复制成功才亮「已复制」，失败不冒充成功。两条复制路径共用这一段剪贴板逻辑。
+async function writeClipboard(text) {
   try {
     if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(target)
+      await navigator.clipboard.writeText(text)
     } else {
-      legacyCopy(target)
+      legacyCopy(text)
     }
+    return true
   } catch {
-    legacyCopy(target)
+    try {
+      legacyCopy(text)
+    } catch {
+      return false
+    }
   }
+}
 
-  copiedTarget.value = target
+// 高亮只留最近复制的那一格，1.6 秒后自动褪掉。
+function markCopied(field, value) {
+  copiedTarget.value = field === 'target' ? value : ''
+  copiedUserAgent.value = field === 'userAgent' ? value : ''
   if (copyTimer) clearTimeout(copyTimer)
   copyTimer = setTimeout(() => {
     copiedTarget.value = ''
+    copiedUserAgent.value = ''
   }, 1600)
+}
+
+async function copyTarget(event) {
+  const target = copyableTarget(event)
+  if (!target || !(await writeClipboard(target))) return
+  markCopied('target', target)
+}
+
+async function copyUserAgent(event) {
+  const userAgent = copyableUserAgent(event)
+  if (!userAgent || !(await writeClipboard(userAgent))) return
+  markCopied('userAgent', userAgent)
 }
 
 function legacyCopy(target) {
@@ -223,7 +265,7 @@ function isTruncated(target) {
   return range.getBoundingClientRect().width > availableWidth
 }
 
-function showTooltip(value, event) {
+function showTooltip(value, event, hint = '') {
   if (tooltipTimer) clearTimeout(tooltipTimer)
   hoverTooltip.value = null
   const target = event.currentTarget
@@ -238,6 +280,7 @@ function showTooltip(value, event) {
     const left = Math.max(16, rect.left)
     hoverTooltip.value = {
       text: value,
+      hint,
       style: {
         left: `${left}px`,
         top: `${Math.min(window.innerHeight - 24, rect.bottom + 8)}px`,
@@ -274,7 +317,7 @@ onUnmounted(() => {
 
 <template>
   <section class="logs-page">
-    <div v-if="hoverTooltip" ref="tooltipElement" class="log-floating-tooltip" :style="hoverTooltip.style">{{ hoverTooltip.text }}</div>
+    <div v-if="hoverTooltip" ref="tooltipElement" class="log-floating-tooltip" :style="hoverTooltip.style">{{ hoverTooltip.text }}<span v-if="hoverTooltip.hint" class="log-floating-tooltip-hint">{{ hoverTooltip.hint }}</span></div>
     <p v-if="error" class="error page-error">{{ error }}</p>
     <div v-if="diagnosis" class="notice page-notice">{{ diagnosis }}</div>
 
@@ -329,22 +372,25 @@ onUnmounted(() => {
               </td>
               <td
                 class="target-cell"
-                @mouseenter="showTooltip(userAgentText(event), $event)"
+                @mouseenter="showTooltip(copiedLabel(copiedUserAgent, copyableUserAgent(event), userAgentText(event)), $event, copyHint(event))"
                 @mouseleave="hideTooltip"
-                @focusin="showTooltip(userAgentText(event), $event)"
+                @focusin="showTooltip(copiedLabel(copiedUserAgent, copyableUserAgent(event), userAgentText(event)), $event, copyHint(event))"
                 @focusout="hideTooltip"
               >
-                <span
+                <button
+                  type="button"
                   class="target-box mono"
-                  tabindex="0"
-                >{{ userAgentText(event) }}</span>
+                  :class="{ 'is-copyable': copyableUserAgent(event) }"
+                  :disabled="!copyableUserAgent(event)"
+                  @click="copyUserAgent(event)"
+                >{{ userAgentText(event) }}</button>
               </td>
               <td><span :class="outcomeClass(event.outcome)">{{ outcomeLabel(event.outcome) }}</span></td>
               <td
                 class="target-cell"
-                @mouseenter="showTooltip(copiedTarget === copyableTarget(event) ? '已复制' : targetText(event), $event)"
+                @mouseenter="showTooltip(copiedLabel(copiedTarget, copyableTarget(event), targetText(event)), $event)"
                 @mouseleave="hideTooltip"
-                @focusin="showTooltip(copiedTarget === copyableTarget(event) ? '已复制' : targetText(event), $event)"
+                @focusin="showTooltip(copiedLabel(copiedTarget, copyableTarget(event), targetText(event)), $event)"
                 @focusout="hideTooltip"
               >
                 <button
