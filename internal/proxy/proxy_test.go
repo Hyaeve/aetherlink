@@ -923,6 +923,25 @@ func findLogEntry(keyword string) string {
 	return ""
 }
 
+// logContainsAll 判断日志里是否存在一条同时包含全部关键字的记录。
+// 环形缓冲是进程级的，用例之间会互相看见，所以「同一个请求路径 + 这句新话」这类
+// 断言不能只看第一条命中——那可能是别的用例留下的。
+func logContainsAll(keywords ...string) bool {
+	for _, entry := range logx.Recent(0) {
+		matched := true
+		for _, keyword := range keywords {
+			if !strings.Contains(entry.Message, keyword) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
 // 客户端请求的容器名来自上游的 Container，而响应里的实际类型来自上游自己或字节判断。
 // 两者不符时必须有一条明确的日志：播放器拿错的容器去解复用就会读几百 KB 后断开，而
 // 日志里只剩一行「客户端中断」，没有这一行就只能靠猜。中性类型（octet-stream）不算

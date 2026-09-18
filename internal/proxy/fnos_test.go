@@ -420,6 +420,49 @@ func TestFnosTunnelsWebSocketUpgrade(t *testing.T) {
 // 这里刻意不先走 PlaybackInfo 改写：那条路会把媒体源记进 provider 的 10 分钟内存
 // 缓存，命中它根本到不了解析缓存，两条缓存就验混了。绕过它正好也是真实场景之一
 // ——客户端自己缓存了播放协商、或 AetherLink 中途重启后直接请求 /stream。
+// 上游回中性类型时（网盘 CDN 与移动云 EOS 的常态），「库里的容器名与真实文件
+// 不符」也必须能看见：中性类型「没有声明容器」，旧逻辑在日志里一个字都不说，而
+// 这一类正是「读了几 KB 就断开」首先要排除的一条。这里只报不改写——回给客户端的
+// 头必须与直链一致，类型由客户端自己按内容嗅探。
+func TestFnosReportsContainerMismatchFromBytesUnderNeutralUpstreamType(t *testing.T) {
+	// 字节是 MP4（ftyp/isom），而客户端请求的是 /stream.mkv。
+	body := append([]byte("\x00\x00\x00\x20ftypisom\x00\x00\x02\x00isom"), make([]byte, 48)...)
+	origin := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/octet-stream")
+		writer.Header().Set("Accept-Ranges", "bytes")
+		writer.Header().Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", len(body)-1, len(body)))
+		writer.WriteHeader(http.StatusPartialContent)
+		_, _ = writer.Write(body)
+	}))
+	defer origin.Close()
+
+	source := fnosStrmPlaybackSource()
+	source["Path"] = origin.URL + "/d/白色巨塔/S01E01.mkv"
+	fake := newFakeFnos(t, []map[string]any{source})
+	redirectCfg := defaultRedirect()
+	redirectCfg.Mode = config.RedirectNever
+	server, _ := newFnosTestServer(t, fake.server.URL, redirectCfg)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/Videos/movie-1/stream.mkv?MediaSourceId=source-strm", nil)
+	request.Header.Set("Range", "bytes=0-")
+	request.Header.Set("User-Agent", "AfuseKt/1.0")
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusPartialContent {
+		t.Fatalf("状态 = %d, want 206（never 档应当中继）；body = %q", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "application/octet-stream" {
+		t.Fatalf("Content-Type = %q，中性类型必须原样转发，不能被我们改写", got)
+	}
+	if got := recorder.Body.Bytes(); string(got) != string(body) {
+		t.Fatalf("body = %d 字节，want %d 字节（判容器不能吃掉开头的字节）", len(got), len(body))
+	}
+	if !logContainsAll(`请求路径 ".mkv" 暗示 video/x-matroska，实际类型是 video/mp4`, "从响应体字节读出来") {
+		t.Fatalf("缺少「容器名与真实字节不符」的告警：%q", findLogEntry("暗示"))
+	}
+}
+
 func TestFnosReusesCachedDirectLinkForRepeatedPlayback(t *testing.T) {
 	expiry := time.Now().Add(30 * time.Minute).Unix()
 	source := fnosStrmPlaybackSource()

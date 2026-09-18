@@ -1084,15 +1084,34 @@ func (s *Server) relayRemote(writer http.ResponseWriter, request *http.Request, 
 	// 的库。唯一的例外是纯音频扩展名（m4a/m4b/mp3/flac…）：MP4 家族里纯音频与视频
 	// 共用容器头，品牌字段常是 isom/mp42，字节分不出有声书，扩展名才是唯一线索，
 	// 所以这一类跳过字节判断。
-	synthesizedType := writer.Header().Get("Content-Type") == ""
+	upstreamType := writer.Header().Get("Content-Type")
+	synthesizedType := upstreamType == ""
+	// 取一小段响应体开头（16~128 字节，判断完原样回写）：既给「上游没给类型」
+	// 兜底，也用来核对客户端请求的容器名与真实文件是否相符。
+	//
+	// 后者是这次新加的：网盘 CDN 与移动云 EOS 对视频一律回中性类型
+	// `application/octet-stream`，而中性类型「没有声明容器」，于是「库里的容器名
+	// 与真实文件不符」这一类在日志里完全不可见——可它正是「读了几 KB 就断开」
+	// 首先要排除的一条。读了字节就能把这一条钉死或排除掉。
+	//
+	// 只对从 0 开始的单段 Range 做：换别的偏移时这段字节不是文件开头，不能回写。
+	// 纯音频扩展名（m4a/m4b…）跳过：MP4 家族里纯音频与视频共用容器头，字节分不出
+	// 有声书，扩展名才是唯一线索（详见 mimeTypeForURL 的注释）。
 	var prefix []byte
+	observedType := upstreamType
+	if request.Method != http.MethodHead &&
+		rangeStartsAtZero(request.Header.Get("Range")) &&
+		(synthesizedType || isNeutralContentType(upstreamType)) &&
+		!strings.HasPrefix(mimeTypeForURL(target), "audio/") {
+		prefix = readSniffPrefix(response.Body)
+		if sniffed := sniffContentType(prefix); sniffed != "" {
+			observedType = sniffed
+		}
+	}
 	if synthesizedType {
 		guessed := mimeTypeForURL(target)
-		if !strings.HasPrefix(guessed, "audio/") && rangeStartsAtZero(request.Header.Get("Range")) {
-			prefix = readSniffPrefix(response.Body)
-			if sniffed := sniffContentType(prefix); sniffed != "" {
-				guessed = sniffed
-			}
+		if observedType != "" {
+			guessed = observedType
 		}
 		if guessed != "" {
 			writer.Header().Set("Content-Type", guessed)
@@ -1101,12 +1120,15 @@ func (s *Server) relayRemote(writer http.ResponseWriter, request *http.Request, 
 	// 客户端按上游给的容器名请求（如 `/Videos/xxx/stream.mkv`），而实际类型与它不符时
 	// 说一句：播放器可能据此选错解复用器，而这类「库里的容器名与真实文件不符」正是
 	// 「读了少量字节就断开」的一个已知成因。
-	if note := containerMismatchNote(request.URL.Path, writer.Header().Get("Content-Type")); note != "" {
+	if note := containerMismatchNote(request.URL.Path, observedType); note != "" {
 		source := "上游给的就是这个类型，中继没有改写它"
-		if synthesizedType {
+		switch {
+		case synthesizedType:
 			source = "上游没给 Content-Type，这个类型是 AetherLink 按响应体字节补的"
+		case isNeutralContentType(upstreamType):
+			source = fmt.Sprintf("上游回的是中性类型 %q，这个类型是 AetherLink 从响应体字节读出来的、没有改写回给客户端的头；这条直链走 302 时播放器拿到的正是那个中性类型，得自己嗅探", upstreamType)
 		}
-		logx.Warnf("[%s] 中继 %s：%s；播放器可能据此选错解复用器（%s，这条直链走 302 时拿到的也是同一个值）", s.provider.Name(), request.URL.Path, note, source)
+		logx.Warnf("[%s] 中继 %s：%s；播放器可能据此选错解复用器（%s）", s.provider.Name(), request.URL.Path, note, source)
 	}
 	// 回给客户端的头必须进日志：中继排障时播放器只看得到这半边，差一个字段的表现
 	// 都是「读了少量字节就断开」，不写下来就只能靠猜。
@@ -1116,14 +1138,16 @@ func (s *Server) relayRemote(writer http.ResponseWriter, request *http.Request, 
 	if request.Method == http.MethodHead {
 		return response.StatusCode, nil
 	}
-	if len(prefix) > 0 {
-		if _, err := writer.Write(prefix); err != nil {
-			return response.StatusCode, err
-		}
-	}
 	recorder := &readErrorRecorder{reader: response.Body}
-	copied, copyErr := io.Copy(writer, recorder)
-	written := copied + int64(len(prefix))
+	// 判容器读走的那几个字节当作响应体的前缀一起拷，而不是先单独写一次：
+	// 先写会多出一个出口——那一次写失败就直接返回，客户端「读了一点就走」的
+	// 诊断行（唯一能说明它吃了多少、双方发了什么的那行）就整条丢了。
+	var body io.Reader = recorder
+	if len(prefix) > 0 {
+		body = io.MultiReader(bytes.NewReader(prefix), recorder)
+	}
+	copied, copyErr := io.Copy(writer, body)
+	written := copied
 	elapsed := time.Since(started).Round(time.Millisecond)
 	// 三条出口分开报，谁也别盖住谁：
 	//   · 客户端还在等、上游先读失败 —— 确定是源头的事（网盘断流、直链过期）；
@@ -1398,6 +1422,20 @@ func containerMismatchNote(requestPath, actualType string) string {
 		return ""
 	}
 	return fmt.Sprintf("请求路径 %q 暗示 %s，实际类型是 %s", path.Ext(requestPath), implied, actualType)
+}
+
+// isNeutralContentType 判断这个类型是不是「没有声明容器」：缺失、以及网盘 CDN 与
+// 移动云 EOS 惯用的 `application/octet-stream` / `binary/octet-stream` 都属于这一类。
+// 中继不改写上游给的类型，但读到这种值时值得读一眼响应体字节，好让日志说得清
+// 「客户端按 .mkv 请求，而字节其实是 MP4」。
+func isNeutralContentType(contentType string) bool {
+	media := strings.ToLower(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]))
+	switch media {
+	case "", "application/octet-stream", "binary/octet-stream", "application/binary":
+		return true
+	default:
+		return false
+	}
 }
 
 // sniffBytes 是判断真实容器需要读的头部字节数：ftyp、EBML、RIFF、OggS 这些魔数都在
