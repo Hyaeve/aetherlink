@@ -53,7 +53,7 @@
 6. 指针指向容器本地文件 → `http.ServeContent` 直读（自动支持 Range/HEAD）。
 7. 远程目标 → 按 `redirect.mode` 决定 302 还是中继。
 
-中继在响应头上是**透明的**：上游的状态码、`Content-Length`、`Content-Range`、`Accept-Ranges`、`ETag`、`Last-Modified`、`Content-Disposition` 全部原样转发（只滤 hop-by-hop），因此回给播放器的一定是定长响应、不会退化成 chunked。这不是细节：`Content-Length` 一旦丢失，moov 在文件尾部的 MP4 就无法 seek（播放器要按总长度去取尾部），表现是「读了几百 KB 就断开」，而日志里只剩一行「客户端中断」。唯一被改写的是 `Content-Type`——上游给空或 `application/octet-stream` 时，先按直链扩展名、扩展名缺了就按响应体开头的魔数补，因为网盘 CDN 与移动云 EOS 的直链路径常常只有一串 ID，且它们的 `Content-Disposition` 文件名也不可信（线上出现过文件名 `.iso`、字节是 MP4 的直链）。所以**302 与中继交给播放器的响应应当等价**：两边表现不同时，先怀疑客户端对 URL / 会话的差异，而不是字节投递。
+中继在响应头上是**透明的**：上游的状态码、`Content-Length`、`Content-Range`、`Accept-Ranges`、`ETag`、`Last-Modified`、`Content-Disposition` 全部原样转发（只滤 hop-by-hop），因此回给播放器的一定是定长响应、不会退化成 chunked。这不是细节：`Content-Length` 一旦丢失，moov 在文件尾部的 MP4 就无法 seek（播放器要按总长度去取尾部），表现是「读了几百 KB 就断开」，而日志里只剩一行「客户端中断」。唯一被改写的是 `Content-Type`——上游给空或 `application/octet-stream` 时才补，顺序是**先字节、后扩展名**（`sniffContentType` 先看响应体开头的魔数，认不出来才退回直链扩展名）。两条理由都来自线上：一是网盘 CDN 与移动云 EOS 的直链路径常常只有一串 ID、且 `Content-Disposition` 的文件名也不可信（出现过文件名 `.iso`、字节是 MP4 的直链）；二是反过来的情形同样常见——文件名写着 `.mkv`、内容其实是 MP4，扩展名若压过字节，播放器就会拿 matroska 去解 MP4 字节、读几百 KB 后断开，而同一条直链走 302 时它拿到的是中性类型、自己按内容嗅探反倒正常，「302 能播、中继播不了」多半就是这么来的。纯音频扩展名（`.m4a` / `.m4b` / `.mp3` 等）是唯一例外：MP4 家族里有声书与视频共用容器头（品牌常是 `isom` / `mp42`），字节分不出音频，扩展名才是唯一线索，这类直接采信扩展名、连字节都不读。所以 **302 与中继交给播放器的响应应当等价**：两边表现不同时，先把日志级别改成 `debug` 看一行 `中继交换明细`——它把客户端请求头、上游请求头、上游状态与全部响应头、以及回给客户端的头一次列全（凭据已打码），差异只可能藏在那里；确认响应确实等价之后，再怀疑客户端对 URL / 会话的差异。
 
 ## 配置变更流程
 

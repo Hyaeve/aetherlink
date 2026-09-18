@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1062,23 +1063,38 @@ func (s *Server) relayRemote(writer http.ResponseWriter, request *http.Request, 
 	copyResponseHeaders(writer.Header(), response.Header)
 
 	// 上游给不出有效类型时（网盘 / CDN 直链一律回 application/octet-stream）才替它
-	// 判断。顺序是「扩展名 → 字节」：扩展名能分出 m4a/m4b 这类纯音频容器（别把
-	// 有声书当视频），而直链路径常常只有一串 ID、根本没有扩展名可猜——线上就有
-	// 「文件名写着 .iso、字节其实是 MP4」的直链，那种情况只能看响应体开头的魔数。
+	// 判断。顺序是「字节 → 扩展名」，不是反过来：直链的名字和 Content-Type 都不可信
+	// ——线上既有「文件名写着 .iso、字节其实是 MP4」的直链，也有「STRM 报 mkv、真实
+	// 文件是 MP4」的库。只要扩展名压过字节，回给播放器的类型就与响应体自相矛盾，
+	// 而这条直链走 302 时播放器拿到的是中性类型、自己按内容嗅探，反倒正常——同一个
+	// 源「302 能播、中继播不了」多半就是这么来的。
+	//
+	// 唯一的例外是纯音频扩展名（m4a/m4b/mp3/flac…）：MP4 家族里纯音频与视频共用
+	// 容器头，品牌字段常常是 isom/mp42，字节分不出有声书，扩展名才是唯一线索。
+	// 所以只在这一类扩展名上跳过字节判断。
 	var prefix []byte
 	if upstreamType := writer.Header().Get("Content-Type"); upstreamType == "" || strings.EqualFold(upstreamType, "application/octet-stream") {
-		if guessed := mimeTypeForURL(target); guessed != "" {
-			writer.Header().Set("Content-Type", guessed)
-		} else if rangeStartsAtZero(request.Header.Get("Range")) {
+		guessed := mimeTypeForURL(target)
+		if !strings.HasPrefix(guessed, "audio/") && rangeStartsAtZero(request.Header.Get("Range")) {
 			prefix = readSniffPrefix(response.Body)
 			if sniffed := sniffContentType(prefix); sniffed != "" {
-				writer.Header().Set("Content-Type", sniffed)
+				guessed = sniffed
+			}
+		}
+		if guessed != "" {
+			writer.Header().Set("Content-Type", guessed)
+			// 类型是我们替上游定的，此时才谈得上「与客户端请求的容器名对不上」：
+			// 播放器可能据此选错解复用器，而这条直链走 302 时它拿到的是中性类型、
+			// 自己按内容嗅探反倒正常——库里 STRM 名与真实文件不符时就是这样。
+			if note := containerMismatchNote(request.URL.Path, guessed); note != "" {
+				logx.Warnf("[%s] 中继 %s：%s；播放器可能据此选错解复用器——这条直链走 302 时它拿到的是中性类型、自己按内容嗅探，因此会表现为「302 能播、中继播不了」", s.provider.Name(), request.URL.Path, note)
 			}
 		}
 	}
 	// 回给客户端的头必须进日志：中继排障时播放器只看得到这半边，差一个字段的表现
 	// 都是「读了少量字节就断开」，不写下来就只能靠猜。
 	sentNote := sentHeaderNote(writer.Header())
+	traceRelayExchange(s.provider.Name(), request, outbound, response, writer.Header(), prefix)
 	writer.WriteHeader(response.StatusCode)
 	if request.Method == http.MethodHead {
 		return response.StatusCode, nil
@@ -1126,6 +1142,65 @@ func (s *Server) relayRemote(writer http.ResponseWriter, request *http.Request, 
 func sentHeaderNote(header http.Header) string {
 	return fmt.Sprintf("回给客户端：Content-Type=%q，Content-Length=%q，Content-Range=%q，Accept-Ranges=%q",
 		header.Get("Content-Type"), header.Get("Content-Length"), header.Get("Content-Range"), header.Get("Accept-Ranges"))
+}
+
+// traceRelayExchange 在 debug 级别把一次中继的完整 HTTP 交换摊开写进日志。
+//
+// 中继反复出现「同一片走 302 能播、走中继播不了」，而两边的响应在字节与长度上
+// 本该等价——真正的差异只可能藏在某个头里。info 级别那行只摘四个字段，够用但不够
+// 定论；打开 debug（设置页「日志级别」或 AETHERLINK_LOG_LEVEL=debug）就能一次看全
+// 双方到底发了什么，不必再来一轮「把日志发我看看」。
+func traceRelayExchange(upstreamName string, request *http.Request, outbound *http.Request, response *http.Response, sent http.Header, prefix []byte) {
+	if !logx.Enabled(logx.LevelDebug) {
+		return
+	}
+	logx.Debugf("[%s] 中继交换明细 %s %s -> %s：客户端请求头 %s；上游请求头 %s；上游响应 %d，TransferEncoding=%v，ContentLength=%d，上游响应头 %s；回给客户端 %s",
+		upstreamName, request.Method, request.URL.Path, outbound.URL.Host,
+		headerNote(request.Header), headerNote(outbound.Header),
+		response.StatusCode, response.TransferEncoding, response.ContentLength, headerNote(response.Header),
+		headerNote(sent))
+	if len(prefix) > 0 {
+		shown := prefix
+		if len(shown) > 32 {
+			shown = shown[:32]
+		}
+		logx.Debugf("[%s] 中继判容器读了 %d 字节（原样写回，不丢一字节），前 %d 字节 %s",
+			upstreamName, len(prefix), len(shown), hex.EncodeToString(shown))
+	}
+}
+
+// headerNote 把整幅 HTTP 头摘成一行「键=值」列表，按键排序以便两次日志逐行对比。
+// 凭据一律打码：排障要看的是类型、长度、区间、UA、内容协商这些，令牌与 Cookie
+// 没有进日志的必要。
+func headerNote(header http.Header) string {
+	if len(header) == 0 {
+		return "（空）"
+	}
+	keys := make([]string, 0, len(header))
+	for key := range header {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		value := strings.Join(header.Values(key), "|")
+		if secretHeaders[strings.ToLower(key)] {
+			value = "已省略"
+		}
+		parts = append(parts, key+"="+value)
+	}
+	return strings.Join(parts, "，")
+}
+
+// secretHeaders 是 debug 明细里必须打码的头。
+var secretHeaders = map[string]bool{
+	"authorization":        true,
+	"cookie":               true,
+	"set-cookie":           true,
+	"x-emby-authorization": true,
+	"x-emby-token":         true,
+	"x-api-key":            true,
+	"proxy-authorization":  true,
 }
 
 // readErrorRecorder 包住上游响应体，单独记下「读取失败」。io.Copy 只回一个
@@ -1269,6 +1344,26 @@ func mimeTypeForURL(target string) string {
 	default:
 		return ""
 	}
+}
+
+// containerMismatchNote 报告客户端请求路径暗示的容器与我们回的真实类型是否矛盾。
+//
+// 例：客户端请求 `/Videos/xxx/stream.mkv`（这个名字来自上游的 `Container`），而直链
+// 的字节是 MP4——网盘上「STRM 名写 .mkv、真实文件是 MP4」很常见。播放器拿 mkv 去解
+// MP4 就会读几百 KB 后断开，而同一条直链走 302 时它拿到的是中性类型、自己按内容嗅探
+// 反倒正常，于是表现成「302 能播、中继播不了」。这一行是那条链路上唯一的书面证据。
+//
+// 只在两边都是明确的音视频容器时才提示；`/stream`（不带扩展名）与 `emby` 这类路径
+// 本就没有容器语义，硬报只会制造噪声。
+func containerMismatchNote(requestPath, chosenType string) string {
+	implied := mimeTypeForURL(requestPath)
+	if implied == "" || chosenType == "" || implied == chosenType {
+		return ""
+	}
+	if !strings.HasPrefix(implied, "video/") && !strings.HasPrefix(implied, "audio/") {
+		return ""
+	}
+	return fmt.Sprintf("请求路径 %q 暗示 %s，而直链的字节是 %s", path.Ext(requestPath), implied, chosenType)
 }
 
 // sniffBytes 是判断真实容器需要读的头部字节数：ftyp、EBML、RIFF、OggS 这些魔数都在

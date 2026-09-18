@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/aetherlink/aetherlink/internal/config"
+	"github.com/aetherlink/aetherlink/internal/logx"
 	"github.com/aetherlink/aetherlink/internal/pathmap"
 	"github.com/aetherlink/aetherlink/internal/resolver"
 	"github.com/aetherlink/aetherlink/internal/stats"
@@ -733,6 +734,190 @@ func TestRelayDoesNotLabelVideoDirectLinkAsAudio(t *testing.T) {
 	}
 	if snapshot := collector.Snapshot(10); snapshot.ProxyStreams != 1 {
 		t.Fatalf("proxy stream count = %d, want 1", snapshot.ProxyStreams)
+	}
+}
+
+// 直链的名字不可信，字节才可信：网盘上「文件名写 .mkv、内容其实是 MP4」很常见。
+// 中继若按扩展名回类型，就会把 MP4 标成 video/x-matroska，播放器拿 matroska 去解
+// MP4 字节，读完几百 KB 就断开；而同一条直链走 302 时播放器拿到的是中性类型、自己
+// 按内容嗅探，反倒正常——「302 能播、中继播不了」就是这么来的。字节必须压过扩展名。
+func TestRelayPrefersBytesOverALyingExtension(t *testing.T) {
+	body := append([]byte("\x00\x00\x00\x20ftypisom\x00\x00\x02\x00mp41"), make([]byte, 48)...)
+
+	cdn := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/octet-stream")
+		writer.Header().Set("Accept-Ranges", "bytes")
+		writer.Header().Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", len(body)-1, len(body)))
+		writer.WriteHeader(http.StatusPartialContent)
+		_, _ = writer.Write(body)
+	}))
+	defer cdn.Close()
+
+	// 直链的名字写着 .mkv，字节是 MP4。
+	root, strmPath, regularPath := writeStrm(t, cdn.URL+"/d/movie.mkv")
+	fake := newFakeABS(t, strmPath, regularPath)
+	redirectCfg := defaultRedirect()
+	redirectCfg.Mode = config.RedirectNever
+	server, _ := newTestServer(t, fake.server.URL, root, redirectCfg)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/items/book-1/file/ino-strm", nil)
+	request.Header.Set("Range", "bytes=0-")
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusPartialContent {
+		t.Fatalf("status = %d, want 206", recorder.Code)
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "video/mp4" {
+		t.Fatalf("Content-Type = %q，want video/mp4（扩展名写 .mkv 而字节是 MP4，必须按字节给类型）", got)
+	}
+	// 判容器读走的那几个字节必须原样写回，一个都不能少。
+	if got := recorder.Body.Bytes(); string(got) != string(body) {
+		t.Fatalf("body = %d 字节，want %d 字节（判容器不能吃掉开头的字节）", len(got), len(body))
+	}
+}
+
+// 纯音频扩展名是例外：MP4 家族里有声书与视频共用容器头，品牌字段常是 isom/mp42，
+// 字节分不出「这是音频」，扩展名才是唯一线索。这类不能因为字节像视频就标成视频，
+// 否则有声书会被当成影片交给播放器。
+func TestRelayKeepsAudioExtensionForAudiobooks(t *testing.T) {
+	body := append([]byte("\x00\x00\x00\x20ftypisom\x00\x00\x02\x00isom"), make([]byte, 48)...)
+
+	cdn := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/octet-stream")
+		writer.Header().Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", len(body)-1, len(body)))
+		writer.WriteHeader(http.StatusPartialContent)
+		_, _ = writer.Write(body)
+	}))
+	defer cdn.Close()
+
+	root, strmPath, regularPath := writeStrm(t, cdn.URL+"/d/book.m4b")
+	fake := newFakeABS(t, strmPath, regularPath)
+	redirectCfg := defaultRedirect()
+	redirectCfg.Mode = config.RedirectNever
+	server, _ := newTestServer(t, fake.server.URL, root, redirectCfg)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/items/book-1/file/ino-strm", nil)
+	request.Header.Set("Range", "bytes=0-")
+	server.ServeHTTP(recorder, request)
+
+	if got := recorder.Header().Get("Content-Type"); got != "audio/mp4" {
+		t.Fatalf("Content-Type = %q，want audio/mp4（有声书与视频同容器头，扩展名才是唯一线索）", got)
+	}
+	if got := recorder.Body.Bytes(); string(got) != string(body) {
+		t.Fatalf("body 长度 = %d，want %d", len(got), len(body))
+	}
+}
+
+// debug 级的「中继交换明细」会把整幅请求头写进日志，凭据因此必须打码：排障要看
+// 的是 Range / UA / 内容协商这些，令牌与 Cookie 没有进日志的必要。键要排序，
+// 两次日志才能逐行对比。
+func TestHeaderNoteMasksCredentialsAndSortsKeys(t *testing.T) {
+	header := http.Header{}
+	header.Set("X-Emby-Authorization", `MediaBrowser Token="abc123"`)
+	header.Set("Cookie", "session=secret")
+	header.Set("Range", "bytes=0-")
+	header.Set("User-Agent", "AfuseKt/1.0")
+
+	note := headerNote(header)
+	if strings.Contains(note, "abc123") || strings.Contains(note, "secret") {
+		t.Fatalf("凭据不该进日志：%s", note)
+	}
+	if !strings.Contains(note, "X-Emby-Authorization=已省略") || !strings.Contains(note, "Cookie=已省略") {
+		t.Fatalf("凭据字段应打码：%s", note)
+	}
+	if !strings.Contains(note, "Range=bytes=0-") || !strings.Contains(note, "User-Agent=AfuseKt/1.0") {
+		t.Fatalf("排障要看的字段必须留着：%s", note)
+	}
+	if strings.Index(note, "Range=") > strings.Index(note, "User-Agent=") || strings.Index(note, "User-Agent=") > strings.Index(note, "X-Emby-Authorization=") {
+		t.Fatalf("键应按序排列：%s", note)
+	}
+	if note := headerNote(http.Header{}); note != "（空）" {
+		t.Fatalf("空头 = %q", note)
+	}
+}
+
+// 中继的完整交换明细只在 debug 级别输出：默认的 info 不能被排障辅助淹掉，而打开
+// debug 必须真的能看到双方的头——「同一片 302 能播、中继播不了」这类问题，差别只
+// 可能藏在某个头里，光看 info 那四个字段不够定论。
+func TestRelayExchangeTraceAppearsOnlyAtDebugLevel(t *testing.T) {
+	body := append([]byte("\x00\x00\x00\x20ftypisom\x00\x00\x02\x00mp41"), make([]byte, 48)...)
+	cdn := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/octet-stream")
+		writer.WriteHeader(http.StatusPartialContent)
+		_, _ = writer.Write(body)
+	}))
+	defer cdn.Close()
+
+	root, strmPath, regularPath := writeStrm(t, cdn.URL+"/d/movie.mkv")
+	fake := newFakeABS(t, strmPath, regularPath)
+	redirectCfg := defaultRedirect()
+	redirectCfg.Mode = config.RedirectNever
+	server, _ := newTestServer(t, fake.server.URL, root, redirectCfg)
+
+	relay := func() {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/api/items/book-1/file/ino-strm", nil)
+		request.Header.Set("Range", "bytes=0-")
+		request.Header.Set("X-Emby-Authorization", `MediaBrowser Token="abc123"`)
+		server.ServeHTTP(recorder, request)
+	}
+
+	logx.SetLevel(logx.LevelInfo)
+	relay()
+	if trace := findLogEntry("中继交换明细"); trace != "" {
+		t.Fatalf("info 级别不该输出交换明细：%s", trace)
+	}
+
+	defer logx.SetLevel(logx.LevelInfo)
+	logx.SetLevel(logx.LevelDebug)
+	relay()
+	trace := findLogEntry("中继交换明细")
+	if trace == "" {
+		t.Fatal("debug 级别必须能看到中继交换明细")
+	}
+	for _, want := range []string{"客户端请求头", "上游响应头", "回给客户端", "Content-Type=application/octet-stream", "Range=bytes=0-"} {
+		if !strings.Contains(trace, want) {
+			t.Fatalf("交换明细缺少 %q：%s", want, trace)
+		}
+	}
+	if strings.Contains(trace, "abc123") {
+		t.Fatalf("交换明细把令牌写出来了：%s", trace)
+	}
+}
+
+// findLogEntry 在日志环形缓冲里找一条包含关键字的记录，找不到返回空串。
+func findLogEntry(keyword string) string {
+	for _, entry := range logx.Recent(0) {
+		if strings.Contains(entry.Message, keyword) {
+			return entry.Message
+		}
+	}
+	return ""
+}
+
+// 客户端请求的容器名来自上游的 Container，而直链的真实容器来自字节。两者不符时
+// 必须有一条明确的日志：播放器拿错的容器去解复用就会读几百 KB 后断开，而这条直链
+// 走 302 时它拿到的是中性类型、自己按内容嗅探反倒正常——「302 能播、中继播不了」
+// 就是这么来的，没有这一行就只能靠猜。
+func TestContainerMismatchNoteNamesBothSides(t *testing.T) {
+	note := containerMismatchNote("/emby/videos/42/stream.mkv", "video/mp4")
+	for _, want := range []string{".mkv", "video/x-matroska", "video/mp4"} {
+		if !strings.Contains(note, want) {
+			t.Fatalf("提示里必须写清两边（缺 %q）：%q", want, note)
+		}
+	}
+	for _, testCase := range []struct{ requestPath, chosenType string }{
+		{"/emby/videos/42/stream.mkv", "video/x-matroska"}, // 两边一致
+		{"/emby/videos/42/stream.mp4", "video/mp4"},        // 两边一致
+		{"/emby/videos/42/stream", "video/mp4"},            // /stream 没有容器语义
+		{"/api/items/book-1/file/ino-strm", "video/mp4"},   // ABS 路径没有扩展名
+		{"/emby/videos/42/stream.mkv", ""},                 // 没猜出类型
+	} {
+		if note := containerMismatchNote(testCase.requestPath, testCase.chosenType); note != "" {
+			t.Fatalf("%s + %q 不该提示：%q", testCase.requestPath, testCase.chosenType, note)
+		}
 	}
 }
 

@@ -92,6 +92,10 @@ func enabled(l Level) bool {
 	return l >= minimum
 }
 
+// Enabled 报告某个级别当前是否会被输出。留给调用方在构造昂贵日志（要拼整幅 HTTP
+// 头的那些）之前先问一句，避免关闭时白拼一遍字符串。
+func Enabled(l Level) bool { return enabled(l) }
+
 func emit(l Level, format string, args ...any) {
 	if !enabled(l) {
 		return
