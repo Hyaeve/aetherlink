@@ -428,6 +428,66 @@ func TestPartialUpstreamUpdateKeepsIgnoreDirectPlayVerdict(t *testing.T) {
 	}
 }
 
+// 卡片「不中继的客户端」名单的局部更新语义：省略＝不动，显式 []＝清空。
+// 卡片上点标签快捷切模式只发 redirectMode，绝不能顺手把名单抹掉。
+func TestPartialUpstreamUpdateKeepsRelayExemptList(t *testing.T) {
+	env := newEnv(t)
+	token := env.login(t, testUsername, testPassword)
+	root := filepath.ToSlash(filepath.Dir(env.strmPath))
+
+	recorder := env.do(http.MethodPost, BasePath+"/upstreams", upstreamPayloadJSON("abs", root, 13378), token)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	// 新建卡片没有名单：列表接口必须回空数组而不是 null，界面直接 join('\n')。
+	var created struct {
+		Upstreams []struct {
+			RelayExemptUserAgents []string `json:"relayExemptUserAgents"`
+		} `json:"upstreams"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &created); err != nil {
+		t.Fatalf("解析列表响应失败: %v", err)
+	}
+	if len(created.Upstreams) != 1 || created.Upstreams[0].RelayExemptUserAgents == nil {
+		t.Fatalf("列表接口应回空数组：%+v", created.Upstreams)
+	}
+
+	if recorder := env.do(http.MethodPut, BasePath+"/upstreams/abs", `{"relayExemptUserAgents":["AfuseKt","/CapyPlayer/"]}`, token); recorder.Code != http.StatusOK {
+		t.Fatalf("写入名单 status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	updated := env.rt.Config().UpstreamByName("abs")
+	if !updated.RelayExempt("AfuseKt%2F%28Linux%3BAndroid+Release%29Player") {
+		t.Fatalf("名单没生效：%v", updated.RelayExemptUserAgents)
+	}
+	if updated.RelayExempt("Infuse/8.0") {
+		t.Fatal("不在名单里的客户端不该命中")
+	}
+
+	// 快捷切模式只发 redirectMode：名单必须原样留着。
+	if recorder := env.do(http.MethodPut, BasePath+"/upstreams/abs", `{"redirectMode":"never"}`, token); recorder.Code != http.StatusOK {
+		t.Fatalf("切换跳转模式 status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	afterSwitch := env.rt.Config().UpstreamByName("abs")
+	if len(afterSwitch.RelayExemptUserAgents) != 2 {
+		t.Fatalf("局部更新把名单抹掉了：%v", afterSwitch.RelayExemptUserAgents)
+	}
+	reloaded, err := config.Load(env.confPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.UpstreamByName("abs").RelayExemptUserAgents) != 2 {
+		t.Fatalf("名单没有落盘：%v", reloaded.UpstreamByName("abs").RelayExemptUserAgents)
+	}
+
+	// 显式发空数组才是清空。
+	if recorder := env.do(http.MethodPut, BasePath+"/upstreams/abs", `{"relayExemptUserAgents":[]}`, token); recorder.Code != http.StatusOK {
+		t.Fatalf("清空名单 status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	if cleared := env.rt.Config().UpstreamByName("abs"); len(cleared.RelayExemptUserAgents) != 0 {
+		t.Fatalf("空数组应当清空名单，得到 %v", cleared.RelayExemptUserAgents)
+	}
+}
+
 func TestCreateUpstreamRejectsDuplicateAndInvalid(t *testing.T) {
 	env := newEnv(t)
 	token := env.login(t, testUsername, testPassword)

@@ -151,6 +151,51 @@ func TestBlockedClientUserAgentMatchesCaseInsensitiveFragments(t *testing.T) {
 	}
 }
 
+// 「不中继的客户端」名单与屏蔽 UA 同一套写法：大小写不敏感的子串。空名单不能
+// 命中任何东西——这是「不给旧配置添麻烦」的底线（老卡片的名单是空的）。
+func TestRelayExemptUserAgentMatchesCaseInsensitiveFragments(t *testing.T) {
+	upstream := Upstream{RelayExemptUserAgents: []string{"AfuseKt"}}
+	if !upstream.RelayExempt("AfuseKt%2F%28Linux%3BAndroid+Release%29Player") {
+		t.Fatal("百分号编码过的 UA 也要命中")
+	}
+	if !upstream.RelayExempt("afusekt/1.0") {
+		t.Fatal("匹配应当大小写不敏感")
+	}
+	if upstream.RelayExempt("Infuse/8.0") {
+		t.Fatal("不在名单里的 UA 不能命中")
+	}
+	if (Upstream{}).RelayExempt("AfuseKt") {
+		t.Fatal("空名单不能命中任何客户端")
+	}
+	if (Upstream{RelayExemptUserAgents: []string{"  "}}).RelayExempt("AfuseKt") {
+		t.Fatal("空白项不算一条规则")
+	}
+}
+
+// 名单是切片，Clone 不深拷贝就会让「改了草稿」连带改掉正在跑的配置。
+func TestRelayExemptUserAgentsSurviveCloneAndNormalize(t *testing.T) {
+	cfg := Default()
+	cfg.Upstreams = []Upstream{{
+		Name:                  "飞牛影视",
+		Type:                  UpstreamFnos,
+		BaseURL:               "http://10.0.0.31:8005",
+		ListenPort:            5154,
+		RelayExemptUserAgents: []string{" AfuseKt ", "", "CapyPlayer"},
+	}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if got := cfg.Upstreams[0].RelayExemptUserAgents; len(got) != 2 || got[0] != "AfuseKt" || got[1] != "CapyPlayer" {
+		t.Fatalf("normalize 应去掉空白项并裁掉首尾空格，得到 %#v", got)
+	}
+
+	clone := cfg.Clone()
+	clone.Upstreams[0].RelayExemptUserAgents[0] = "改过的"
+	if cfg.Upstreams[0].RelayExemptUserAgents[0] != "AfuseKt" {
+		t.Fatal("clone 与原件共享了名单底层数组")
+	}
+}
+
 func TestProviderBlockedClientUserAgent(t *testing.T) {
 	redirect := Redirect{
 		BlockClientUserAgent:            Bool(true),

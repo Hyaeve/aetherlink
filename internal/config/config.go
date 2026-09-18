@@ -90,6 +90,18 @@ type Upstream struct {
 	// 而像 AfuseKt 这种客户端只认它。
 	IgnoreDirectPlayVerdict *bool `yaml:"ignore_direct_play_verdict,omitempty" json:"ignoreDirectPlayVerdict"`
 
+	// RelayExemptUserAgents 列出「别给它们中继」的客户端 UA。命中者即使本卡片选
+	// 的是「始终中继」，也把直链 302 出去（等价于让反代工具自己跟随重定向后代理，
+	// 也就是这批播放器唯一能播的形态）。
+	//
+	// 存在的理由：中继与 302 交给播放器的字节、响应头已被逐项比对为等价，但仍有
+	// 播放器（AfuseKt 那一系）只在「拿着直链自己取流」时能播，走我们中继就只读几
+	// KB 就撒手。这是客户端的选路差异，不是中继能修的，所以把选择权交回用户：
+	// 把那个 UA 填进来，它单独走直链，其余客户端照旧中继。
+	//
+	// 匹配规则与「屏蔽 UA」名单一致：大小写不敏感的子串。
+	RelayExemptUserAgents []string `yaml:"relay_exempt_user_agents,omitempty" json:"relayExemptUserAgents,omitempty"`
+
 	// Prefix 是已废弃的路径前缀，反代改成按端口区分后不再使用。
 	// 保留这个字段只为让旧配置仍能被严格解析读进来，migrate 会清掉它，
 	// 因此它永远不会再被写回磁盘。
@@ -113,6 +125,31 @@ func (u Upstream) ShouldIgnoreDirectPlayVerdict() bool {
 	return u.IgnoreDirectPlayVerdict == nil || *u.IgnoreDirectPlayVerdict
 }
 
+// RelayExempt reports whether this client must be kept off the relay path and
+// handed the direct link instead. Matching mirrors the "blocked UA" lists:
+// case-insensitive fragments, so a user can paste either the whole UA or a
+// distinctive piece of it. An empty list never matches, which keeps every
+// existing card relaying exactly as before.
+func (u Upstream) RelayExempt(userAgent string) bool {
+	return RelayExemptUserAgent(u.RelayExemptUserAgents, userAgent)
+}
+
+// RelayExemptUserAgent 是上面那条判断的独立形式：代理拿得到的是名单本身
+// （构建时从配置里取出），不必持有整份上游配置。
+func RelayExemptUserAgent(exempt []string, userAgent string) bool {
+	candidate := strings.ToLower(strings.TrimSpace(userAgent))
+	if candidate == "" {
+		return false
+	}
+	for _, entry := range exempt {
+		fragment := normalizeUserAgentFragment(entry)
+		if fragment != "" && strings.Contains(candidate, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
 // ListenAddr is the address the upstream's own reverse proxy listens on.
 func (u Upstream) ListenAddr() string { return fmt.Sprintf(":%d", u.ListenPort) }
 
@@ -129,6 +166,7 @@ func (u Upstream) Clone() Upstream {
 	}
 	copied.StrmRoots = append([]string(nil), u.StrmRoots...)
 	copied.PathMappings = append([]PathMapping(nil), u.PathMappings...)
+	copied.RelayExemptUserAgents = append([]string(nil), u.RelayExemptUserAgents...)
 	return copied
 }
 
@@ -891,6 +929,8 @@ func (u *Upstream) normalize() error {
 		roots = append(roots, normalized)
 	}
 	u.StrmRoots = roots
+	// 「不中继的客户端」与屏蔽 UA 同一套写法：去空、去重、大小写统一。
+	u.RelayExemptUserAgents = normalizeUserAgentList(u.RelayExemptUserAgents)
 	return nil
 }
 

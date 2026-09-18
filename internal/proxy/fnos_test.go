@@ -112,6 +112,12 @@ func newFakeFnos(t *testing.T, sources []map[string]any) *fakeFnos {
 
 func newFnosTestServer(t *testing.T, fnosURL string, redirectCfg config.Redirect) (*Server, *stats.Collector) {
 	t.Helper()
+	return newFnosTestServerWithRelayExempt(t, fnosURL, redirectCfg, nil)
+}
+
+// newFnosTestServerWithRelayExempt 额外挂上卡片上的「不中继的客户端」名单。
+func newFnosTestServerWithRelayExempt(t *testing.T, fnosURL string, redirectCfg config.Redirect, relayExempt []string) (*Server, *stats.Collector) {
+	t.Helper()
 	provider, err := upstream.New(config.Upstream{
 		Name:       "飞牛影视",
 		Type:       config.UpstreamFnos,
@@ -124,7 +130,7 @@ func newFnosTestServer(t *testing.T, fnosURL string, redirectCfg config.Redirect
 	}
 	collector := stats.New(50)
 	mediaResolver := resolver.New(config.Cache{TTL: time.Minute, MaxSize: 32}, redirectCfg)
-	return New(provider, mediaResolver, collector, redirectCfg), collector
+	return New(provider, mediaResolver, collector, redirectCfg, relayExempt), collector
 }
 
 // fnosStrmPlaybackSource 是飞牛对一条 .strm 影片给出的媒体源：Path 已经是指针里

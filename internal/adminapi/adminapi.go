@@ -508,6 +508,8 @@ type upstreamSummary struct {
 	// IgnoreDirectPlayVerdict 回的是生效值（配置里没写就是 true），界面直接拿它
 	// 初始化那个复选框，不必再实现一遍「缺省为真」。
 	IgnoreDirectPlayVerdict bool `json:"ignoreDirectPlayVerdict"`
+	// RelayExemptUserAgents 是这张卡片上「不中继的客户端」名单的原样回显。
+	RelayExemptUserAgents []string `json:"relayExemptUserAgents"`
 	// Active 表示该上游当前是否已在反向代理中挂载。
 	Active bool `json:"active"`
 	// Listening 表示对应端口是否真的绑定成功。
@@ -532,6 +534,7 @@ func (a *API) describeUpstreams(upstreams []config.Upstream) []upstreamSummary {
 			RedirectMode: string(up.RedirectMode),
 
 			IgnoreDirectPlayVerdict: up.ShouldIgnoreDirectPlayVerdict(),
+			RelayExemptUserAgents:   append([]string(nil), up.RelayExemptUserAgents...),
 			Active:                  a.rt.ProviderByName(up.Name) != nil,
 			Listening:               a.rt.PortActive(up.ListenPort),
 		}
@@ -540,6 +543,9 @@ func (a *API) describeUpstreams(upstreams []config.Upstream) []upstreamSummary {
 		}
 		if summary.PathMappings == nil {
 			summary.PathMappings = []config.PathMapping{}
+		}
+		if summary.RelayExemptUserAgents == nil {
+			summary.RelayExemptUserAgents = []string{}
 		}
 		summaries = append(summaries, summary)
 	}
@@ -595,12 +601,15 @@ type upstreamPayload struct {
 	Enabled  *bool   `json:"enabled"`
 	// IgnoreDirectPlayVerdict 与凭据字段一样用指针：省略表示不动原有设置，
 	// 这样界面之外的老客户端（不发这个字段）不会把卡片悄悄改回默认值。
-	IgnoreDirectPlayVerdict *bool                `json:"ignoreDirectPlayVerdict"`
-	ListenPort              int                  `json:"listenPort"`
-	Insecure                bool                 `json:"insecureSkipVerify"`
-	StrmRoots               []string             `json:"strmRoots"`
-	PathMappings            []config.PathMapping `json:"pathMappings"`
-	RedirectMode            string               `json:"redirectMode"`
+	IgnoreDirectPlayVerdict *bool `json:"ignoreDirectPlayVerdict"`
+	// RelayExemptUserAgents 同样用指针：省略表示不动原有名单，显式发 [] 才是清空。
+	// 卡片上点标签快捷切模式只发 redirectMode，不能因此把名单冲掉。
+	RelayExemptUserAgents *[]string            `json:"relayExemptUserAgents"`
+	ListenPort            int                  `json:"listenPort"`
+	Insecure              bool                 `json:"insecureSkipVerify"`
+	StrmRoots             []string             `json:"strmRoots"`
+	PathMappings          []config.PathMapping `json:"pathMappings"`
+	RedirectMode          string               `json:"redirectMode"`
 }
 
 // toConfig 把请求体转成配置项，existing 非空时继承其凭据。
@@ -645,6 +654,12 @@ func (p upstreamPayload) toConfig(existing *config.Upstream) config.Upstream {
 		// 值拷贝而不是共享指针：existing 可能还挂在旧快照上。
 		value := *existing.IgnoreDirectPlayVerdict
 		result.IgnoreDirectPlayVerdict = &value
+	}
+	switch {
+	case p.RelayExemptUserAgents != nil:
+		result.RelayExemptUserAgents = append([]string(nil), (*p.RelayExemptUserAgents)...)
+	case existing != nil:
+		result.RelayExemptUserAgents = append([]string(nil), existing.RelayExemptUserAgents...)
 	}
 	return result
 }
