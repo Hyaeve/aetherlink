@@ -927,6 +927,113 @@ func findLogEntry(keyword string) string {
 // 两者不符时必须有一条明确的日志：播放器拿错的容器去解复用就会读几百 KB 后断开，而
 // 日志里只剩一行「客户端中断」，没有这一行就只能靠猜。中性类型（octet-stream）不算
 // 「声明了别的容器」，不能报——网盘 CDN 给的全是它。
+// 「客户端读了一点就走」是中继侧唯一看不出差别的失败：字节投递对、响应头逐项等价，
+// 播放器却在解析完头部（MKV 的 Tracks、MP4 的 moov）就断开。它的成因分属两边——库里
+// 的容器名与真实文件不符，或播放器自己判定这个文件放不了（编码、位深、多字幕轨）——
+// 而能分辨它们的只有双方的头。所以这一支必须把客户端请求头与回给客户端的完整头都写
+// 出来，不能要求排障的人先去把日志级别改成 debug（这个出口过去只有四个头，两轮排障
+// 都卡在这里）。门槛以上的断开（拖进度条、切集）仍保持原来那一行，不刷屏。
+func TestRelayEarlyClientAbortPrintsBothSidesHeaders(t *testing.T) {
+	payload := make([]byte, 512<<10)
+	for index := range payload {
+		payload[index] = byte(index)
+	}
+	cdn := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/octet-stream")
+		writer.Header().Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", len(payload)-1, len(payload)))
+		writer.Header().Set("Accept-Ranges", "bytes")
+		writer.WriteHeader(http.StatusPartialContent)
+		_, _ = writer.Write(payload)
+	}))
+	defer cdn.Close()
+
+	countEntries := func(keyword string) int {
+		count := 0
+		for _, entry := range logx.Recent(0) {
+			if strings.Contains(entry.Message, keyword) {
+				count++
+			}
+		}
+		return count
+	}
+
+	// abortAfter 是模拟客户端关连接前吃掉的字节数。
+	relayUntilClientLeaves := func(t *testing.T, abortAfter int) {
+		t.Helper()
+		root, strmPath, regularPath := writeStrm(t, cdn.URL+"/d/movie.mkv")
+		fake := newFakeABS(t, strmPath, regularPath)
+		redirectCfg := defaultRedirect()
+		redirectCfg.Mode = config.RedirectNever
+		server, _ := newTestServer(t, fake.server.URL, root, redirectCfg)
+
+		requestCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/api/items/book-1/file/ino-strm", nil).WithContext(requestCtx)
+		request.Header.Set("Range", "bytes=0-")
+		request.Header.Set("User-Agent", "AfuseKt%2F%28Linux%3BAndroid+Release%29Player")
+		request.Header.Set("X-Emby-Authorization", `MediaBrowser Token="abc123"`)
+
+		server.ServeHTTP(&abortAfterBytesWriter{writer: recorder, cancel: cancel, limit: abortAfter}, request)
+		if recorder.Code != http.StatusPartialContent {
+			t.Fatalf("status = %d, want 206", recorder.Code)
+		}
+	}
+
+	// 读了几十 KB 就走：这一行必须自己带上双方的头。
+	relayUntilClientLeaves(t, 1)
+	entry := findLogEntry("只读了")
+	if entry == "" {
+		t.Fatal("客户端读了一点就断开必须有一条 warn，写明它到底吃了多少")
+	}
+	for _, want := range []string{"客户端请求头", "回给客户端", "Range=bytes=0-", "User-Agent=AfuseKt%2F%28Linux%3BAndroid+Release%29Player", "始终跳转"} {
+		if !strings.Contains(entry, want) {
+			t.Fatalf("这一行缺少 %q：%s", want, entry)
+		}
+	}
+	if strings.Contains(entry, "abc123") {
+		t.Fatalf("这一行把令牌写出来了：%s", entry)
+	}
+	if earlyAborts := countEntries("只读了"); earlyAborts != 1 {
+		t.Fatalf("「只读了」应只出现一次，实际 %d 次", earlyAborts)
+	}
+
+	// 吃到 80KiB 才断（拖进度条、切集那一类）：保持原来那一行，不再把整幅头写出来。
+	relayUntilClientLeaves(t, 80<<10)
+	if findLogEntry("拖进度条与切集是正常形态") == "" {
+		t.Fatal("门槛以上的断开应保持原来那一行")
+	}
+	if earlyAborts := countEntries("只读了"); earlyAborts != 1 {
+		t.Fatalf("门槛以上的断开不该升级成 warn，实际多出 %d 条", earlyAborts-1)
+	}
+}
+
+// abortAfterBytesWriter 模拟「客户端吃到一定字节数就把连接关掉」：累计写出的字节数到达
+// 门槛后取消请求上下文（真实场景里由客户端断开触发），并返回写错误让 io.Copy 立刻停下。
+// 门槛设成 1 就是「读了一点就不认这个响应」，设成几十 KB 以上就是拖进度条那一类。
+type abortAfterBytesWriter struct {
+	writer  http.ResponseWriter
+	cancel  context.CancelFunc
+	limit   int
+	written int
+}
+
+func (w *abortAfterBytesWriter) Header() http.Header { return w.writer.Header() }
+
+func (w *abortAfterBytesWriter) WriteHeader(status int) { w.writer.WriteHeader(status) }
+
+func (w *abortAfterBytesWriter) Write(buffer []byte) (int, error) {
+	written, err := w.writer.Write(buffer)
+	w.written += written
+	if w.written >= w.limit {
+		w.cancel()
+		if err == nil {
+			err = io.ErrClosedPipe
+		}
+	}
+	return written, err
+}
+
 func TestContainerMismatchNoteNamesBothSides(t *testing.T) {
 	note := containerMismatchNote("/emby/videos/42/stream.mkv", "video/mp4")
 	for _, want := range []string{".mkv", "video/x-matroska", "video/mp4"} {

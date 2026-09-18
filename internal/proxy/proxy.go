@@ -1026,6 +1026,12 @@ func userAgentNote(event stats.Event) string {
 	return fmt.Sprintf("客户端 UA %q，实际 UA %q", clientUserAgent, event.EffectiveUserAgent)
 }
 
+// earlyAbortBytes 是「客户端读了一点就走」的判定门槛。拖进度条、切集也会让客户端
+// 断开，但那时它已经吃掉了大量字节；几十 KB 就撒手，只可能是它没认这个响应。
+// 这类失败的成因分属两边——库里的容器名与真实文件不符，或播放器自己判定这个文件
+// 放不了——双方的头是唯一能分辨它们的证据，所以门槛以下的那一支必须把头发全。
+const earlyAbortBytes = 64 << 10
+
 // relayRemote streams the remote target through AetherLink, preserving Range
 // semantics so seeking keeps working.
 func (s *Server) relayRemote(writer http.ResponseWriter, request *http.Request, target string) (int, error) {
@@ -1136,7 +1142,17 @@ func (s *Server) relayRemote(writer http.ResponseWriter, request *http.Request, 
 		if recorder.err != nil {
 			aside = fmt.Sprintf("；同时读到上游错误：%v（客户端断开会让上游请求一起取消，多为连带现象）", recorder.err)
 		}
-		logx.Infof("[%s] 中继被客户端中断 %s：已转发 %s（上游 %d 声明 %s），客户端 Range=%q，%s，用时 %s%s；客户端主动断开，只吃了少量字节通常是不认这个响应，拖进度条与切集则是正常形态", s.provider.Name(), request.URL.Path, formatBytes(written), response.StatusCode, formatBytes(response.ContentLength), request.Header.Get("Range"), sentNote, elapsed, aside)
+		// 「读了一点就走」是中继排障里最难缠的一种形态：字节投递与响应头都已证实
+		// 与直连逐项等价，却仍只有某些播放器不认。它的两个已知成因分属两边——库里
+		// 的容器名与直链真实文件不符，或者播放器自己判定这个文件放不了（编码、位深、
+		// 多字幕轨都可能）——而分辨它们要看的正是双方的头，加上播放器随后有没有再发
+		// 别的请求（转码播放列表、第二次 Range）。所以这一支把双方的头都写全：原先
+		// 只有 debug 级别才有的那部分，不该让人先跑去改日志级别才能拿到。
+		if written < earlyAbortBytes {
+			logx.Warnf("[%s] 中继被客户端中断 %s：只读了 %s 就断开，像是没认这个响应（上游 %d 声明 %s，客户端 Range=%q，用时 %s）；客户端请求头 %s；回给客户端的头 %s%s；客户端主动断开。对照：同一片切「始终跳转」能播就是播放器自己判定不放（与中继无关），同样不能播则查库里的容器名与直链真实文件是否相符", s.provider.Name(), request.URL.Path, formatBytes(written), response.StatusCode, formatBytes(response.ContentLength), request.Header.Get("Range"), elapsed, headerNote(request.Header), headerNote(writer.Header()), aside)
+			return response.StatusCode, nil
+		}
+		logx.Infof("[%s] 中继被客户端中断 %s：已转发 %s（上游 %d 声明 %s），客户端 Range=%q，%s，用时 %s%s；客户端主动断开，拖进度条与切集是正常形态", s.provider.Name(), request.URL.Path, formatBytes(written), response.StatusCode, formatBytes(response.ContentLength), request.Header.Get("Range"), sentNote, elapsed, aside)
 	case copyErr != nil:
 		logx.Infof("[%s] 中继写回客户端结束 %s：已转发 %s，客户端 Range=%q，%s，用时 %s，原因：%v", s.provider.Name(), request.URL.Path, formatBytes(written), request.Header.Get("Range"), sentNote, elapsed, copyErr)
 	case response.ContentLength > 0 && written < response.ContentLength:
