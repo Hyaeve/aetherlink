@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/aetherlink/aetherlink/internal/config"
+	"github.com/aetherlink/aetherlink/internal/logx"
 )
 
 func newFnosProvider(t *testing.T, baseURL string) *fnosProvider {
@@ -800,6 +801,100 @@ func TestFnosTakesOverStrmSourcesUnderEveryRedirectMode(t *testing.T) {
 			}
 		})
 	}
+}
+
+// 客户端的 /stream 请求不带 MediaSourceId 是常态（播放器自己拼 URL、或沿用上一次
+// 协商结果时都不带），而改写缓存是按上游给的 Id 存的。少了这条退路，这类客户端就
+// 永远命中不了缓存、每次都得回头问上游 —— 而回头问上游在飞牛没配账号密码时未必
+// 成得了，表现正是用户报的「同一片、什么都没改，时好时坏」。
+func TestFnosPlaybackCacheAcceptsRequestWithoutMediaSourceID(t *testing.T) {
+	provider := fnosProviderWithMode(t, "http://127.0.0.1:1", config.RedirectPublic)
+	if changed, _ := rewriteFnosPlaybackInfo(t, provider, blockedStrmSourceJSON); changed != 1 {
+		t.Fatalf("changed = %d，want 1（改写后才有缓存可查）", changed)
+	}
+
+	if source, ok := provider.rememberedPlaybackSource("42", "src-1"); !ok {
+		t.Fatal("带 MediaSourceId 时应当精确命中缓存")
+	} else if source.Path != "https://cdn.example.test/movie.mkv" {
+		t.Fatalf("缓存的媒体源 = %q", source.Path)
+	}
+
+	source, ok := provider.rememberedPlaybackSource("42", "")
+	if !ok {
+		t.Fatal("请求没带 MediaSourceId、而该条目下只有一条缓存时应当命中：否则这类客户端每次都要回头问上游")
+	}
+	if source.Path != "https://cdn.example.test/movie.mkv" {
+		t.Fatalf("缓存的媒体源 = %q", source.Path)
+	}
+}
+
+// 一个条目下有多条媒体源时不许猜：选错源就是选错文件，宁可回头问上游。
+func TestFnosPlaybackCacheRefusesToGuessAmongSeveralSources(t *testing.T) {
+	provider := fnosProviderWithMode(t, "http://127.0.0.1:1", config.RedirectPublic)
+	twoSources := `{"Id":"src-1","Path":"https://cdn.example.test/a.mkv","Protocol":"Http","Container":"strm"},` +
+		`{"Id":"src-2","Path":"https://cdn.example.test/b.mkv","Protocol":"Http","Container":"strm"}`
+	if changed, _ := rewriteFnosPlaybackInfo(t, provider, twoSources); changed != 2 {
+		t.Fatalf("changed = %d，want 2（两条都要进缓存）", changed)
+	}
+
+	if source, ok := provider.rememberedPlaybackSource("42", ""); ok {
+		t.Fatalf("两条候选且请求没带 MediaSourceId 时不该猜任何一条，却拿到了 %q", source.Path)
+	}
+	if source, ok := provider.rememberedPlaybackSource("42", "src-2"); !ok || source.ID != "src-2" {
+		t.Fatalf("带 Id 时仍应精确命中，得到 %q（ok=%v）", source.ID, ok)
+	}
+}
+
+// 缓存未命中是「同一片、时好时坏」唯一能落进日志的地方：必须出声，并写明这次回头
+// 问上游有没有可用的播放器令牌（飞牛没配账号密码时它就是唯一的鉴权来源）。
+func TestPlaybackCacheMissIsLoggedWithTokenNote(t *testing.T) {
+	provider := fnosProviderWithMode(t, "http://127.0.0.1:1", config.RedirectPublic)
+
+	// 指向死地址：注定查不到，但日志里必须已经写下「为什么这次要回头问」。
+	if _, err := provider.MediaTarget(context.Background(), MediaRef{
+		Kind: RefStream, ItemID: "cache-miss-no-token", MediaSourceID: "src-x",
+	}); err == nil {
+		t.Fatal("上游地址不可达时 MediaTarget 应当报错")
+	}
+	lines := logLinesWith("item=cache-miss-no-token")
+	if len(lines) == 0 {
+		t.Fatal("缓存未命中必须留下一行 info 日志，否则「重试几次又好了」无从解释")
+	}
+	if last := lines[len(lines)-1]; !strings.Contains(last, "播放器请求带来的令牌：无") {
+		t.Fatalf("请求没带令牌时日志应当写明「无」：%s", last)
+	}
+
+	// 带上令牌时应当写明「有」——它正是这次回头查能不能成的关键，
+	// 同时日志里不能出现令牌本身。
+	request := httptest.NewRequest(http.MethodGet, "/Videos/1/stream", nil)
+	request.Header.Set("X-Emby-Authorization", `MediaBrowser Token="secret-token"`)
+	ctx := WithClientCredentials(context.Background(), request)
+	if _, err := provider.MediaTarget(ctx, MediaRef{Kind: RefStream, ItemID: "cache-miss-with-token"}); err == nil {
+		t.Fatal("上游地址不可达时 MediaTarget 应当报错")
+	}
+	lines = logLinesWith("item=cache-miss-with-token")
+	if len(lines) == 0 {
+		t.Fatal("带令牌时同样要留下缓存未命中日志")
+	}
+	last := lines[len(lines)-1]
+	if !strings.Contains(last, "播放器请求带来的令牌：有") {
+		t.Fatalf("请求带了令牌时日志应当写明「有」：%s", last)
+	}
+	if strings.Contains(last, "secret-token") {
+		t.Fatalf("日志不能把令牌本身写出来：%s", last)
+	}
+}
+
+// logLinesWith 在日志环形缓冲里筛出包含关键字的记录（环形缓冲是进程级的，
+// 断言时用唯一的 itemID 把别的用例隔开）。
+func logLinesWith(keyword string) []string {
+	var out []string
+	for _, entry := range logx.Recent(0) {
+		if strings.Contains(entry.Message, keyword) {
+			out = append(out, entry.Message)
+		}
+	}
+	return out
 }
 
 // 接管之后字节的去向由模式定，日志里那句「字节由 AetherLink …」必须与模式对得上：

@@ -500,23 +500,67 @@ func (p *embyProvider) rememberPlaybackSource(itemID string, source embyMediaSou
 	}
 }
 
+// rememberedPlaybackSource 取回 PlaybackInfo 改写时缓存下来的媒体源。
+//
+// 缓存键是「条目 + 媒体源 Id」，但客户端的请求未必带得上那个 Id —— 播放器自己
+// 拼 /Videos/{id}/stream、或沿用上一次协商结果时，不带 MediaSourceId 就是常态。
+// 所以除了带 Id 的精确命中，还要有两条退路：没有 Id 时退回「该条目下唯一的那一条」
+// （请求没带 Id 而缓存是按 Id 存的时候同理）。**多条候选时绝不猜** —— 选错媒体源
+// 就是选错文件，那种情况宁可回头去问上游。
 func (p *embyProvider) rememberedPlaybackSource(itemID, sourceID string) (embyMediaSource, bool) {
 	p.playbackMu.Lock()
 	defer p.playbackMu.Unlock()
 	if p.playbackSources == nil {
 		return embyMediaSource{}, false
 	}
-	key := embyPlaybackSourceKey(itemID, sourceID)
-	cached, ok := p.playbackSources[key]
-	if !ok && sourceID != "" {
-		key = embyPlaybackSourceKey(itemID, "")
-		cached, ok = p.playbackSources[key]
+	now := time.Now()
+	pick := func(key string) (embyMediaSource, bool) {
+		cached, ok := p.playbackSources[key]
+		if !ok {
+			return embyMediaSource{}, false
+		}
+		if now.After(cached.expiresAt) {
+			delete(p.playbackSources, key)
+			return embyMediaSource{}, false
+		}
+		return cached.source, true
 	}
-	if !ok || time.Now().After(cached.expiresAt) {
-		delete(p.playbackSources, key)
+
+	if source, ok := pick(embyPlaybackSourceKey(itemID, sourceID)); ok {
+		return source, true
+	}
+	if sourceID != "" {
+		// 改写时是按上游给的 Id 存的，请求却带着一个对不上的 Id。
+		if source, ok := pick(embyPlaybackSourceKey(itemID, "")); ok {
+			return source, true
+		}
 		return embyMediaSource{}, false
 	}
-	return cached.source, true
+	return p.solePlaybackSource(itemID, now)
+}
+
+// solePlaybackSource 在该条目下恰好只缓存了一条媒体源时返回它，多条或没有则
+// 返回 false。调用方必须已持有 playbackMu。
+func (p *embyProvider) solePlaybackSource(itemID string, now time.Time) (embyMediaSource, bool) {
+	prefix := itemID + "\x00"
+	var (
+		only  embyMediaSource
+		count int
+	)
+	for key, cached := range p.playbackSources {
+		if !strings.HasPrefix(key, prefix) || now.After(cached.expiresAt) {
+			continue
+		}
+		count++
+		if count > 1 {
+			return embyMediaSource{}, false
+		}
+		only = cached.source
+	}
+	if count == 1 {
+		return only, true
+	}
+	return embyMediaSource{}, false
 }
 
 // Match intercepts Emby's direct-play and download endpoints. HLS/transcode
@@ -819,6 +863,18 @@ func (p *embyProvider) MediaTarget(ctx context.Context, ref MediaRef) (MediaTarg
 		// 就是直链，交给 302 或中继即可。
 		return embyTarget(source), nil
 	}
+	// 缓存没命中，只能回头问上游要媒体源。**这扇窗正是「同一片、时好时坏」的来源**：
+	// 缓存（10 分钟）在的时候解析根本不问上游，一切正常；不在的时候全看这次查询能不能
+	// 成，而它能不能成取决于手上有没有可用凭据 —— 飞牛卡片没填账号密码时只能借用
+	// 播放器自己的令牌，播放器却未必把令牌带在 /stream 请求上（我们生成的
+	// DirectStreamUrl 里本来就不含令牌）。以前这里一声不吭，界面与日志里只剩最后那行
+	// 「透传」，看不出中间发生了什么，于是「重试几次又好了」永远无法解释。
+	tokenNote := "无"
+	if contextClientToken(ctx) != "" {
+		tokenNote = "有"
+	}
+	logx.Infof("[%s] PlaybackInfo 改写缓存未命中（item=%s，MediaSourceId=%q，播放器请求带来的令牌：%s），本次回头问上游要媒体源",
+		p.Name(), ref.ItemID, ref.MediaSourceID, tokenNote)
 	item, err := p.fetchItem(ctx, ref.ItemID)
 	if err != nil {
 		return MediaTarget{}, err
