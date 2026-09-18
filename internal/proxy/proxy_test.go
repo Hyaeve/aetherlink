@@ -330,6 +330,15 @@ func TestIntranetLocalProxyTargetRelaysForPublicClient(t *testing.T) {
 	if event := collector.Snapshot(1).RecentEvents[0]; event.Outcome != stats.OutcomeProxyStream {
 		t.Fatalf("outcome = %q, want proxy", event.Outcome)
 	}
+	// 这一行的文案只写「结果 + 原因」：补救办法（关掉 OpenList 的本地代理、把它发布到
+	// 公网）属于 README 的故障对照表，日志里不写。用户 2026-09-18 明确要求过这一条，
+	// 所以除了钉住该有的那句，还要钉住那句被删掉的不再回来。
+	if !logContainsAll("中继 /api/items/book-1/file/ino-strm", "直链是内网地址而客户端在外网，本次由 AetherLink 中继") {
+		t.Fatalf("中继行应当写明安全网原因：%q", findLogEntry("中继 /api/items/book-1/file/ino-strm"))
+	}
+	if line := findLogEntry("中继 /api/items/book-1/file/ino-strm"); strings.Contains(line, "发布到公网") {
+		t.Fatalf("日志只写结果，不写补救办法：%q", line)
+	}
 
 	// 内网客户端连内网直链没有障碍，照常 302。
 	privateRecorder := httptest.NewRecorder()

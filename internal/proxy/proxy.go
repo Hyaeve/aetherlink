@@ -399,7 +399,7 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 		if relayExempt {
 			exemptNote = "；该客户端命中卡片「不中继的客户端」名单，但直链是内网地址而客户端在外网，名单这一次没有出路"
 		}
-		finish(stats.OutcomeProxyStream, cacheNote(event)+"；直链是内网地址而客户端在外网，302 出去也连不上，改由 AetherLink 中继。若要真正的 302，请让该服务（如 OpenList）关闭本地代理输出真直链，或把它发布到公网"+exemptNote)
+		finish(stats.OutcomeProxyStream, cacheNote(event)+"；直链是内网地址而客户端在外网，本次由 AetherLink 中继"+exemptNote)
 		return
 	}
 	finish(stats.OutcomeProxyStream, cacheNote(event)+"；按 302 策略不跳转，改由 AetherLink 中继："+s.noRedirectReason(resolution, event.Client)+privateTargetNote(playURL))
