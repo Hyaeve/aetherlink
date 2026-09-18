@@ -52,6 +52,34 @@ const (
 	RedirectNever RedirectMode = "never"
 )
 
+// RedirectModeLabel 返回卡片上显示的档位名。日志里只写 `never` 这类配置取值时，
+// 用户对着界面上的「始终中继」根本对不上，曾经因此把一行中继日志读成了别的档位；
+// 名字与前端 `redirectOptions` 保持一致，改动要一起改。
+func RedirectModeLabel(mode RedirectMode) string {
+	switch mode {
+	case RedirectAlways:
+		return "始终跳转"
+	case RedirectPublic:
+		return "公网跳转"
+	case RedirectPrivate:
+		return "内网跳转"
+	case RedirectNever:
+		return "始终中继"
+	default:
+		return string(mode)
+	}
+}
+
+// RedirectModeName 把档位名与配置取值拼成一个可直接写进日志的词，例如
+// 「始终中继（never）」：中文名让用户对得上界面，括号里的原值让排障时能直接
+// grep 配置与文档。
+func RedirectModeName(mode RedirectMode) string {
+	if label := RedirectModeLabel(mode); label != string(mode) {
+		return fmt.Sprintf("%s（%s）", label, mode)
+	}
+	return string(mode)
+}
+
 // PathMapping rewrites a path as seen by the upstream server into a path that
 // exists inside the AetherLink container.
 type PathMapping struct {
@@ -81,15 +109,6 @@ type Upstream struct {
 	ListenPort   int          `yaml:"listen_port" json:"listenPort"`
 	Insecure     bool         `yaml:"insecure_skip_verify" json:"insecureSkipVerify"`
 	RedirectMode RedirectMode `yaml:"redirect_mode,omitempty" json:"redirectMode"`
-	// IgnoreDirectPlayVerdict 决定「始终跳转」「始终中继」两档是否也无视上游
-	// 在 PlaybackInfo 里给出的「当前客户端不能直接播放原始文件」判定。
-	//
-	// 指针是为了区分「配置里压根没写过」与「用户显式关掉」：省略时按 true
-	// 处理，与历史行为一致，手写配置与旧配置不需要改动。关掉之后，被上游判
-	// 定不可直放的客户端会拿到上游的转码 HLS——那是唯一能放动原文件的退路，
-	// 而像 AfuseKt 这种客户端只认它。
-	IgnoreDirectPlayVerdict *bool `yaml:"ignore_direct_play_verdict,omitempty" json:"ignoreDirectPlayVerdict"`
-
 	// RelayExemptUserAgents 列出「别给它们中继」的客户端 UA。命中者即使本卡片选
 	// 的是「始终中继」，也把直链 302 出去（等价于让反代工具自己跟随重定向后代理，
 	// 也就是这批播放器唯一能播的形态）。
@@ -101,6 +120,15 @@ type Upstream struct {
 	//
 	// 匹配规则与「屏蔽 UA」名单一致：大小写不敏感的子串。
 	RelayExemptUserAgents []string `yaml:"relay_exempt_user_agents,omitempty" json:"relayExemptUserAgents,omitempty"`
+
+	// IgnoreDirectPlayVerdict 是已废弃的开关。它曾经让「上游说这个客户端不能
+	// 直接播放原始文件」那句判定变得可听可不听；后来四种跳转模式一律忽略那句
+	// 判定，没有可关的余地，这个开关就只剩「关掉之后让一部分客户端播不了」这
+	// 一个作用，于是连同界面一起删掉了。
+	//
+	// 与 Prefix 同理：声明保留只为让已经写过它的旧配置仍能通过严格解析读进来，
+	// migrate 会把它清掉，因此它永远不会再被写回磁盘。
+	IgnoreDirectPlayVerdict *bool `yaml:"ignore_direct_play_verdict,omitempty" json:"-"`
 
 	// Prefix 是已废弃的路径前缀，反代改成按端口区分后不再使用。
 	// 保留这个字段只为让旧配置仍能被严格解析读进来，migrate 会清掉它，
@@ -117,13 +145,6 @@ type Upstream struct {
 // IsEnabled reports whether the upstream should be served. Omitting the field
 // means enabled.
 func (u Upstream) IsEnabled() bool { return u.Enabled == nil || *u.Enabled }
-
-// ShouldIgnoreDirectPlayVerdict reports whether the upstream's "this client
-// cannot play the original file" verdict is to be overridden. Omitting the
-// field means yes, which keeps every existing card behaving as it did.
-func (u Upstream) ShouldIgnoreDirectPlayVerdict() bool {
-	return u.IgnoreDirectPlayVerdict == nil || *u.IgnoreDirectPlayVerdict
-}
 
 // RelayExempt reports whether this client must be kept off the relay path and
 // handed the direct link instead. Matching mirrors the "blocked UA" lists:
@@ -531,8 +552,11 @@ func (c *Config) Migrated() bool { return c.migrated }
 
 // migrate 把旧版配置升级到当前结构，返回是否发生了改动。
 //
-// 目前只有一处：上游的 prefix 换成了独占的 listen_port。老配置没有端口，
-// 这里按管理端口往上顺次分配一个空闲端口，并清掉已废弃的 prefix。
+// 两处已废弃字段在这里被清掉（Prefix 的路径前缀、IgnoreDirectPlayVerdict 的
+// 忽略判定开关）：Load 用的是严格解析，字段声明得留着才能把老配置读进来，
+// 但值已经不再被采纳，清空后下一次保存就不再写出它们。
+//
+// 另外老配置没有 listen_port，这里按管理端口往上顺次分配一个空闲端口。
 func (c *Config) migrate() bool {
 	changed := false
 	if c.ShouldUseLegacyUserAgentScope() {
@@ -574,6 +598,10 @@ func (c *Config) migrate() bool {
 		}
 		if upstream.Prefix != "" {
 			upstream.Prefix = ""
+			changed = true
+		}
+		if upstream.IgnoreDirectPlayVerdict != nil {
+			upstream.IgnoreDirectPlayVerdict = nil
 			changed = true
 		}
 		if upstream.ListenPort > 0 {

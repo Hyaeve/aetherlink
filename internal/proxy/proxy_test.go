@@ -1163,10 +1163,10 @@ func TestNoRedirectReasonNamesTheClientNotTheTarget(t *testing.T) {
 		client string
 		want   string
 	}{
-		{config.RedirectPublic, "192.168.1.3", "跳转模式为 public，而客户端 192.168.1.3 是内网地址（只有公网客户端才 302）"},
-		{config.RedirectPrivate, "8.8.8.8", "跳转模式为 private，而客户端 8.8.8.8 是公网地址（只有内网客户端才 302）"},
-		{config.RedirectPublic, "", "跳转模式为 public，而客户端 IP 无法识别（若 AetherLink 前面还有反代，请把它加入 trusted_proxy_cidrs）"},
-		{config.RedirectNever, "8.8.8.8", "跳转模式为 never，任何客户端都不 302"},
+		{config.RedirectPublic, "192.168.1.3", "跳转模式为公网跳转（public），而客户端 192.168.1.3 是内网地址（只有公网客户端才 302）"},
+		{config.RedirectPrivate, "8.8.8.8", "跳转模式为内网跳转（private），而客户端 8.8.8.8 是公网地址（只有内网客户端才 302）"},
+		{config.RedirectPublic, "", "跳转模式为公网跳转（public），而客户端 IP 无法识别（若 AetherLink 前面还有反代，请把它加入 trusted_proxy_cidrs）"},
+		{config.RedirectNever, "8.8.8.8", "跳转模式为始终中继（never），任何客户端都不 302"},
 	}
 	for _, test := range cases {
 		server := &Server{redirect: config.Redirect{Mode: test.mode}}
@@ -1394,11 +1394,12 @@ func newFakeEmbyWithoutItemSources(t *testing.T, sources []map[string]any) *http
 func newEmbyTestServer(t *testing.T, embyURL string, redirectCfg config.Redirect) (*Server, *stats.Collector) {
 	t.Helper()
 	provider, err := upstream.New(config.Upstream{
-		Name:       "emby",
-		Type:       config.UpstreamEmby,
-		BaseURL:    embyURL,
-		APIKey:     "test-api-key",
-		ListenPort: 8096,
+		Name:         "emby",
+		Type:         config.UpstreamEmby,
+		BaseURL:      embyURL,
+		APIKey:       "test-api-key",
+		ListenPort:   8096,
+		RedirectMode: redirectCfg.Mode,
 	})
 	if err != nil {
 		t.Fatalf("build emby provider: %v", err)
@@ -1408,8 +1409,10 @@ func newEmbyTestServer(t *testing.T, embyURL string, redirectCfg config.Redirect
 	return New(provider, mediaResolver, collector, redirectCfg, nil), collector
 }
 
-// Emby 已判定可直接播放的 STRM 只需要把 DirectStreamUrl 接到 AetherLink，
-// 不能篡改它的转码能力；客户端可以优先直放，也仍保留必要时回退转码的能力。
+// Emby 已判定可直接播放的 STRM 也要压成 DirectStream 引回 AetherLink：DirectPlay
+// 会让客户端直连 Path（网盘 / OpenList 直链）绕开我们，卡片上选的「始终跳转」等于
+// 没设——四种模式都接管，模式选的只是字节去向。转码回退（`TranscodingUrl` 与
+// `TranscodingContainer`）一律保留，客户端必要时仍可回退；普通本地媒体源不碰。
 func TestEmbyPlaybackInfoRoutesCompatibleStrmToDirectPlay(t *testing.T) {
 	var acceptEncoding string
 	var itemRequests int
@@ -1493,8 +1496,8 @@ func TestEmbyPlaybackInfoRoutesCompatibleStrmToDirectPlay(t *testing.T) {
 		t.Fatalf("media source count = %d, want 2", len(playbackInfo.MediaSources))
 	}
 	rewritten := playbackInfo.MediaSources[0]
-	if rewritten["SupportsDirectPlay"] != true || rewritten["SupportsDirectStream"] != false || rewritten["SupportsTranscoding"] != true {
-		t.Fatalf("STRM playback capability flags should stay unchanged: %#v", rewritten)
+	if rewritten["SupportsDirectPlay"] != false || rewritten["SupportsDirectStream"] != true || rewritten["SupportsTranscoding"] != true {
+		t.Fatalf("STRM 源应压成 DirectStream（引回 AetherLink）且保留下转码能力: %#v", rewritten)
 	}
 	if rewritten["TranscodingUrl"] == nil || rewritten["TranscodingContainer"] != "ts" {
 		t.Fatalf("STRM transcoding fallback should stay available: %#v", rewritten)
@@ -1527,9 +1530,12 @@ func TestEmbyPlaybackInfoRoutesCompatibleStrmToDirectPlay(t *testing.T) {
 	}
 }
 
-// Emby 判定不兼容时必须保留 HLS。4K H.265 这类原文件即使成功 302，网页端也
-// 可能完全无法解码；让 Emby 转码虽然不走 302，但至少能够正常播放。
-func TestEmbyPlaybackInfoKeepsTranscodingForIncompatibleStrm(t *testing.T) {
+// 上游判「当前客户端不能直接播放原始文件」同样不再被采纳。这条判定以前会把客户端
+// 交回上游转码——要靠卡片上一个开关才能推翻，而那意味着卡片上写的档位落不到这台
+// 客户端身上。现在四种模式都与判定无关地压成 DirectStream 引回 AetherLink。
+// 转码回退本身仍留在响应里（`TranscodingUrl` / `TranscodingContainer` 不动），
+// 客户端真要回退时还能自己走；HLS 分片路由也照旧不拦截。
+func TestEmbyPlaybackInfoClaimsIncompatibleStrmToo(t *testing.T) {
 	remoteSource := map[string]any{
 		"Id":                   "source-h265",
 		"Path":                 "https://cdn.example/episode.h265.mkv",
@@ -1567,26 +1573,128 @@ func TestEmbyPlaybackInfoKeepsTranscodingForIncompatibleStrm(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := playbackInfo.MediaSources[0]
-	if source["SupportsDirectPlay"] != false || source["SupportsTranscoding"] != true {
-		t.Fatalf("incompatible STRM capability flags changed: %#v", source)
+	if source["SupportsDirectPlay"] != false || source["SupportsDirectStream"] != true || source["SupportsTranscoding"] != true {
+		t.Fatalf("判定被推翻后应压成 DirectStream 且保留下转码能力: %#v", source)
 	}
-	if source["DirectStreamUrl"] != remoteSource["DirectStreamUrl"] || source["TranscodingUrl"] != remoteSource["TranscodingUrl"] {
-		t.Fatalf("incompatible STRM routes changed: %#v", source)
+	if reasons, ok := source["TranscodeReasons"].([]any); !ok || len(reasons) != 0 {
+		t.Fatalf("TranscodeReasons = %v，want 空（不再与「引回 AetherLink」自相矛盾）", source["TranscodeReasons"])
+	}
+	if source["TranscodingUrl"] != remoteSource["TranscodingUrl"] {
+		t.Fatalf("转码回退不该被抹掉: %#v", source)
+	}
+	directURL, _ := source["DirectStreamUrl"].(string)
+	if !strings.Contains(directURL, "/Videos/movie-h265/stream") {
+		t.Fatalf("DirectStreamUrl = %q，want 指回 AetherLink", directURL)
 	}
 
+	// 客户端拿着改写后的地址来要原文件：这一次必须真的 302 出去，而不是原样透传。
 	directRecorder := httptest.NewRecorder()
-	server.ServeHTTP(directRecorder, httptest.NewRequest(http.MethodGet, "/emby/Videos/movie-h265/stream.mkv?MediaSourceId=source-h265", nil))
-	if directRecorder.Code != http.StatusOK || !strings.HasPrefix(directRecorder.Body.String(), "emby-transcode:") {
-		t.Fatalf("incompatible direct route status=%d body=%q", directRecorder.Code, directRecorder.Body.String())
+	server.ServeHTTP(directRecorder, httptest.NewRequest(http.MethodGet, directURL, nil))
+	if directRecorder.Code != http.StatusFound {
+		t.Fatalf("direct stream status = %d, want 302; body = %q", directRecorder.Code, directRecorder.Body.String())
+	}
+	if location := directRecorder.Header().Get("Location"); !strings.Contains(location, "cdn.example/episode.h265.mkv") {
+		t.Fatalf("Location = %q，want 直链", location)
 	}
 
+	// HLS 分片路由仍然不拦截：客户端真要回退转码时照旧原样交给上游。
 	hlsRecorder := httptest.NewRecorder()
 	server.ServeHTTP(hlsRecorder, httptest.NewRequest(http.MethodGet, "/emby/videos/movie-h265/hls1/main/10.ts", nil))
 	if hlsRecorder.Code != http.StatusOK || !strings.HasPrefix(hlsRecorder.Body.String(), "emby-transcode:") {
 		t.Fatalf("HLS fallback status=%d body=%q", hlsRecorder.Code, hlsRecorder.Body.String())
 	}
-	if snapshot := collector.Snapshot(10); snapshot.Redirects != 0 || snapshot.Passthroughs != 1 {
-		t.Fatalf("redirects=%d passthroughs=%d, want 0 and 1 for incompatible STRM", snapshot.Redirects, snapshot.Passthroughs)
+	// 只有一个被拦截的媒体请求（那条 /stream），它这次走的是 302；HLS 分片不属于
+	// 被拦截的媒体路由，不计入透传计数。
+	if snapshot := collector.Snapshot(10); snapshot.Redirects != 1 || snapshot.Passthroughs != 0 {
+		t.Fatalf("redirects=%d passthroughs=%d, want 1 and 0", snapshot.Redirects, snapshot.Passthroughs)
+	}
+}
+
+// 条件跳转模式下，「该中继的那一半客户端」必须真的被中继。用户实例：飞牛影视
+// 卡片选「公网跳转」、客户端在内网、上游又在 PlaybackInfo 里判它不能直放原始
+// 文件，结果只留下一行「透传 … 上游判定当前客户端不支持原始文件」——卡片上写的
+// 「内网客户端中继」等于没生效（把模式改成「始终中继」就正常）。
+//
+// 成因是条件模式原先不接管 STRM 源，于是客户端压根不会被引回 AetherLink，而
+// 即使它自己来了 /stream，解析也会读到上游那句判定就地透传。现在四种模式都
+// 接管：内网客户端回到 /stream 由我们中继，公网客户端照旧拿 302。
+func TestPublicRedirectRelaysIntranetClientEvenWhenUpstreamBlocksDirectPlay(t *testing.T) {
+	cdn := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Write([]byte("cdn-bytes"))
+	}))
+	defer cdn.Close()
+
+	remoteSource := map[string]any{
+		"Id":                   "source-strm",
+		"Path":                 cdn.URL + "/movie.mkv",
+		"Protocol":             "Http",
+		"Container":            "strm",
+		"MediaType":            "Video",
+		"SupportsDirectPlay":   false,
+		"SupportsDirectStream": false,
+		"SupportsTranscoding":  true,
+		"TranscodeReasons":     "ContainerBitrateExceedsLimit",
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/emby/Items/movie-1/PlaybackInfo", func(writer http.ResponseWriter, request *http.Request) {
+		writeJSON(t, writer, map[string]any{"MediaSources": []map[string]any{remoteSource}})
+	})
+	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
+		writer.Write([]byte("upstream-transcode:" + request.URL.Path))
+	})
+	emby := httptest.NewServer(mux)
+	t.Cleanup(emby.Close)
+
+	redirectCfg := defaultRedirect()
+	redirectCfg.Mode = config.RedirectPublic
+	server, collector := newEmbyTestServer(t, emby.URL, redirectCfg)
+
+	playbackRecorder := httptest.NewRecorder()
+	server.ServeHTTP(playbackRecorder, httptest.NewRequest(http.MethodPost, "/emby/Items/movie-1/PlaybackInfo", strings.NewReader(`{}`)))
+	if playbackRecorder.Code != http.StatusOK {
+		t.Fatalf("PlaybackInfo status = %d, want 200", playbackRecorder.Code)
+	}
+	var playbackInfo struct {
+		MediaSources []map[string]any `json:"MediaSources"`
+	}
+	if err := json.Unmarshal(playbackRecorder.Body.Bytes(), &playbackInfo); err != nil {
+		t.Fatal(err)
+	}
+	if len(playbackInfo.MediaSources) != 1 {
+		t.Fatalf("media source count = %d, want 1", len(playbackInfo.MediaSources))
+	}
+	claimed := playbackInfo.MediaSources[0]
+	if claimed["SupportsDirectPlay"] != false || claimed["SupportsDirectStream"] != true {
+		t.Fatalf("条件模式也要把 STRM 源引回 AetherLink: %#v", claimed)
+	}
+	if directURL, _ := claimed["DirectStreamUrl"].(string); !strings.Contains(directURL, "/Videos/movie-1/stream") {
+		t.Fatalf("DirectStreamUrl = %q，want 含 /Videos/movie-1/stream", directURL)
+	}
+
+	streamPath := "/emby/Videos/movie-1/stream.mkv?MediaSourceId=source-strm"
+
+	intranetRecorder := httptest.NewRecorder()
+	intranetRequest := httptest.NewRequest(http.MethodGet, streamPath, nil)
+	intranetRequest.RemoteAddr = "192.168.1.20:5000"
+	server.ServeHTTP(intranetRecorder, intranetRequest)
+	if intranetRecorder.Code != http.StatusOK || intranetRecorder.Body.String() != "cdn-bytes" {
+		t.Fatalf("内网客户端应被中继：状态 %d，body %q", intranetRecorder.Code, intranetRecorder.Body.String())
+	}
+
+	publicRecorder := httptest.NewRecorder()
+	publicRequest := httptest.NewRequest(http.MethodGet, streamPath, nil)
+	publicRequest.RemoteAddr = "8.8.8.8:5000"
+	server.ServeHTTP(publicRecorder, publicRequest)
+	if publicRecorder.Code != http.StatusFound {
+		t.Fatalf("公网客户端状态 = %d，want 302", publicRecorder.Code)
+	}
+	if location := publicRecorder.Header().Get("Location"); location != cdn.URL+"/movie.mkv" {
+		t.Fatalf("Location = %q，want 直链 %q", location, cdn.URL+"/movie.mkv")
+	}
+
+	if snapshot := collector.Snapshot(10); snapshot.ProxyStreams != 1 || snapshot.Redirects != 1 {
+		t.Fatalf("中继 %d 次、302 %d 次，want 各 1（同一张卡片按客户端来源分流）", snapshot.ProxyStreams, snapshot.Redirects)
 	}
 }
 

@@ -72,11 +72,6 @@ upstreams:
 	if !upstream.IsEnabled() {
 		t.Fatal("upstream should default to enabled")
 	}
-	// 「无视上游的不可直放判定」同样缺省为真：老配置里没有这一项，升级后不能
-	// 悄悄改成「听上游的」，那会静默改掉现有卡片的行为。
-	if !upstream.ShouldIgnoreDirectPlayVerdict() {
-		t.Fatal("upstream should ignore the upstream direct-play verdict by default")
-	}
 }
 
 func TestLoadKeepsExplicitFalseBooleans(t *testing.T) {
@@ -93,9 +88,11 @@ func TestLoadKeepsExplicitFalseBooleans(t *testing.T) {
 	}
 }
 
-// 卡片上的「无视上游的不可直放判定」关掉之后必须能存住：它是给「只认上游转码
-// HLS 的播放器」留的退路，重启一次就自己开回来等于没关。
-func TestIgnoreDirectPlayVerdictRoundTrips(t *testing.T) {
+// ignore_direct_play_verdict 是已废弃的开关（那个开关的作用只剩「关掉之后让一部分
+// 客户端播不了」，于是连同界面一起删了）。字段声明必须留着：配置是严格解析
+// （decoder.KnownFields(true)），删掉它会让所有已经写过这一项的配置直接起不来。
+// 所以 Load 要能把它读进来，migrate 要把它清掉，保存后磁盘上不再出现这一项。
+func TestDeprecatedIgnoreDirectPlayVerdictStillLoadsThenDisappears(t *testing.T) {
 	path := writeConfig(t, `
 upstreams:
   - name: fnos
@@ -106,32 +103,26 @@ upstreams:
 `)
 	cfg, err := Load(path)
 	if err != nil {
-		t.Fatalf("Load returned error: %v", err)
+		t.Fatalf("旧配置含已废弃的 ignore_direct_play_verdict 时必须仍能加载: %v", err)
 	}
-	if cfg.Upstreams[0].ShouldIgnoreDirectPlayVerdict() {
-		t.Fatal("ignore_direct_play_verdict: false 必须被读进来")
+	if !cfg.Migrated() {
+		t.Fatal("读到已废弃字段后应标记为已迁移，否则它清不掉")
+	}
+	if cfg.Upstreams[0].IgnoreDirectPlayVerdict != nil {
+		t.Fatal("已废弃的取值必须被清空，不能留在内存里")
 	}
 	if err := cfg.Save(path); err != nil {
 		t.Fatalf("Save returned error: %v", err)
 	}
-	reloaded, err := Load(path)
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("重新 Load 返回错误: %v", err)
+		t.Fatalf("读回配置失败: %v", err)
 	}
-	if reloaded.Upstreams[0].ShouldIgnoreDirectPlayVerdict() {
-		t.Fatal("关闭状态没有写回磁盘：重启后会自己变回「无视上游判定」")
+	if strings.Contains(string(raw), "ignore_direct_play_verdict") {
+		t.Fatalf("已废弃字段不该再被写回磁盘:\n%s", raw)
 	}
-	// 反向同样要成立：开着的时候写盘再读回来仍然开着，而不是被当成「没写」。
-	reloaded.Upstreams[0].IgnoreDirectPlayVerdict = Bool(true)
-	if err := reloaded.Save(path); err != nil {
-		t.Fatalf("Save returned error: %v", err)
-	}
-	again, err := Load(path)
-	if err != nil {
-		t.Fatalf("再 Load 返回错误: %v", err)
-	}
-	if !again.Upstreams[0].ShouldIgnoreDirectPlayVerdict() {
-		t.Fatal("开启状态没有写回磁盘")
+	if _, err := Load(path); err != nil {
+		t.Fatalf("清过之后的配置仍应能加载: %v", err)
 	}
 }
 

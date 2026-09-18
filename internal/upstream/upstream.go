@@ -282,10 +282,11 @@ func New(cfg config.Upstream) (Provider, error) {
 		mapper: pathmap.New(rules, cfg.StrmRoots),
 		client: client,
 	}
-	// 「始终跳转」与「始终中继」要求流量全经 AetherLink，见 claimsSources；其中
-	// 「上游说不能直放」的那一半还受卡片开关控制（ignoresVerdict），默认开。
-	claim := claimsSources(cfg.RedirectMode)
-	ignoreVerdict := claim && cfg.ShouldIgnoreDirectPlayVerdict()
+	// 四种跳转模式都接管 STRM 源（见 embyProvider.RewriteResponse）：卡片选的
+	// 只是字节去向（302 / 中继 / 按客户端来源二选一），客户端不回 AetherLink 的
+	// /stream，那些档位就等于没设。上游那句「当前客户端不能直接播放原始文件」
+	// 也不再采纳——它曾经能靠卡片上的开关「听」，代价是那一档在客户端身上直接
+	// 落空（见 RewriteResponse 的注释）。
 	delivery := forcedDelivery(cfg.RedirectMode)
 	switch cfg.Type {
 	case config.UpstreamAudiobookshelf:
@@ -296,10 +297,8 @@ func New(cfg config.Upstream) (Provider, error) {
 		client.authQuery = "api_key"
 		client.embyDialect = true
 		return &embyProvider{
-			providerBase:   shared,
-			claimsSources:  claim,
-			ignoresVerdict: ignoreVerdict,
-			forceDelivery:  delivery,
+			providerBase:  shared,
+			forceDelivery: delivery,
 		}, nil
 	case config.UpstreamFnos:
 		// 飞牛影视没有 Emby 控制台里那种静态 API 密钥：它的接口只认客户端
@@ -313,10 +312,8 @@ func New(cfg config.Upstream) (Provider, error) {
 		client.authQuery = "api_key"
 		client.apiPrefix = fnosAPIPrefix(base.Path)
 		provider := &fnosProvider{embyProvider: embyProvider{
-			providerBase:   shared,
-			claimsSources:  claim,
-			ignoresVerdict: ignoreVerdict,
-			forceDelivery:  delivery,
+			providerBase:  shared,
+			forceDelivery: delivery,
 		}}
 		// 飞牛没有实现集合路由 /Items?Ids=：请求会落到单页应用上回一整页 HTML，
 		// 解析必然失败。单项路由 /Items/{id} 它有，所以优先用它。
@@ -438,11 +435,6 @@ type embyLoginResponse struct {
 // ErrNoAPIKey is returned when an upstream has no API key configured, which
 // means AetherLink cannot resolve media paths for it.
 var ErrNoAPIKey = fmt.Errorf("upstream api key is not configured")
-
-// ErrDirectPlayUnsupported 表示上游在刚才的 PlaybackInfo 中已经判定当前客户端
-// 不能直接播放原始文件。这时即使客户端请求了 /stream，也应退回上游自己处理，
-// 不能把无法解码的原文件强行 302 出去。
-var ErrDirectPlayUnsupported = errors.New("上游判定当前客户端不能直接播放原始文件")
 
 // getJSON issues an authenticated GET and decodes the JSON body into out.
 func (c *apiClient) getJSON(ctx context.Context, endpoint string, query url.Values, out any) error {

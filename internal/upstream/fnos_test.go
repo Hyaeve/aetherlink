@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -712,20 +711,12 @@ const blockedStrmSourceJSON = `{"Id":"src-1","Path":"https://cdn.example.test/mo
 
 func fnosProviderWithMode(t *testing.T, baseURL string, mode config.RedirectMode) *fnosProvider {
 	t.Helper()
-	return fnosProviderWithOptions(t, baseURL, mode, nil)
-}
-
-// fnosProviderWithOptions 让用例显式设定「无视上游的不可直放判定」开关。传 nil
-// 表示配置里压根没写这一项——那正是老配置与手写配置的形态，按默认（开启）处理。
-func fnosProviderWithOptions(t *testing.T, baseURL string, mode config.RedirectMode, ignoreVerdict *bool) *fnosProvider {
-	t.Helper()
 	provider, err := New(config.Upstream{
-		Name:                    "fnos",
-		Type:                    config.UpstreamFnos,
-		BaseURL:                 baseURL,
-		ListenPort:              5154,
-		RedirectMode:            mode,
-		IgnoreDirectPlayVerdict: ignoreVerdict,
+		Name:         "fnos",
+		Type:         config.UpstreamFnos,
+		BaseURL:      baseURL,
+		ListenPort:   5154,
+		RedirectMode: mode,
 	})
 	if err != nil {
 		t.Fatalf("New(fnos) returned error: %v", err)
@@ -735,82 +726,6 @@ func fnosProviderWithOptions(t *testing.T, baseURL string, mode config.RedirectM
 		t.Fatalf("New(fnos) returned %T, want *fnosProvider", provider)
 	}
 	return fnos
-}
-
-// 「无视上游的不可直放判定」开关的默认与关闭值都要在 provider 上落到实处：配置
-// 里没写 = 忽略（历史行为），显式 false = 采纳上游判定。
-func TestIgnoreDirectPlayVerdictSwitchReachesTheProvider(t *testing.T) {
-	enabled := true
-	disabled := false
-	cases := []struct {
-		name           string
-		ignoreVerdict  *bool
-		wantIgnores    bool
-		wantClaimTaken bool
-	}{
-		{"配置里没写", nil, true, true},
-		{"显式开启", &enabled, true, true},
-		{"显式关闭", &disabled, false, true},
-	}
-	for _, test := range cases {
-		t.Run(test.name, func(t *testing.T) {
-			provider := fnosProviderWithOptions(t, "http://127.0.0.1:1", config.RedirectNever, test.ignoreVerdict)
-			if provider.ignoresVerdict != test.wantIgnores {
-				t.Errorf("ignoresVerdict = %v，want %v", provider.ignoresVerdict, test.wantIgnores)
-			}
-			// 开关只管「上游说不能直放」那一半；「把源引回 AetherLink」始终由模式决定。
-			if provider.claimsSources != test.wantClaimTaken {
-				t.Errorf("claimsSources = %v，want %v", provider.claimsSources, test.wantClaimTaken)
-			}
-		})
-	}
-}
-
-// 开关关掉之后，「始终中继」也要听上游的话：媒体源留给上游转码，客户端不会再
-// 被引回 AetherLink 的 /stream，MediaTarget 也照旧回 ErrDirectPlayUnsupported
-// （那个客户端本就需要上游转码，强行中继只会让它放不动）。
-func TestFnosHonoursUpstreamVerdictWhenSwitchOff(t *testing.T) {
-	switchedOff := false
-	provider := fnosProviderWithOptions(t, "http://127.0.0.1:1", config.RedirectNever, &switchedOff)
-
-	changed, envelope := rewriteFnosPlaybackInfo(t, provider, blockedStrmSourceJSON)
-	if changed != 0 {
-		t.Fatalf("changed = %d，want 0（开关关着就听上游，保留上游转码）", changed)
-	}
-	sources := envelope["MediaSources"].([]any)
-	source := sources[0].(map[string]any)
-	if _, has := source["DirectStreamUrl"]; has {
-		t.Fatal("开关关着时不该给被判定不可直放的源补 DirectStreamUrl")
-	}
-	if source["SupportsDirectPlay"] != false {
-		t.Fatalf("SupportsDirectPlay = %v，want false（保持上游原样）", source["SupportsDirectPlay"])
-	}
-	if _, has := source["TranscodingReasons"]; has {
-		t.Fatal("不该动上游给的转码原因：那是客户端继续要转码 HLS 的依据")
-	}
-
-	if _, err := provider.MediaTarget(context.Background(), MediaRef{Kind: RefStream, ItemID: "42", MediaSourceID: "src-1"}); !errors.Is(err, ErrDirectPlayUnsupported) {
-		t.Fatalf("MediaTarget error = %v，want ErrDirectPlayUnsupported", err)
-	}
-}
-
-// 开关只管「上游说不能直放」那一半：上游说可直放的源依旧要引回 AetherLink，
-// 否则客户端会拿 DirectPlay 直连 Path 绕开我们，卡片上选的「始终中继」等于作废。
-func TestFnosStillReclaimsDirectPlaySourcesWhenSwitchOff(t *testing.T) {
-	switchedOff := false
-	provider := fnosProviderWithOptions(t, "http://127.0.0.1:1", config.RedirectNever, &switchedOff)
-
-	const directPlaySourceJSON = `{"Id":"src-2","Path":"https://cdn.example.test/movie.mkv",` +
-		`"Protocol":"Http","Container":"strm","SupportsDirectPlay":true}`
-
-	changed, envelope := rewriteFnosPlaybackInfo(t, provider, directPlaySourceJSON)
-	if changed != 1 {
-		t.Fatalf("changed = %d，want 1（上游判可直放的源仍要引回 AetherLink）", changed)
-	}
-	source := envelope["MediaSources"].([]any)[0].(map[string]any)
-	if source["SupportsDirectPlay"] != false || source["SupportsDirectStream"] != true {
-		t.Fatalf("SupportsDirectPlay/Stream = %v/%v，want false/true", source["SupportsDirectPlay"], source["SupportsDirectStream"])
-	}
 }
 
 func rewriteFnosPlaybackInfo(t *testing.T, provider *fnosProvider, sourceJSON string) (int, map[string]any) {
@@ -836,23 +751,28 @@ func rewriteFnosPlaybackInfo(t *testing.T, provider *fnosProvider, sourceJSON st
 	return changed, envelope
 }
 
-// 「始终跳转」与「始终中继」都必须无视上游的不可直放判定。飞牛对外网客户端常
-// 在 PlaybackInfo 里判 SupportsDirectPlay=false（码率限制等），一旦采纳，客户端
-// 就转投上游自己的转码 HLS：
-//   - 始终跳转下流量不经 AetherLink，卡片等于没设；
-//   - 始终中继下更彻底 —— AetherLink 解析 /stream 时读到这个判定，直接透传，
-//     中继链路压根不启动，日志里只剩一行「透传」。
+// 四种跳转模式都要接管 STRM 源，连上游的不可直放判定一起推翻。
+// 飞牛对外网客户端常在 PlaybackInfo 里判 SupportsDirectPlay=false（码率限制等），
+// 一旦采纳，客户端就转投上游自己的转码 HLS：卡片上选的档位全部作废，解析 /stream
+// 时读到这个判定还会直接透传，中继链路压根不启动，日志里只剩一行「透传」。
 //
-// 所以两档都要强制补 DirectStreamUrl 并记住可直放，客户端下一步才会来请求
-// AetherLink 的 /stream。
-func TestFnosForcesDirectPlayUnderAlwaysAndNever(t *testing.T) {
-	for _, mode := range []config.RedirectMode{config.RedirectAlways, config.RedirectNever} {
+// 「公网跳转」「内网跳转」原本不接管，代价是卡片上写着「内网客户端中继」的那一档
+// 落到内网客户端身上仍是一场上游透传（用户实例：飞牛影视 + 公网跳转 + 内网播放，
+// 日志只有一行「透传 … 上游判定当前客户端不支持原始文件」，改成「始终中继」就正常）。
+// 模式既然按客户端来源分派字节去向，就必须接管，内网客户端才会回到 /stream 被中继。
+func TestFnosTakesOverStrmSourcesUnderEveryRedirectMode(t *testing.T) {
+	for _, mode := range []config.RedirectMode{
+		config.RedirectAlways,
+		config.RedirectPublic,
+		config.RedirectPrivate,
+		config.RedirectNever,
+	} {
 		t.Run(string(mode), func(t *testing.T) {
 			provider := fnosProviderWithMode(t, "http://127.0.0.1:1", mode)
 
 			changed, envelope := rewriteFnosPlaybackInfo(t, provider, blockedStrmSourceJSON)
 			if changed != 1 {
-				t.Fatalf("changed = %d，want 1（强制接入 AetherLink）", changed)
+				t.Fatalf("changed = %d，want 1（接管，引回 AetherLink）", changed)
 			}
 			sources := envelope["MediaSources"].([]any)
 			source := sources[0].(map[string]any)
@@ -869,9 +789,8 @@ func TestFnosForcesDirectPlayUnderAlwaysAndNever(t *testing.T) {
 				t.Fatalf("DirectStreamUrl = %q，want 含 /Videos/42/stream", directURL)
 			}
 
-			// 这一步才是「中继能不能播」的分水岭：判定被推翻之后，/stream
-			// 请求必须解析得出直链，而不是回 ErrDirectPlayUnsupported——
-			// 后者正是「透传」的成因。
+			// 这一步才是「中继能不能播」的分水岭：判定被推翻之后，紧接着那条
+			// /stream 请求必须解析得出直链，中继链路才真的会启动。
 			target, err := provider.MediaTarget(context.Background(), MediaRef{Kind: RefStream, ItemID: "42", MediaSourceID: "src-1"})
 			if err != nil {
 				t.Fatalf("MediaTarget returned error: %v", err)
@@ -883,28 +802,21 @@ func TestFnosForcesDirectPlayUnderAlwaysAndNever(t *testing.T) {
 	}
 }
 
-// 四档模式里，「流不流量经我们」与「字节去向」是两张独立的表：前两档必须接管、
-// 后两档必须放手，否则会静默改掉现有卡片的行为。至于接管之后要不要连上游的
-// 不可直放判定也推翻，那是卡片开关的事（见 TestIgnoreDirectPlayVerdictSwitchReachesTheProvider）。
-func TestClaimsSourcesCoversExplicitDeliveryModes(t *testing.T) {
+// 接管之后字节的去向由模式定，日志里那句「字节由 AetherLink …」必须与模式对得上：
+// 条件模式按客户端来源分派，写成「302」会让人以为中继那条路坏了。
+func TestForcedDeliveryNamesEveryMode(t *testing.T) {
 	cases := []struct {
 		mode     config.RedirectMode
-		forces   bool
 		delivery string
 	}{
-		{config.RedirectAlways, true, "302"},
-		{config.RedirectNever, true, "中继"},
-		{config.RedirectPublic, false, ""},
-		{config.RedirectPrivate, false, ""},
+		{config.RedirectAlways, "302"},
+		{config.RedirectNever, "中继"},
+		{config.RedirectPublic, "按客户端来源 302 或中继"},
+		{config.RedirectPrivate, "按客户端来源 302 或中继"},
 	}
 	for _, test := range cases {
-		if got := claimsSources(test.mode); got != test.forces {
-			t.Errorf("claimsSources(%s) = %v，want %v", test.mode, got, test.forces)
-		}
-		if test.forces {
-			if got := forcedDelivery(test.mode); got != test.delivery {
-				t.Errorf("forcedDelivery(%s) = %q，want %q", test.mode, got, test.delivery)
-			}
+		if got := forcedDelivery(test.mode); got != test.delivery {
+			t.Errorf("forcedDelivery(%s) = %q，want %q", test.mode, got, test.delivery)
 		}
 	}
 }
@@ -940,36 +852,6 @@ func TestFnosReclaimsUpstreamDirectPlaySourcesUnderAlwaysRedirect(t *testing.T) 
 		t.Fatalf("DirectStreamUrl = %q，want 含 /Videos/42/stream", directURL)
 	}
 }
-
-// 「公网跳转」「内网跳转」只在 302 与中继之间按客户端来源二选一，因此维持
-// 尊重上游判定：媒体源保留给上游转码，/stream 请求也交回上游。网页端这类
-// 真的解不了原始文件的客户端靠的就是这条。
-func TestFnosKeepsUpstreamDirectPlayVerdictUnderSourceBasedRedirect(t *testing.T) {
-	for _, mode := range []config.RedirectMode{config.RedirectPublic, config.RedirectPrivate} {
-		t.Run(string(mode), func(t *testing.T) {
-			provider := fnosProviderWithMode(t, "http://127.0.0.1:1", mode)
-
-			changed, envelope := rewriteFnosPlaybackInfo(t, provider, blockedStrmSourceJSON)
-			if changed != 0 {
-				t.Fatalf("changed = %d，want 0（保留上游转码）", changed)
-			}
-			sources := envelope["MediaSources"].([]any)
-			source := sources[0].(map[string]any)
-			if _, has := source["DirectStreamUrl"]; has {
-				t.Fatal("不该给被判定不可直放的源补 DirectStreamUrl")
-			}
-
-			_, err := provider.MediaTarget(context.Background(), MediaRef{Kind: RefStream, ItemID: "42", MediaSourceID: "src-1"})
-			if !errors.Is(err, ErrDirectPlayUnsupported) {
-				t.Fatalf("MediaTarget error = %v，want ErrDirectPlayUnsupported", err)
-			}
-		})
-	}
-}
-
-// 飞牛实测：/emby/Items 与 /emby/Items/{id} 都回单页应用的 HTML，只有播放协商
-// 那条是真的。这时唯一的出路是把 PlaybackInfo 的媒体源当条目用 —— 否则解析永远
-// 断在 HTML 上，播放只能退化成透传。
 func TestFnosResolvesMediaViaPlaybackInfoWhenItemRoutesReturnHTML(t *testing.T) {
 	server, paths := fakeFnosPlaybackServer(t, `{"MediaSources":[`+fnosStrmSourceJSON+`]}`)
 	provider := newKeylessFnosProvider(t, server.URL)

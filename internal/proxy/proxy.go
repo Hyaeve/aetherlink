@@ -274,12 +274,6 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 	event.CacheHit = cacheSource != resolver.CacheSourceMiss
 	event.CacheTTLSeconds = cacheTTLSeconds(cacheTTL)
 	if err != nil {
-		if errors.Is(err, upstream.ErrDirectPlayUnsupported) {
-			event.Error = err.Error()
-			finish(stats.OutcomePassthrough, "上游判定当前客户端不支持原始文件，本次交回上游直流或转码")
-			s.proxy.ServeHTTP(writer, request)
-			return
-		}
 		if errors.Is(err, resolver.ErrNotStrm) {
 			// Regular media file: let the upstream serve it.
 			finish(stats.OutcomePassthrough, "不是 strm 指针，交给上游自己播")
@@ -439,24 +433,24 @@ func (s *Server) noRedirectReason(resolution *resolver.Resolution, client string
 	}
 	switch s.redirect.Mode {
 	case config.RedirectNever:
-		return "跳转模式为 never，任何客户端都不 302"
+		return fmt.Sprintf("跳转模式为%s，任何客户端都不 302", config.RedirectModeName(config.RedirectNever))
 	case config.RedirectPublic:
 		switch scope {
 		case resolver.ClientScopePrivate:
-			return fmt.Sprintf("跳转模式为 public，而客户端 %s 是内网地址（只有公网客户端才 302）", shown)
+			return fmt.Sprintf("跳转模式为%s，而客户端 %s 是内网地址（只有公网客户端才 302）", config.RedirectModeName(config.RedirectPublic), shown)
 		case resolver.ClientScopeUnknown:
-			return fmt.Sprintf("跳转模式为 public，而客户端 IP 无法识别（若 AetherLink 前面还有反代，请把它加入 trusted_proxy_cidrs）")
+			return fmt.Sprintf("跳转模式为%s，而客户端 IP 无法识别（若 AetherLink 前面还有反代，请把它加入 trusted_proxy_cidrs）", config.RedirectModeName(config.RedirectPublic))
 		default:
-			return fmt.Sprintf("跳转模式为 public，而客户端 %s 未知", shown)
+			return fmt.Sprintf("跳转模式为%s，而客户端 %s 未知", config.RedirectModeName(config.RedirectPublic), shown)
 		}
 	case config.RedirectPrivate:
 		switch scope {
 		case resolver.ClientScopePublic:
-			return fmt.Sprintf("跳转模式为 private，而客户端 %s 是公网地址（只有内网客户端才 302）", shown)
+			return fmt.Sprintf("跳转模式为%s，而客户端 %s 是公网地址（只有内网客户端才 302）", config.RedirectModeName(config.RedirectPrivate), shown)
 		case resolver.ClientScopeUnknown:
-			return fmt.Sprintf("跳转模式为 private，而客户端 IP 无法识别（若 AetherLink 前面还有反代，请把它加入 trusted_proxy_cidrs）")
+			return fmt.Sprintf("跳转模式为%s，而客户端 IP 无法识别（若 AetherLink 前面还有反代，请把它加入 trusted_proxy_cidrs）", config.RedirectModeName(config.RedirectPrivate))
 		default:
-			return fmt.Sprintf("跳转模式为 private，而客户端 %s 未知", shown)
+			return fmt.Sprintf("跳转模式为%s，而客户端 %s 未知", config.RedirectModeName(config.RedirectPrivate), shown)
 		}
 	default:
 		return "跳转模式未启用"
