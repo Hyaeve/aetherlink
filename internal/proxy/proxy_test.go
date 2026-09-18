@@ -378,9 +378,9 @@ func TestFormatBytesReadsLikeALogLine(t *testing.T) {
 	}
 }
 
-// 网盘 CDN 对视频一律回 application/octet-stream（115 实测如此），中继因此总会
-// 走到 mimeTypeForURL 取兜底值，这张表直接决定播放器看到的类型。曾把 .mp4/.webm
-// 也归进 audio/*，播放器读到「这是音轨」后立刻断开，日志里只剩一行「状态 206」。
+// 中继不改上游给的类型，只有上游压根没给时才轮到这张表（本地读盘那一路也用它），
+// 因此它仍直接决定播放器在那些情况下看到的类型。曾把 .mp4/.webm 也归进 audio/*，
+// 播放器读到「这是音轨」后立刻断开，日志里只剩一行「状态 206」。
 func TestMimeTypeForURLKeepsVideoAndAudioApart(t *testing.T) {
 	tests := []struct {
 		target string
@@ -622,8 +622,10 @@ func TestRelayWireResponseMatchesTheDirectLink(t *testing.T) {
 		t.Fatalf("read relayed body: %v", err)
 	}
 
+	relayed := map[string]string{}
 	for _, header := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "ETag", "Last-Modified", "Content-Disposition"} {
-		t.Logf("%-20s = %q", header, response.Header.Get(header))
+		relayed[header] = response.Header.Get(header)
+		t.Logf("中继 %-20s = %q", header, relayed[header])
 	}
 	t.Logf("status=%d transferEncoding=%v contentLength=%d bodyBytes=%d",
 		response.StatusCode, response.TransferEncoding, response.ContentLength, len(payload))
@@ -646,9 +648,30 @@ func TestRelayWireResponseMatchesTheDirectLink(t *testing.T) {
 	if len(payload) != total {
 		t.Fatalf("bodyBytes = %d, want %d", len(payload), total)
 	}
-	// 路径没有扩展名可猜，但字节开头是 MP4 的 ftyp：真实容器必须压过「猜不出来」。
-	if got := response.Header.Get("Content-Type"); got != "video/mp4" {
-		t.Fatalf("Content-Type = %q, want video/mp4（按字节判断真实容器，不能把视频交成 octet-stream/音频）", got)
+
+	// 同一条直链再直连一次，两边逐项对比。中继的全部意义就是「与直连一模一样」：
+	// 只要有一个头不同，播放器就可能因为中继而表现异常，而那种故障在日志里只剩一行
+	// 「读了少量字节就断开」。这条直链上游给的是中性类型 application/octet-stream
+	// （线上实测），中继**不许**替它改写成 video/mp4——302 时播放器拿到的就是中性值，
+	// 改写了就等于凭空制造一个差异。
+	directRequest, err := http.NewRequest(http.MethodGet, cdn.URL+"/50f351580c084c969c0c84f4e500ed39086", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directRequest.Header.Set("Range", "bytes=0-")
+	direct, err := cdn.Client().Do(directRequest)
+	if err != nil {
+		t.Fatalf("direct request: %v", err)
+	}
+	defer direct.Body.Close()
+	if _, err := io.Copy(io.Discard, direct.Body); err != nil {
+		t.Fatalf("drain direct body: %v", err)
+	}
+	for header, relayedValue := range relayed {
+		t.Logf("直连 %-20s = %q", header, direct.Header.Get(header))
+		if want := direct.Header.Get(header); relayedValue != want {
+			t.Fatalf("%s：中继 = %q，直连 = %q，两边必须一致", header, relayedValue, want)
+		}
 	}
 }
 
@@ -698,11 +721,11 @@ func TestSniffContentTypeReadsTheContainerFromBytes(t *testing.T) {
 	}
 }
 
-// 115 这类网盘 CDN 对视频回 Content-Type: application/octet-stream（实测），中继
-// 因此必定替它猜类型。客户端请求 /stream.mkv、真实字节是 MP4 时，Content-Type 是
-// 它唯一的格式线索——猜成 audio/mp4 会让播放器读完响应头就断开，日志里只剩一行
-// 「状态 206」。这里把「视频直链必须回视频类型」钉住。
-func TestRelayDoesNotLabelVideoDirectLinkAsAudio(t *testing.T) {
+// 中继不改上游给的 Content-Type。网盘 CDN 对视频回的是中性类型
+// application/octet-stream（实测），播放器拿到它会自己按内容嗅探；同一条直链走 302
+// 时播放器拿到的也是这一个值。中继若替它改写成具体类型，就等于制造了一个 302 没有的
+// 差异——线上就是这么来的：同一片走 302 能播，走中继只读了几 KiB 就断开。
+func TestRelayPassesUpstreamContentTypeThroughUnchanged(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/octet-stream")
 		writer.Header().Set("Content-Range", "bytes 0-3/6953811142")
@@ -726,8 +749,9 @@ func TestRelayDoesNotLabelVideoDirectLinkAsAudio(t *testing.T) {
 	if recorder.Code != http.StatusPartialContent {
 		t.Fatalf("status = %d, want 206", recorder.Code)
 	}
-	if got := recorder.Header().Get("Content-Type"); got != "video/mp4" {
-		t.Fatalf("Content-Type = %q, want video/mp4（视频直链不能标成音频）", got)
+	// 扩展名是 .mp4、字节也不是 MP4，但上游明确给了中性类型：照原样转发。
+	if got := recorder.Header().Get("Content-Type"); got != "application/octet-stream" {
+		t.Fatalf("Content-Type = %q，want application/octet-stream（中继必须原样转发上游的类型：302 拿到的就是它）", got)
 	}
 	if recorder.Body.String() != "fLaG" {
 		t.Fatalf("body = %q, want relayed bytes", recorder.Body.String())
@@ -737,15 +761,18 @@ func TestRelayDoesNotLabelVideoDirectLinkAsAudio(t *testing.T) {
 	}
 }
 
-// 直链的名字不可信，字节才可信：网盘上「文件名写 .mkv、内容其实是 MP4」很常见。
-// 中继若按扩展名回类型，就会把 MP4 标成 video/x-matroska，播放器拿 matroska 去解
-// MP4 字节，读完几百 KB 就断开；而同一条直链走 302 时播放器拿到的是中性类型、自己
-// 按内容嗅探，反倒正常——「302 能播、中继播不了」就是这么来的。字节必须压过扩展名。
-func TestRelayPrefersBytesOverALyingExtension(t *testing.T) {
-	body := append([]byte("\x00\x00\x00\x20ftypisom\x00\x00\x02\x00mp41"), make([]byte, 48)...)
+// 只有上游压根没给 Content-Type 时才轮到我们补，而补的时候字节压过扩展名：直链的
+// 名字不可信（网盘上「名字写 .mkv、内容其实是 MP4」很常见），按扩展名回类型会让类型
+// 与响应体自相矛盾。这里故意让两边打架——名字是 .mp4、字节是 Matroska——只有字节判断
+// 才能推出 video/x-matroska（Go 自己的嗅探认不出 Matroska，只会给 octet-stream，
+// 所以这条断言同时钉住了「确实是我们补的」）。
+func TestRelaySynthesizesTypeFromBytesOnlyWhenUpstreamGivesNone(t *testing.T) {
+	body := append([]byte("\x1a\x45\xdf\xa3\x01\x00\x00\x00\x00\x00\x00\x1fB\x86\x81\x01matroska"), make([]byte, 48)...)
 
 	cdn := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Header().Set("Content-Type", "application/octet-stream")
+		// 上游一个类型都不给：Go 的服务端只在「Header 里没有这个键」时才放弃自己
+		// 嗅探，所以这里必须显式置空而不是什么都不写。
+		writer.Header().Set("Content-Type", "")
 		writer.Header().Set("Accept-Ranges", "bytes")
 		writer.Header().Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", len(body)-1, len(body)))
 		writer.WriteHeader(http.StatusPartialContent)
@@ -753,8 +780,7 @@ func TestRelayPrefersBytesOverALyingExtension(t *testing.T) {
 	}))
 	defer cdn.Close()
 
-	// 直链的名字写着 .mkv，字节是 MP4。
-	root, strmPath, regularPath := writeStrm(t, cdn.URL+"/d/movie.mkv")
+	root, strmPath, regularPath := writeStrm(t, cdn.URL+"/d/movie.mp4")
 	fake := newFakeABS(t, strmPath, regularPath)
 	redirectCfg := defaultRedirect()
 	redirectCfg.Mode = config.RedirectNever
@@ -768,8 +794,8 @@ func TestRelayPrefersBytesOverALyingExtension(t *testing.T) {
 	if recorder.Code != http.StatusPartialContent {
 		t.Fatalf("status = %d, want 206", recorder.Code)
 	}
-	if got := recorder.Header().Get("Content-Type"); got != "video/mp4" {
-		t.Fatalf("Content-Type = %q，want video/mp4（扩展名写 .mkv 而字节是 MP4，必须按字节给类型）", got)
+	if got := recorder.Header().Get("Content-Type"); got != "video/x-matroska" {
+		t.Fatalf("Content-Type = %q，want video/x-matroska（上游没给类型，按字节判断：扩展名写着 .mp4 也不能信）", got)
 	}
 	// 判容器读走的那几个字节必须原样写回，一个都不能少。
 	if got := recorder.Body.Bytes(); string(got) != string(body) {
@@ -777,14 +803,14 @@ func TestRelayPrefersBytesOverALyingExtension(t *testing.T) {
 	}
 }
 
-// 纯音频扩展名是例外：MP4 家族里有声书与视频共用容器头，品牌字段常是 isom/mp42，
-// 字节分不出「这是音频」，扩展名才是唯一线索。这类不能因为字节像视频就标成视频，
-// 否则有声书会被当成影片交给播放器。
+// 纯音频扩展名是补类型时的例外：MP4 家族里有声书与视频共用容器头，品牌字段常是
+// isom/mp42，字节分不出「这是音频」，扩展名才是唯一线索。这类不能因为字节像视频就
+// 标成视频，否则有声书会被当成影片交给播放器。
 func TestRelayKeepsAudioExtensionForAudiobooks(t *testing.T) {
 	body := append([]byte("\x00\x00\x00\x20ftypisom\x00\x00\x02\x00isom"), make([]byte, 48)...)
 
 	cdn := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Header().Set("Content-Type", "application/octet-stream")
+		writer.Header().Set("Content-Type", "")
 		writer.Header().Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", len(body)-1, len(body)))
 		writer.WriteHeader(http.StatusPartialContent)
 		_, _ = writer.Write(body)
@@ -897,10 +923,10 @@ func findLogEntry(keyword string) string {
 	return ""
 }
 
-// 客户端请求的容器名来自上游的 Container，而直链的真实容器来自字节。两者不符时
-// 必须有一条明确的日志：播放器拿错的容器去解复用就会读几百 KB 后断开，而这条直链
-// 走 302 时它拿到的是中性类型、自己按内容嗅探反倒正常——「302 能播、中继播不了」
-// 就是这么来的，没有这一行就只能靠猜。
+// 客户端请求的容器名来自上游的 Container，而响应里的实际类型来自上游自己或字节判断。
+// 两者不符时必须有一条明确的日志：播放器拿错的容器去解复用就会读几百 KB 后断开，而
+// 日志里只剩一行「客户端中断」，没有这一行就只能靠猜。中性类型（octet-stream）不算
+// 「声明了别的容器」，不能报——网盘 CDN 给的全是它。
 func TestContainerMismatchNoteNamesBothSides(t *testing.T) {
 	note := containerMismatchNote("/emby/videos/42/stream.mkv", "video/mp4")
 	for _, want := range []string{".mkv", "video/x-matroska", "video/mp4"} {
@@ -908,15 +934,16 @@ func TestContainerMismatchNoteNamesBothSides(t *testing.T) {
 			t.Fatalf("提示里必须写清两边（缺 %q）：%q", want, note)
 		}
 	}
-	for _, testCase := range []struct{ requestPath, chosenType string }{
-		{"/emby/videos/42/stream.mkv", "video/x-matroska"}, // 两边一致
-		{"/emby/videos/42/stream.mp4", "video/mp4"},        // 两边一致
-		{"/emby/videos/42/stream", "video/mp4"},            // /stream 没有容器语义
-		{"/api/items/book-1/file/ino-strm", "video/mp4"},   // ABS 路径没有扩展名
-		{"/emby/videos/42/stream.mkv", ""},                 // 没猜出类型
+	for _, testCase := range []struct{ requestPath, actualType string }{
+		{"/emby/videos/42/stream.mkv", "video/x-matroska"},         // 两边一致
+		{"/emby/videos/42/stream.mp4", "video/mp4"},                // 两边一致
+		{"/emby/videos/42/stream", "video/mp4"},                    // /stream 没有容器语义
+		{"/api/items/book-1/file/ino-strm", "video/mp4"},           // ABS 路径没有扩展名
+		{"/emby/videos/42/stream.mkv", ""},                         // 上游没给、也没猜出类型
+		{"/emby/videos/42/stream.mkv", "application/octet-stream"}, // 中性类型没声明容器
 	} {
-		if note := containerMismatchNote(testCase.requestPath, testCase.chosenType); note != "" {
-			t.Fatalf("%s + %q 不该提示：%q", testCase.requestPath, testCase.chosenType, note)
+		if note := containerMismatchNote(testCase.requestPath, testCase.actualType); note != "" {
+			t.Fatalf("%s + %q 不该提示：%q", testCase.requestPath, testCase.actualType, note)
 		}
 	}
 }

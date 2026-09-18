@@ -1062,18 +1062,25 @@ func (s *Server) relayRemote(writer http.ResponseWriter, request *http.Request, 
 
 	copyResponseHeaders(writer.Header(), response.Header)
 
-	// 上游给不出有效类型时（网盘 / CDN 直链一律回 application/octet-stream）才替它
-	// 判断。顺序是「字节 → 扩展名」，不是反过来：直链的名字和 Content-Type 都不可信
-	// ——线上既有「文件名写着 .iso、字节其实是 MP4」的直链，也有「STRM 报 mkv、真实
-	// 文件是 MP4」的库。只要扩展名压过字节，回给播放器的类型就与响应体自相矛盾，
-	// 而这条直链走 302 时播放器拿到的是中性类型、自己按内容嗅探，反倒正常——同一个
-	// 源「302 能播、中继播不了」多半就是这么来的。
+	// 类型以上游原样为准——**中继不改上游给的 `Content-Type`**，只有上游压根没给
+	// 类型时（罕见）才由我们补一个。
 	//
-	// 唯一的例外是纯音频扩展名（m4a/m4b/mp3/flac…）：MP4 家族里纯音频与视频共用
-	// 容器头，品牌字段常常是 isom/mp42，字节分不出有声书，扩展名才是唯一线索。
-	// 所以只在这一类扩展名上跳过字节判断。
+	// 这条规则是被线上逼出来的。网盘 CDN 与移动云 EOS 对视频一律回中性类型
+	// `application/octet-stream`，播放器拿到它就自己按内容嗅探；我们若替它改写成
+	// `video/x-matroska` / `video/mp4` 这类具体类型，等于替播放器做了一次它没要求
+	// 的判断。实测就有一例：同一片走 302（播放器拿到 CDN 的中性类型）能播，走中继
+	// （拿到我们改写的 `video/x-matroska`）却只读了 7.1KiB、把 MKV 的 `Tracks`
+	// （HEVC 4K + 两条 ASS 字幕）读完就断开——两边可观测的差异只剩 host 与这一个头，
+	// 而 host 改不了。结论：**302 与中继交给播放器的响应要逐项等价，包括类型**。
+	//
+	// 补类型时的顺序是「字节 → 扩展名」：直链的名字与上游的类型都不可信——线上既有
+	// 「文件名写着 .iso、字节其实是 MP4」的直链，也有「STRM 报 mkv、真实文件是 MP4」
+	// 的库。唯一的例外是纯音频扩展名（m4a/m4b/mp3/flac…）：MP4 家族里纯音频与视频
+	// 共用容器头，品牌字段常是 isom/mp42，字节分不出有声书，扩展名才是唯一线索，
+	// 所以这一类跳过字节判断。
+	synthesizedType := writer.Header().Get("Content-Type") == ""
 	var prefix []byte
-	if upstreamType := writer.Header().Get("Content-Type"); upstreamType == "" || strings.EqualFold(upstreamType, "application/octet-stream") {
+	if synthesizedType {
 		guessed := mimeTypeForURL(target)
 		if !strings.HasPrefix(guessed, "audio/") && rangeStartsAtZero(request.Header.Get("Range")) {
 			prefix = readSniffPrefix(response.Body)
@@ -1083,13 +1090,17 @@ func (s *Server) relayRemote(writer http.ResponseWriter, request *http.Request, 
 		}
 		if guessed != "" {
 			writer.Header().Set("Content-Type", guessed)
-			// 类型是我们替上游定的，此时才谈得上「与客户端请求的容器名对不上」：
-			// 播放器可能据此选错解复用器，而这条直链走 302 时它拿到的是中性类型、
-			// 自己按内容嗅探反倒正常——库里 STRM 名与真实文件不符时就是这样。
-			if note := containerMismatchNote(request.URL.Path, guessed); note != "" {
-				logx.Warnf("[%s] 中继 %s：%s；播放器可能据此选错解复用器——这条直链走 302 时它拿到的是中性类型、自己按内容嗅探，因此会表现为「302 能播、中继播不了」", s.provider.Name(), request.URL.Path, note)
-			}
 		}
+	}
+	// 客户端按上游给的容器名请求（如 `/Videos/xxx/stream.mkv`），而实际类型与它不符时
+	// 说一句：播放器可能据此选错解复用器，而这类「库里的容器名与真实文件不符」正是
+	// 「读了少量字节就断开」的一个已知成因。
+	if note := containerMismatchNote(request.URL.Path, writer.Header().Get("Content-Type")); note != "" {
+		source := "上游给的就是这个类型，中继没有改写它"
+		if synthesizedType {
+			source = "上游没给 Content-Type，这个类型是 AetherLink 按响应体字节补的"
+		}
+		logx.Warnf("[%s] 中继 %s：%s；播放器可能据此选错解复用器（%s，这条直链走 302 时拿到的也是同一个值）", s.provider.Name(), request.URL.Path, note, source)
 	}
 	// 回给客户端的头必须进日志：中继排障时播放器只看得到这半边，差一个字段的表现
 	// 都是「读了少量字节就断开」，不写下来就只能靠猜。
@@ -1298,12 +1309,14 @@ func isHopHeader(name string) bool {
 // Playable extensions are listed explicitly because Go's mime package returns
 // nothing useful for m4b and several audiobook containers.
 //
-// 音频与视频必须分开写。网盘 CDN（115 等）对视频一律回
-// `application/octet-stream`，中继因此总会走到这里取兜底值：把 .mp4 猜成
-// `audio/mp4` 等于告诉播放器「这是音轨」，而真实内容是 2160p 视频，播放器
-// 会在读完响应头后立刻断开——日志里只剩一行「状态 206」，看不出原因。
+// 音频与视频必须分开写：上游不给 `Content-Type` 而只能由我们补时，把 `.mp4` 猜成
+// `audio/mp4` 等于告诉播放器「这是音轨」，而真实内容是 2160p 视频，播放器会在读完
+// 响应头后立刻断开——日志里只剩一行「状态 206」，看不出原因。
 // 容器扩展名相同（mp4/m4v）但语义不同时，按视频处理：audio 侧只保留
 // 真正的纯音频容器（m4a/m4b/m4p）。
+//
+// 注意这只在「上游没给 Content-Type」时才用得上：网盘 CDN 回的中性类型
+// `application/octet-stream` 也是「上游给的值」，中继照原样转发，不在这里改写。
 func mimeTypeForURL(target string) string {
 	candidate := target
 	if parsed, err := url.Parse(target); err == nil && parsed.Path != "" {
@@ -1346,24 +1359,29 @@ func mimeTypeForURL(target string) string {
 	}
 }
 
-// containerMismatchNote 报告客户端请求路径暗示的容器与我们回的真实类型是否矛盾。
+// containerMismatchNote 报告客户端请求路径暗示的容器与响应里实际的类型是否矛盾。
 //
-// 例：客户端请求 `/Videos/xxx/stream.mkv`（这个名字来自上游的 `Container`），而直链
-// 的字节是 MP4——网盘上「STRM 名写 .mkv、真实文件是 MP4」很常见。播放器拿 mkv 去解
-// MP4 就会读几百 KB 后断开，而同一条直链走 302 时它拿到的是中性类型、自己按内容嗅探
-// 反倒正常，于是表现成「302 能播、中继播不了」。这一行是那条链路上唯一的书面证据。
+// 例：客户端请求 `/Videos/xxx/stream.mkv`（这个名字来自上游的 `Container`），而实际
+// 类型是 `video/mp4`——网盘上「STRM 名写 .mkv、真实文件是 MP4」很常见。播放器拿 mkv
+// 去解 MP4 就会读几百 KB 后断开，而这类失败在日志里只剩一行「客户端中断」，所以这里
+// 主动写一句，写明是哪两样东西对不上。
 //
-// 只在两边都是明确的音视频容器时才提示；`/stream`（不带扩展名）与 `emby` 这类路径
-// 本就没有容器语义，硬报只会制造噪声。
-func containerMismatchNote(requestPath, chosenType string) string {
+// 只在两边都是明确的音视频容器时才提示：上游给 `application/octet-stream` 是中性值、
+// 不是「声明了别的容器」，`/stream`（不带扩展名）与 `emby` 这类路径本就没有容器语义，
+// 硬报只会制造噪声。
+func containerMismatchNote(requestPath, actualType string) string {
 	implied := mimeTypeForURL(requestPath)
-	if implied == "" || chosenType == "" || implied == chosenType {
+	if implied == "" || actualType == "" || implied == actualType {
 		return ""
 	}
 	if !strings.HasPrefix(implied, "video/") && !strings.HasPrefix(implied, "audio/") {
 		return ""
 	}
-	return fmt.Sprintf("请求路径 %q 暗示 %s，而直链的字节是 %s", path.Ext(requestPath), implied, chosenType)
+	// 中性类型没有声明容器，谈不上「与请求路径矛盾」。
+	if !strings.HasPrefix(actualType, "video/") && !strings.HasPrefix(actualType, "audio/") {
+		return ""
+	}
+	return fmt.Sprintf("请求路径 %q 暗示 %s，实际类型是 %s", path.Ext(requestPath), implied, actualType)
 }
 
 // sniffBytes 是判断真实容器需要读的头部字节数：ftyp、EBML、RIFF、OggS 这些魔数都在
