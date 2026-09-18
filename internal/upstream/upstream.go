@@ -282,8 +282,10 @@ func New(cfg config.Upstream) (Provider, error) {
 		mapper: pathmap.New(rules, cfg.StrmRoots),
 		client: client,
 	}
-	// 「始终跳转」与「始终中继」都要忽略上游的不可直放判定，见 forcesDirectPlay。
-	forcePlay := forcesDirectPlay(cfg.RedirectMode)
+	// 「始终跳转」与「始终中继」要求流量全经 AetherLink，见 claimsSources；其中
+	// 「上游说不能直放」的那一半还受卡片开关控制（ignoresVerdict），默认开。
+	claim := claimsSources(cfg.RedirectMode)
+	ignoreVerdict := claim && cfg.ShouldIgnoreDirectPlayVerdict()
 	delivery := forcedDelivery(cfg.RedirectMode)
 	switch cfg.Type {
 	case config.UpstreamAudiobookshelf:
@@ -294,9 +296,10 @@ func New(cfg config.Upstream) (Provider, error) {
 		client.authQuery = "api_key"
 		client.embyDialect = true
 		return &embyProvider{
-			providerBase:    shared,
-			forceDirectPlay: forcePlay,
-			forceDelivery:   delivery,
+			providerBase:   shared,
+			claimsSources:  claim,
+			ignoresVerdict: ignoreVerdict,
+			forceDelivery:  delivery,
 		}, nil
 	case config.UpstreamFnos:
 		// 飞牛影视没有 Emby 控制台里那种静态 API 密钥：它的接口只认客户端
@@ -310,9 +313,10 @@ func New(cfg config.Upstream) (Provider, error) {
 		client.authQuery = "api_key"
 		client.apiPrefix = fnosAPIPrefix(base.Path)
 		provider := &fnosProvider{embyProvider: embyProvider{
-			providerBase:    shared,
-			forceDirectPlay: forcePlay,
-			forceDelivery:   delivery,
+			providerBase:   shared,
+			claimsSources:  claim,
+			ignoresVerdict: ignoreVerdict,
+			forceDelivery:  delivery,
 		}}
 		// 飞牛没有实现集合路由 /Items?Ids=：请求会落到单页应用上回一整页 HTML，
 		// 解析必然失败。单项路由 /Items/{id} 它有，所以优先用它。

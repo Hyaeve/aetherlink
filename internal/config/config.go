@@ -81,6 +81,14 @@ type Upstream struct {
 	ListenPort   int          `yaml:"listen_port" json:"listenPort"`
 	Insecure     bool         `yaml:"insecure_skip_verify" json:"insecureSkipVerify"`
 	RedirectMode RedirectMode `yaml:"redirect_mode,omitempty" json:"redirectMode"`
+	// IgnoreDirectPlayVerdict 决定「始终跳转」「始终中继」两档是否也无视上游
+	// 在 PlaybackInfo 里给出的「当前客户端不能直接播放原始文件」判定。
+	//
+	// 指针是为了区分「配置里压根没写过」与「用户显式关掉」：省略时按 true
+	// 处理，与历史行为一致，手写配置与旧配置不需要改动。关掉之后，被上游判
+	// 定不可直放的客户端会拿到上游的转码 HLS——那是唯一能放动原文件的退路，
+	// 而像 AfuseKt 这种客户端只认它。
+	IgnoreDirectPlayVerdict *bool `yaml:"ignore_direct_play_verdict,omitempty" json:"ignoreDirectPlayVerdict"`
 
 	// Prefix 是已废弃的路径前缀，反代改成按端口区分后不再使用。
 	// 保留这个字段只为让旧配置仍能被严格解析读进来，migrate 会清掉它，
@@ -98,6 +106,13 @@ type Upstream struct {
 // means enabled.
 func (u Upstream) IsEnabled() bool { return u.Enabled == nil || *u.Enabled }
 
+// ShouldIgnoreDirectPlayVerdict reports whether the upstream's "this client
+// cannot play the original file" verdict is to be overridden. Omitting the
+// field means yes, which keeps every existing card behaving as it did.
+func (u Upstream) ShouldIgnoreDirectPlayVerdict() bool {
+	return u.IgnoreDirectPlayVerdict == nil || *u.IgnoreDirectPlayVerdict
+}
+
 // ListenAddr is the address the upstream's own reverse proxy listens on.
 func (u Upstream) ListenAddr() string { return fmt.Sprintf(":%d", u.ListenPort) }
 
@@ -107,6 +122,10 @@ func (u Upstream) Clone() Upstream {
 	if u.Enabled != nil {
 		enabled := *u.Enabled
 		copied.Enabled = &enabled
+	}
+	if u.IgnoreDirectPlayVerdict != nil {
+		ignore := *u.IgnoreDirectPlayVerdict
+		copied.IgnoreDirectPlayVerdict = &ignore
 	}
 	copied.StrmRoots = append([]string(nil), u.StrmRoots...)
 	copied.PathMappings = append([]PathMapping(nil), u.PathMappings...)

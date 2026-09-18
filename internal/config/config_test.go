@@ -72,6 +72,11 @@ upstreams:
 	if !upstream.IsEnabled() {
 		t.Fatal("upstream should default to enabled")
 	}
+	// 「无视上游的不可直放判定」同样缺省为真：老配置里没有这一项，升级后不能
+	// 悄悄改成「听上游的」，那会静默改掉现有卡片的行为。
+	if !upstream.ShouldIgnoreDirectPlayVerdict() {
+		t.Fatal("upstream should ignore the upstream direct-play verdict by default")
+	}
 }
 
 func TestLoadKeepsExplicitFalseBooleans(t *testing.T) {
@@ -85,6 +90,48 @@ func TestLoadKeepsExplicitFalseBooleans(t *testing.T) {
 	}
 	if cfg.Redirect.PublicTargetsAllowed() {
 		t.Fatal("allow_public_targets: false must survive the merge")
+	}
+}
+
+// 卡片上的「无视上游的不可直放判定」关掉之后必须能存住：它是给「只认上游转码
+// HLS 的播放器」留的退路，重启一次就自己开回来等于没关。
+func TestIgnoreDirectPlayVerdictRoundTrips(t *testing.T) {
+	path := writeConfig(t, `
+upstreams:
+  - name: fnos
+    type: fnos
+    base_url: "http://127.0.0.1:8005"
+    listen_port: 15154
+    ignore_direct_play_verdict: false
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Upstreams[0].ShouldIgnoreDirectPlayVerdict() {
+		t.Fatal("ignore_direct_play_verdict: false 必须被读进来")
+	}
+	if err := cfg.Save(path); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("重新 Load 返回错误: %v", err)
+	}
+	if reloaded.Upstreams[0].ShouldIgnoreDirectPlayVerdict() {
+		t.Fatal("关闭状态没有写回磁盘：重启后会自己变回「无视上游判定」")
+	}
+	// 反向同样要成立：开着的时候写盘再读回来仍然开着，而不是被当成「没写」。
+	reloaded.Upstreams[0].IgnoreDirectPlayVerdict = Bool(true)
+	if err := reloaded.Save(path); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	again, err := Load(path)
+	if err != nil {
+		t.Fatalf("再 Load 返回错误: %v", err)
+	}
+	if !again.Upstreams[0].ShouldIgnoreDirectPlayVerdict() {
+		t.Fatal("开启状态没有写回磁盘")
 	}
 }
 

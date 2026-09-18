@@ -371,6 +371,63 @@ func TestUpstreamCRUDPersistsAndHotReloads(t *testing.T) {
 	}
 }
 
+// 卡片上「播放跳转」旁边那个开关是局部更新最容易丢掉的东西：界面上直接点标签
+// 快捷切换模式时只发一个 redirectMode，后端必须保留用户已经关掉的开关——否则
+// 用户会发现「关了开关，随手改一下跳转模式它自己又开了」。
+func TestPartialUpstreamUpdateKeepsIgnoreDirectPlayVerdict(t *testing.T) {
+	env := newEnv(t)
+	token := env.login(t, testUsername, testPassword)
+	root := filepath.ToSlash(filepath.Dir(env.strmPath))
+
+	recorder := env.do(http.MethodPost, BasePath+"/upstreams", upstreamPayloadJSON("abs", root, 13378), token)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	// 新建的卡片默认「无视上游的不可直放判定」，与历史行为一致；列表接口回的是
+	// 生效值，界面据此初始化复选框。
+	if !env.rt.Config().UpstreamByName("abs").ShouldIgnoreDirectPlayVerdict() {
+		t.Fatal("新建上游应默认忽略上游判定")
+	}
+	var created struct {
+		Upstreams []struct {
+			IgnoreDirectPlayVerdict bool `json:"ignoreDirectPlayVerdict"`
+		} `json:"upstreams"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &created); err != nil {
+		t.Fatalf("解析列表响应失败: %v", err)
+	}
+	if len(created.Upstreams) != 1 || !created.Upstreams[0].IgnoreDirectPlayVerdict {
+		t.Fatalf("列表接口没回报生效值：%+v", created.Upstreams)
+	}
+
+	// 用户把开关关掉。
+	if recorder := env.do(http.MethodPut, BasePath+"/upstreams/abs", `{"ignoreDirectPlayVerdict":false}`, token); recorder.Code != http.StatusOK {
+		t.Fatalf("关闭开关 status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	if env.rt.Config().UpstreamByName("abs").ShouldIgnoreDirectPlayVerdict() {
+		t.Fatal("开关没关掉")
+	}
+
+	// 快捷切换只发 redirectMode，不能顺手把开关冲回默认值。
+	if recorder := env.do(http.MethodPut, BasePath+"/upstreams/abs", `{"redirectMode":"never"}`, token); recorder.Code != http.StatusOK {
+		t.Fatalf("切换跳转模式 status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	updated := env.rt.Config().UpstreamByName("abs")
+	if updated.RedirectMode != config.RedirectNever {
+		t.Fatalf("redirect mode = %q, want never", updated.RedirectMode)
+	}
+	if updated.ShouldIgnoreDirectPlayVerdict() {
+		t.Fatal("局部更新把开关抹回了默认值")
+	}
+	reloaded, err := config.Load(env.confPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.UpstreamByName("abs").ShouldIgnoreDirectPlayVerdict() {
+		t.Fatal("关闭状态没有落盘：重启后会自己变回「无视上游判定」")
+	}
+}
+
 func TestCreateUpstreamRejectsDuplicateAndInvalid(t *testing.T) {
 	env := newEnv(t)
 	token := env.login(t, testUsername, testPassword)

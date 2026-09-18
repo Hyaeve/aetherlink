@@ -44,17 +44,21 @@ type embyProvider struct {
 	// /Items?Ids=。飞牛影视只实现了前者，后者在它上面回的是单页应用的 HTML。
 	preferItemByID bool
 
-	// forceDirectPlay 是「始终跳转」与「始终中继」的配套开关：上游（尤其飞牛
-	// 对外网客户端）常以码率限制等理由在 PlaybackInfo 里判
-	// SupportsDirectPlay=false，客户端于是转投上游自己的转码 HLS，流量压根
-	// 不经过 AetherLink——用户看到的「设了始终中继却播不了、日志里只有一行
-	// 透传」就是它。开了这个开关就忽略上游判定，把 STRM 媒体源一律压成
-	// DirectStream 引回 AetherLink 的 /stream 路由，再按跳转模式决定 302 还是
-	// 中继。上游判可直放时同样要压，否则客户端会拿 DirectPlay 直连 Path 绕开
-	// AetherLink。
+	// claimsSources 表示卡片模式要求「流量全经 AetherLink」（「始终跳转」与
+	// 「始终中继」）：上游判可直放的 STRM 源也要压成 DirectStream 引回我们的
+	// /stream 路由，否则客户端会拿 DirectPlay 直连 Path 绕开 AetherLink。
+	// 触发条件见 claimsSources。
+	claimsSources bool
+
+	// ignoresVerdict 表示上游「当前客户端不能直接播放原始文件」的判定也要无视，
+	// 强制把源引回 AetherLink。它由两件事共同决定：模式要求流量经我们
+	// （claimsSources），且卡片上的「无视上游的不可直放判定」开关是开着的
+	// （config.Upstream.ShouldIgnoreDirectPlayVerdict，默认开）。
 	//
-	// 触发条件见 forcesDirectPlay：「公网跳转」「内网跳转」维持尊重上游判定。
-	forceDirectPlay bool
+	// 为什么要留这个开关：有些客户端只认上游的转码 HLS（实测 AfuseKt 就是这样，
+	// 它拿到原始文件的直链后读几十 KB 就断开），对它们而言上游那句判定是唯一能
+	// 放动的退路；关掉开关即可让这类客户端回到上游转码，而不是被强行塞原文件。
+	ignoresVerdict bool
 
 	// forceDelivery 是强制接入后字节的去向（「302」或「中继」），只进日志。
 	// 中文日志里那句「强制让 N 个 STRM 媒体源接入 302」是中继模式下排障最先看
@@ -62,7 +66,7 @@ type embyProvider struct {
 	forceDelivery string
 }
 
-// forcesDirectPlay 报告该跳转模式是否要忽略上游的不可直放判定。
+// claimsSources 报告该跳转模式是否要求「流量全经 AetherLink」。
 //
 // 「始终跳转」与「始终中继」是用户显式指定流量去向的两端：前者要求 302 出去，
 // 后者要求 AetherLink 亲自把字节投给客户端。两者都要求客户端先回到 AetherLink
@@ -72,7 +76,7 @@ type embyProvider struct {
 // 「公网跳转」「内网跳转」不同：它们只是在 302 与中继之间按客户端来源二选一，
 // 上游的不可直放判定（码率限制、编码不支持等）该被采纳——网页端这类真的解不了
 // 原始文件的客户端，无视判定会让它从「上游转码能播」变成「拿到放不动的原文件」。
-func forcesDirectPlay(mode config.RedirectMode) bool {
+func claimsSources(mode config.RedirectMode) bool {
 	return mode == config.RedirectAlways || mode == config.RedirectNever
 }
 
@@ -121,9 +125,11 @@ func (p *embyProvider) WantsResponseRewrite(request *http.Request) bool {
 // 路由。若客户端不支持原始编码、容器或码率，必须保留 Emby 的转码能力；强行
 // 把原文件交出去只会让客户端放不动，结果就是「有跳转却无法播放」。
 //
-// 例外是卡片的「始终跳转」与「始终中继」（forceDirectPlay）：用户明确要求
-// 流量全经 AetherLink 再 302 或中继，此时不再按上游判定分流，STRM 源一律压成
-// DirectStream 引回 AetherLink 的 /stream 路由。
+// 例外是卡片的「始终跳转」与「始终中继」（claimsSources）：用户明确要求流量全经
+// AetherLink 再 302 或中继，此时不再按上游判定分流，STRM 源一律压成 DirectStream
+// 引回 AetherLink 的 /stream 路由。其中「上游说不能直放」的那一半还要卡片上的
+// 「无视上游的不可直放判定」开关也开着（默认开，见 ignoresVerdict）——关掉它，
+// 只认上游转码 HLS 的客户端才有活路。
 func (p *embyProvider) RewriteResponse(originalPath string, response *http.Response) (int, error) {
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices || response.Body == nil {
 		return 0, nil
@@ -178,18 +184,14 @@ func (p *embyProvider) RewriteResponse(originalPath string, response *http.Respo
 			continue
 		}
 		directPlayAllowed := embyAllowsDirectPlay(source)
-		if p.forceDirectPlay {
-			// 卡片是「始终跳转」或「始终中继」：上游的判定不再采纳，一律把
-			// 客户端引回我们改写的 /stream 路由，由 AetherLink 解析后按模式
-			// 302 或中继。
-			//
-			// 这里必须无条件处理，不能只在「上游判不可直放」时才动手：上游判
-			// 可直放时同样会把客户端带走——DirectPlay 让客户端直接连媒体源的
-			// Path（飞牛场景 Path 就是网盘 / OpenList 直链），客户端于是绕开
-			// AetherLink，既没有播放记录，也不受内网地址安全网保护。
-			//
-			// 强制的是 DirectStream 而不是 DirectPlay：DirectStream 把客户端
-			// 引回 /stream，DirectPlay 则会直连原始地址。
+		// claim 为真时把源引回 AetherLink。上游判可直放时必须引（DirectPlay 会让
+		// 客户端直连媒体的 Path——飞牛场景就是网盘 / OpenList 直链——于是绕开
+		// AetherLink，既没有播放记录，也不受内网地址安全网保护）；上游判不可直放
+		// 时只有卡片开关也开着才引，否则把这句判定让给上游，客户端继续走上游转码。
+		//
+		// 强制的是 DirectStream 而不是 DirectPlay：DirectStream 把客户端引回
+		// /stream，DirectPlay 则会直连原始地址。
+		if p.claimsSources && (directPlayAllowed || p.ignoresVerdict) {
 			if !directPlayAllowed {
 				// 上游的不可直放判定（码率限制、远程访问策略等）被忽略。
 				forced++
@@ -208,7 +210,13 @@ func (p *embyProvider) RewriteResponse(originalPath string, response *http.Respo
 		}
 		p.rememberPlaybackSource(itemID, embyMediaSourceFromMap(source), directPlayAllowed)
 		if !directPlayAllowed {
-			skipped = append(skipped, embyDirectPlayBlockReason(source))
+			reason := embyDirectPlayBlockReason(source)
+			if p.claimsSources {
+				// 模式要求流量经我们，判定却被卡片开关让给了上游：这一句是排障
+				// 时唯一能区分「模式选错」与「开关关着」的线索。
+				reason += "（卡片关着「无视上游的不可直放判定」，本次交回上游转码）"
+			}
+			skipped = append(skipped, reason)
 			continue
 		}
 		source["DirectStreamUrl"] = embyDirectStreamURL(prefix, itemID, source)
@@ -825,9 +833,9 @@ type embyUser struct {
 // a pointer file ourselves.
 func (p *embyProvider) MediaTarget(ctx context.Context, ref MediaRef) (MediaTarget, error) {
 	if source, directPlayAllowed, ok := p.rememberedPlaybackSource(ref.ItemID, ref.MediaSourceID); ok {
-		// 「始终跳转」「始终中继」下不采纳上游的不可直放判定：客户端要的
-		// 就是原始文件，strm 的真实目标本来就是直链，交给 302 或中继即可。
-		if !directPlayAllowed && !p.forceDirectPlay {
+		// 判定被卡片开关放行时（见 ignoresVerdict）不采纳：客户端要的就是原始
+		// 文件，strm 的真实目标本来就是直链，交给 302 或中继即可。
+		if !directPlayAllowed && !p.ignoresVerdict {
 			return MediaTarget{}, ErrDirectPlayUnsupported
 		}
 		return embyTarget(source), nil

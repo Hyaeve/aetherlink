@@ -29,7 +29,8 @@ function initialForm() {
       insecureSkipVerify: false,
       strmRoots: '',
       pathMappings: [{ from: '', to: '' }],
-      redirectMode: 'always'
+      redirectMode: 'always',
+      ignoreDirectPlayVerdict: true
     }
   }
   return {
@@ -51,7 +52,10 @@ function initialForm() {
     pathMappings: (source.pathMappings || []).length
       ? source.pathMappings.map((mapping) => ({ ...mapping }))
       : [{ from: '', to: '' }],
-    redirectMode: source.redirectMode || 'always'
+    redirectMode: source.redirectMode || 'always',
+    // 后端回的是生效值；老配置里没有这一项时按默认的「开启」显示，
+    // 用户不改动就不会把它写进配置文件。
+    ignoreDirectPlayVerdict: source.ignoreDirectPlayVerdict !== false
   }
 }
 
@@ -103,6 +107,11 @@ const redirectOptions = [
   { value: 'private', label: '内网跳转' },
   { value: 'never', label: '始终中继' }
 ]
+// 「无视上游的不可直放判定」只对这两档「流量全经 AetherLink」的模式有意义：
+// 「公网跳转」「内网跳转」本来就按上游判定分流，开关在它们上面不生效。
+const verdictSwitchApplies = computed(
+  () => form.value.redirectMode === 'always' || form.value.redirectMode === 'never'
+)
 
 const keyPlaceholder = computed(() => {
   if (form.value.keepApiKey) return '留空保留原密钥'
@@ -232,7 +241,8 @@ function buildPayload() {
     pathMappings: current.pathMappings
       .map((mapping) => ({ from: mapping.from.trim(), to: mapping.to.trim() }))
       .filter((mapping) => mapping.from || mapping.to),
-    redirectMode: current.redirectMode
+    redirectMode: current.redirectMode,
+    ignoreDirectPlayVerdict: current.ignoreDirectPlayVerdict
   }
   // 飞牛影视没有 API 密钥：表单里不显示这个输入框，这里也整段跳过，
   // 免得把配置文件里手工补过的 api_key 清掉。
@@ -435,6 +445,20 @@ async function save() {
                   </button>
                 </div>
               </details>
+            </div>
+            <!-- 开关紧跟在「播放跳转」右边：它限定的是那两档「流量全经
+                 AetherLink」的模式，隔开会被当成对所有模式都生效。 -->
+            <div class="field">
+              <span>无视上游的不可直放判定</span>
+              <label class="inline">
+                <input type="checkbox" v-model="form.ignoreDirectPlayVerdict" />
+                忽略判定
+              </label>
+              <small class="field-note">
+                {{ verdictSwitchApplies
+                  ? '上游说这个客户端不能直放时，照样把它引回 AetherLink；关掉则这类客户端继续走上游转码'
+                  : '「公网跳转」「内网跳转」本来就听上游判定，这一项对当前模式不生效' }}
+              </small>
             </div>
           </div>
           <div class="row">

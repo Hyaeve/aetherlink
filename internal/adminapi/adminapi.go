@@ -505,6 +505,9 @@ type upstreamSummary struct {
 	StrmRoots    []string             `json:"strmRoots"`
 	PathMappings []config.PathMapping `json:"pathMappings"`
 	RedirectMode string               `json:"redirectMode"`
+	// IgnoreDirectPlayVerdict 回的是生效值（配置里没写就是 true），界面直接拿它
+	// 初始化那个复选框，不必再实现一遍「缺省为真」。
+	IgnoreDirectPlayVerdict bool `json:"ignoreDirectPlayVerdict"`
 	// Active 表示该上游当前是否已在反向代理中挂载。
 	Active bool `json:"active"`
 	// Listening 表示对应端口是否真的绑定成功。
@@ -527,8 +530,10 @@ func (a *API) describeUpstreams(upstreams []config.Upstream) []upstreamSummary {
 			StrmRoots:    up.StrmRoots,
 			PathMappings: up.PathMappings,
 			RedirectMode: string(up.RedirectMode),
-			Active:       a.rt.ProviderByName(up.Name) != nil,
-			Listening:    a.rt.PortActive(up.ListenPort),
+
+			IgnoreDirectPlayVerdict: up.ShouldIgnoreDirectPlayVerdict(),
+			Active:                  a.rt.ProviderByName(up.Name) != nil,
+			Listening:               a.rt.PortActive(up.ListenPort),
 		}
 		if summary.StrmRoots == nil {
 			summary.StrmRoots = []string{}
@@ -581,18 +586,21 @@ func (a *API) handleUpstreamCredentials(writer http.ResponseWriter, request *htt
 // upstreamPayload 是新增/修改上游的请求体。APIKey 与 Password 用指针：省略
 // 表示保留原有凭据，这样界面上无需回显秘密也能编辑其他字段。
 type upstreamPayload struct {
-	Name         string               `json:"name"`
-	Type         string               `json:"type"`
-	BaseURL      string               `json:"baseUrl"`
-	APIKey       *string              `json:"apiKey"`
-	Username     *string              `json:"username"`
-	Password     *string              `json:"password"`
-	Enabled      *bool                `json:"enabled"`
-	ListenPort   int                  `json:"listenPort"`
-	Insecure     bool                 `json:"insecureSkipVerify"`
-	StrmRoots    []string             `json:"strmRoots"`
-	PathMappings []config.PathMapping `json:"pathMappings"`
-	RedirectMode string               `json:"redirectMode"`
+	Name     string  `json:"name"`
+	Type     string  `json:"type"`
+	BaseURL  string  `json:"baseUrl"`
+	APIKey   *string `json:"apiKey"`
+	Username *string `json:"username"`
+	Password *string `json:"password"`
+	Enabled  *bool   `json:"enabled"`
+	// IgnoreDirectPlayVerdict 与凭据字段一样用指针：省略表示不动原有设置，
+	// 这样界面之外的老客户端（不发这个字段）不会把卡片悄悄改回默认值。
+	IgnoreDirectPlayVerdict *bool                `json:"ignoreDirectPlayVerdict"`
+	ListenPort              int                  `json:"listenPort"`
+	Insecure                bool                 `json:"insecureSkipVerify"`
+	StrmRoots               []string             `json:"strmRoots"`
+	PathMappings            []config.PathMapping `json:"pathMappings"`
+	RedirectMode            string               `json:"redirectMode"`
 }
 
 // toConfig 把请求体转成配置项，existing 非空时继承其凭据。
@@ -628,6 +636,15 @@ func (p upstreamPayload) toConfig(existing *config.Upstream) config.Upstream {
 	}
 	if result.Enabled == nil && existing != nil {
 		result.Enabled = existing.Enabled
+	}
+	switch {
+	case p.IgnoreDirectPlayVerdict != nil:
+		value := *p.IgnoreDirectPlayVerdict
+		result.IgnoreDirectPlayVerdict = &value
+	case existing != nil && existing.IgnoreDirectPlayVerdict != nil:
+		// 值拷贝而不是共享指针：existing 可能还挂在旧快照上。
+		value := *existing.IgnoreDirectPlayVerdict
+		result.IgnoreDirectPlayVerdict = &value
 	}
 	return result
 }
