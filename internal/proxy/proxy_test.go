@@ -175,13 +175,6 @@ func writeJSON(t *testing.T, writer http.ResponseWriter, payload any) {
 // newTestServer wires a proxy in front of the fake upstream.
 func newTestServer(t *testing.T, absURL, strmRoot string, redirectCfg config.Redirect) (*Server, *stats.Collector) {
 	t.Helper()
-	return newTestServerWithRelayExempt(t, absURL, strmRoot, redirectCfg, nil)
-}
-
-// newTestServerWithRelayExempt 与 newTestServer 相同，额外挂上卡片上的
-// 「不中继的客户端」名单（UA 片段）。
-func newTestServerWithRelayExempt(t *testing.T, absURL, strmRoot string, redirectCfg config.Redirect, relayExempt []string) (*Server, *stats.Collector) {
-	t.Helper()
 	provider, err := upstream.New(config.Upstream{
 		Name:       "abs",
 		Type:       config.UpstreamAudiobookshelf,
@@ -195,7 +188,7 @@ func newTestServerWithRelayExempt(t *testing.T, absURL, strmRoot string, redirec
 	}
 	collector := stats.New(50)
 	mediaResolver := resolver.New(config.Cache{TTL: time.Minute, MaxSize: 32}, redirectCfg)
-	return New(provider, mediaResolver, collector, redirectCfg, relayExempt), collector
+	return New(provider, mediaResolver, collector, redirectCfg), collector
 }
 
 func TestBlockedUserAgentIsRejectedBeforeProxying(t *testing.T) {
@@ -224,81 +217,6 @@ func defaultRedirect() config.Redirect {
 		FallbackUserAgent:  "AetherLink",
 		ProbeTimeout:       5 * time.Second,
 		AllowPublicTargets: config.Bool(true),
-	}
-}
-
-// 卡片上的「不中继的客户端」名单：命中者即使选「始终中继」也要拿到直链。
-//
-// 依据来自用户实例：AfuseKt 那一系播放器只在拿着直链自己取流时能播，走 AetherLink
-// 的中继会读几 KB 就撒手，而中继的字节与响应头已逐项证实与直链等价——这是客户端
-// 自己的选路差异，中继侧没有可改的东西，所以出路只能是让这些客户端绕开中继。
-func TestRelayExemptClientGetsTheDirectLinkEvenUnderAlwaysRelay(t *testing.T) {
-	origin := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Write([]byte("origin-stream-bytes"))
-	}))
-	defer origin.Close()
-
-	root, strmPath, regularPath := writeStrm(t, origin.URL+"/d/relay-exempt.m4a")
-	fake := newFakeABS(t, strmPath, regularPath)
-	redirectCfg := defaultRedirect()
-	redirectCfg.Mode = config.RedirectNever
-	server, collector := newTestServerWithRelayExempt(t, fake.server.URL, root, redirectCfg, []string{"AfuseKt"})
-
-	exemptRecorder := httptest.NewRecorder()
-	exemptRequest := httptest.NewRequest(http.MethodGet, "/api/items/book-1/file/ino-strm", nil)
-	exemptRequest.Header.Set("User-Agent", "AfuseKt%2F%28Linux%3BAndroid+Release%29Player")
-	server.ServeHTTP(exemptRecorder, exemptRequest)
-	if exemptRecorder.Code != http.StatusFound {
-		t.Fatalf("命中名单的客户端状态 = %d, want 302；body = %q", exemptRecorder.Code, exemptRecorder.Body.String())
-	}
-	if location := exemptRecorder.Header().Get("Location"); location != origin.URL+"/d/relay-exempt.m4a" {
-		t.Fatalf("Location = %q, want 直链（名单命中就该把直链交出去）", location)
-	}
-	// 302 行是这件事唯一的输出口：用户得能从日志看出「这次不是模式选错，是名单命中」。
-	if !logContainsAll("302 /api/items/book-1/file/ino-strm", "不中继的客户端") {
-		t.Fatalf("302 行没写明是名单命中的：%q", findLogEntry("302 /api/items/book-1/file/ino-strm"))
-	}
-
-	plainRecorder := httptest.NewRecorder()
-	plainRequest := httptest.NewRequest(http.MethodGet, "/api/items/book-1/file/ino-strm", nil)
-	plainRequest.Header.Set("User-Agent", "Infuse/8.0")
-	server.ServeHTTP(plainRecorder, plainRequest)
-	if plainRecorder.Code != http.StatusOK || plainRecorder.Body.String() != "origin-stream-bytes" {
-		t.Fatalf("未命中名单的客户端应当继续中继，得到 %d / %q", plainRecorder.Code, plainRecorder.Body.String())
-	}
-
-	if snapshot := collector.Snapshot(10); snapshot.Redirects != 1 || snapshot.ProxyStreams != 1 {
-		t.Fatalf("跳转/中继 = %d/%d, want 1/1", snapshot.Redirects, snapshot.ProxyStreams)
-	}
-}
-
-// 安全网优先于名单：直链是内网地址而客户端在外网时，302 出去也连不上，名单这一次
-// 没有出路，只能中继——但日志必须写明白，否则用户会以为名单没生效。
-func TestRelayExemptListGivesWayToTheIntranetTargetSafeNet(t *testing.T) {
-	origin := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Write([]byte("intranet-bytes"))
-	}))
-	defer origin.Close()
-
-	root, strmPath, regularPath := writeStrm(t, origin.URL+"/d/intranet-exempt.m4a")
-	fake := newFakeABS(t, strmPath, regularPath)
-	redirectCfg := defaultRedirect()
-	redirectCfg.Mode = config.RedirectNever
-	redirectCfg.FollowUpstreamRedirects = true
-	server, collector := newTestServerWithRelayExempt(t, fake.server.URL, root, redirectCfg, []string{"AfuseKt"})
-
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/api/items/book-1/file/ino-strm", nil)
-	request.Header.Set("User-Agent", "AfuseKt/1.0")
-	server.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK || recorder.Body.String() != "intranet-bytes" {
-		t.Fatalf("内网直链 + 外网客户端应当中继，得到 %d / %q", recorder.Code, recorder.Body.String())
-	}
-	if event := collector.Snapshot(1).RecentEvents[0]; event.Outcome != stats.OutcomeProxyStream {
-		t.Fatalf("outcome = %q, want proxy", event.Outcome)
-	}
-	if !logContainsAll("中继 /api/items/book-1/file/ino-strm", "名单这一次没有出路") {
-		t.Fatalf("中继行应当写明名单这次没有出路：%q", findLogEntry("中继 /api/items/book-1/file/ino-strm"))
 	}
 }
 
@@ -1427,7 +1345,7 @@ func newEmbyTestServer(t *testing.T, embyURL string, redirectCfg config.Redirect
 	}
 	collector := stats.New(50)
 	mediaResolver := resolver.New(config.Cache{TTL: time.Minute, MaxSize: 32}, redirectCfg)
-	return New(provider, mediaResolver, collector, redirectCfg, nil), collector
+	return New(provider, mediaResolver, collector, redirectCfg), collector
 }
 
 // Emby 已判定可直接播放的 STRM 也要压成 DirectStream 引回 AetherLink：DirectPlay

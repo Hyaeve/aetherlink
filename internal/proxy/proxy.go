@@ -62,17 +62,12 @@ type Server struct {
 	streamClient *http.Client
 	ffmpegPath   string
 	audioCache   *audioCache
-
-	// relayExempt 是卡片上的「不中继的客户端」名单：命中的 UA 即使卡片选的是
-	// 「始终中继」也要把直链交出去，因为这类播放器只在直链上能播。
-	relayExempt []string
 }
 
 type responseRewriteContextKey struct{}
 
-// New builds the proxy serving one upstream. relayExempt 是这张卡片「不中继的
-// 客户端」名单（UA 片段，大小写不敏感），为空表示所有客户端一视同仁。
-func New(provider upstream.Provider, mediaResolver *resolver.Resolver, collector *stats.Collector, redirectCfg config.Redirect, relayExempt []string) *Server {
+// New builds the proxy serving one upstream.
+func New(provider upstream.Provider, mediaResolver *resolver.Resolver, collector *stats.Collector, redirectCfg config.Redirect) *Server {
 	ffmpegPath, _ := exec.LookPath("ffmpeg")
 	if ffmpegPath == "" {
 		logx.Warnf("[%s] 未找到 FFmpeg，Apple 客户端播放 WMA/AAC 时将继续使用原有 302 或中继逻辑", provider.Name())
@@ -96,9 +91,8 @@ func New(provider upstream.Provider, mediaResolver *resolver.Resolver, collector
 				ExpectContinueTimeout: 1 * time.Second,
 			},
 		},
-		ffmpegPath:  ffmpegPath,
-		audioCache:  newAudioCache(),
-		relayExempt: append([]string(nil), relayExempt...),
+		ffmpegPath: ffmpegPath,
+		audioCache: newAudioCache(),
 	}
 	return server
 }
@@ -343,33 +337,19 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 	// 「真正的直链」可拿，改由 AetherLink 中继保证能播。没开跟随时尊重原语义：
 	// 302 照发，日志里的内网提示负责解释。
 	wantRedirect := s.resolver.ShouldRedirectForClient(resolution, s.redirect, event.Client)
-	// 卡片上的「不中继的客户端」名单：有些播放器只在拿着直链自己取流时能播，
-	// 走我们的中继会读几 KB 就撒手（字节与响应头都已证实与直链逐项等价，属
-	// 客户端自己的选路差异）。命中名单就把它们送回 302 那条路，哪怕这张卡片
-	// 选的是「始终中继」——这是用户唯一能自己掌握的出路。
-	relayExempt := !wantRedirect && resolution.Target != nil &&
-		resolution.Target.Type == strm.TargetRemote &&
-		config.RelayExemptUserAgent(s.relayExempt, event.UserAgent)
-	if relayExempt {
-		wantRedirect = true
-	}
 	intranetTargetPublicClient := wantRedirect && s.redirect.FollowUpstreamRedirects &&
 		urlx.IsPrivateHost(playURL) &&
 		resolver.ScopeOfClient(event.Client, s.redirect.IntranetCIDRs...) == resolver.ClientScopePublic
 	if intranetTargetPublicClient {
-		// 安全网优先于名单：直链是内网地址而客户端在外网时，302 出去也连不上，
-		// 只能中继，名单在这一格上没有出路。
+		// 直链是内网地址而客户端在外网时，302 出去也连不上，只能中继。
 		wantRedirect = false
 	}
 
 	if wantRedirect {
 		event.StatusCode = http.StatusFound
-		// 302 这一行是它唯一的输出口，附加说明必须写进去——不然「命中了不中继
-		// 名单」「跟着上游跳了几跳」「直链是内网地址」这几件事用户看不到。
+		// 302 这一行是它唯一的输出口，附加说明必须写进去——不然「跟着上游跳了
+		// 几跳」「直链是内网地址」这几件事用户看不到。
 		notes := make([]string, 0, 3)
-		if relayExempt {
-			notes = append(notes, "命中卡片「不中继的客户端」名单，本卡片要求中继也照发直链")
-		}
 		if len(resolution.Hops) > 0 {
 			notes = append(notes, fmt.Sprintf("直链为跟随上游 %d 次重定向后的最终地址，客户端无需再跳", len(resolution.Hops)))
 		}
@@ -395,11 +375,7 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 		return
 	}
 	if intranetTargetPublicClient {
-		exemptNote := ""
-		if relayExempt {
-			exemptNote = "；该客户端命中卡片「不中继的客户端」名单，但直链是内网地址而客户端在外网，名单这一次没有出路"
-		}
-		finish(stats.OutcomeProxyStream, cacheNote(event)+"；直链是内网地址而客户端在外网，本次由 AetherLink 中继"+exemptNote)
+		finish(stats.OutcomeProxyStream, cacheNote(event)+"；直链是内网地址而客户端在外网，本次由 AetherLink 中继")
 		return
 	}
 	finish(stats.OutcomeProxyStream, cacheNote(event)+"；"+s.noRedirectReason(resolution, event.Client)+privateTargetNote(playURL))

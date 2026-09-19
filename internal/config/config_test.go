@@ -126,6 +126,45 @@ upstreams:
 	}
 }
 
+// relay_exempt_user_agents（卡片级「不中继的客户端」名单）与判定一起删掉了，
+// 但字段声明必须留着：配置是严格解析（decoder.KnownFields(true)），删掉它会让
+// 所有已经写过这一项的配置直接起不来。所以 Load 要能把它读进来，migrate 要把它
+// 清掉，保存后磁盘上不再出现这一项。
+func TestDeprecatedRelayExemptListStillLoadsThenDisappears(t *testing.T) {
+	path := writeConfig(t, `
+upstreams:
+  - name: fnos
+    type: fnos
+    base_url: "http://127.0.0.1:8005"
+    listen_port: 15154
+    relay_exempt_user_agents:
+      - AfuseKt
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("旧配置含已废弃的 relay_exempt_user_agents 时必须仍能加载: %v", err)
+	}
+	if !cfg.Migrated() {
+		t.Fatal("读到已废弃字段后应标记为已迁移，否则它清不掉")
+	}
+	if len(cfg.Upstreams[0].RelayExemptUserAgents) != 0 {
+		t.Fatalf("已废弃的名单必须被清空，不能留在内存里：%v", cfg.Upstreams[0].RelayExemptUserAgents)
+	}
+	if err := cfg.Save(path); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读回配置失败: %v", err)
+	}
+	if strings.Contains(string(raw), "relay_exempt_user_agents") {
+		t.Fatalf("已废弃字段不该再被写回磁盘:\n%s", raw)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("清过之后的配置仍应能加载: %v", err)
+	}
+}
+
 func TestBlockedClientUserAgentMatchesCaseInsensitiveFragments(t *testing.T) {
 	cfg := Default()
 	cfg.Redirect.BlockClientUserAgent = Bool(true)
@@ -139,51 +178,6 @@ func TestBlockedClientUserAgentMatchesCaseInsensitiveFragments(t *testing.T) {
 	}
 	if cfg.Redirect.IsBlockedClientUserAgent("Emby/4.8") {
 		t.Fatal("unlisted User-Agent should not be blocked")
-	}
-}
-
-// 「不中继的客户端」名单与屏蔽 UA 同一套写法：大小写不敏感的子串。空名单不能
-// 命中任何东西——这是「不给旧配置添麻烦」的底线（老卡片的名单是空的）。
-func TestRelayExemptUserAgentMatchesCaseInsensitiveFragments(t *testing.T) {
-	upstream := Upstream{RelayExemptUserAgents: []string{"AfuseKt"}}
-	if !upstream.RelayExempt("AfuseKt%2F%28Linux%3BAndroid+Release%29Player") {
-		t.Fatal("百分号编码过的 UA 也要命中")
-	}
-	if !upstream.RelayExempt("afusekt/1.0") {
-		t.Fatal("匹配应当大小写不敏感")
-	}
-	if upstream.RelayExempt("Infuse/8.0") {
-		t.Fatal("不在名单里的 UA 不能命中")
-	}
-	if (Upstream{}).RelayExempt("AfuseKt") {
-		t.Fatal("空名单不能命中任何客户端")
-	}
-	if (Upstream{RelayExemptUserAgents: []string{"  "}}).RelayExempt("AfuseKt") {
-		t.Fatal("空白项不算一条规则")
-	}
-}
-
-// 名单是切片，Clone 不深拷贝就会让「改了草稿」连带改掉正在跑的配置。
-func TestRelayExemptUserAgentsSurviveCloneAndNormalize(t *testing.T) {
-	cfg := Default()
-	cfg.Upstreams = []Upstream{{
-		Name:                  "飞牛影视",
-		Type:                  UpstreamFnos,
-		BaseURL:               "http://10.0.0.31:8005",
-		ListenPort:            5154,
-		RelayExemptUserAgents: []string{" AfuseKt ", "", "CapyPlayer"},
-	}}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("validate: %v", err)
-	}
-	if got := cfg.Upstreams[0].RelayExemptUserAgents; len(got) != 2 || got[0] != "AfuseKt" || got[1] != "CapyPlayer" {
-		t.Fatalf("normalize 应去掉空白项并裁掉首尾空格，得到 %#v", got)
-	}
-
-	clone := cfg.Clone()
-	clone.Upstreams[0].RelayExemptUserAgents[0] = "改过的"
-	if cfg.Upstreams[0].RelayExemptUserAgents[0] != "AfuseKt" {
-		t.Fatal("clone 与原件共享了名单底层数组")
 	}
 }
 

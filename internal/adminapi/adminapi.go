@@ -525,8 +525,6 @@ type upstreamSummary struct {
 	StrmRoots    []string             `json:"strmRoots"`
 	PathMappings []config.PathMapping `json:"pathMappings"`
 	RedirectMode string               `json:"redirectMode"`
-	// RelayExemptUserAgents 是这张卡片上「不中继的客户端」名单的原样回显。
-	RelayExemptUserAgents []string `json:"relayExemptUserAgents"`
 	// Active 表示该上游当前是否已在反向代理中挂载。
 	Active bool `json:"active"`
 	// Listening 表示对应端口是否真的绑定成功。
@@ -550,18 +548,14 @@ func (a *API) describeUpstreams(upstreams []config.Upstream) []upstreamSummary {
 			PathMappings: up.PathMappings,
 			RedirectMode: string(up.RedirectMode),
 
-			RelayExemptUserAgents: append([]string(nil), up.RelayExemptUserAgents...),
-			Active:                a.rt.ProviderByName(up.Name) != nil,
-			Listening:             a.rt.PortActive(up.ListenPort),
+			Active:    a.rt.ProviderByName(up.Name) != nil,
+			Listening: a.rt.PortActive(up.ListenPort),
 		}
 		if summary.StrmRoots == nil {
 			summary.StrmRoots = []string{}
 		}
 		if summary.PathMappings == nil {
 			summary.PathMappings = []config.PathMapping{}
-		}
-		if summary.RelayExemptUserAgents == nil {
-			summary.RelayExemptUserAgents = []string{}
 		}
 		summaries = append(summaries, summary)
 	}
@@ -608,21 +602,18 @@ func (a *API) handleUpstreamCredentials(writer http.ResponseWriter, request *htt
 // upstreamPayload 是新增/修改上游的请求体。APIKey 与 Password 用指针：省略
 // 表示保留原有凭据，这样界面上无需回显秘密也能编辑其他字段。
 type upstreamPayload struct {
-	Name     string  `json:"name"`
-	Type     string  `json:"type"`
-	BaseURL  string  `json:"baseUrl"`
-	APIKey   *string `json:"apiKey"`
-	Username *string `json:"username"`
-	Password *string `json:"password"`
-	Enabled  *bool   `json:"enabled"`
-	// RelayExemptUserAgents 用指针：省略表示不动原有名单，显式发 [] 才是清空。
-	// 卡片上点标签快捷切模式只发 redirectMode，不能因此把名单冲掉。
-	RelayExemptUserAgents *[]string            `json:"relayExemptUserAgents"`
-	ListenPort            int                  `json:"listenPort"`
-	Insecure              bool                 `json:"insecureSkipVerify"`
-	StrmRoots             []string             `json:"strmRoots"`
-	PathMappings          []config.PathMapping `json:"pathMappings"`
-	RedirectMode          string               `json:"redirectMode"`
+	Name         string               `json:"name"`
+	Type         string               `json:"type"`
+	BaseURL      string               `json:"baseUrl"`
+	APIKey       *string              `json:"apiKey"`
+	Username     *string              `json:"username"`
+	Password     *string              `json:"password"`
+	Enabled      *bool                `json:"enabled"`
+	ListenPort   int                  `json:"listenPort"`
+	Insecure     bool                 `json:"insecureSkipVerify"`
+	StrmRoots    []string             `json:"strmRoots"`
+	PathMappings []config.PathMapping `json:"pathMappings"`
+	RedirectMode string               `json:"redirectMode"`
 }
 
 // toConfig 把请求体转成配置项，existing 非空时继承其凭据。
@@ -658,12 +649,6 @@ func (p upstreamPayload) toConfig(existing *config.Upstream) config.Upstream {
 	}
 	if result.Enabled == nil && existing != nil {
 		result.Enabled = existing.Enabled
-	}
-	switch {
-	case p.RelayExemptUserAgents != nil:
-		result.RelayExemptUserAgents = append([]string(nil), (*p.RelayExemptUserAgents)...)
-	case existing != nil:
-		result.RelayExemptUserAgents = append([]string(nil), existing.RelayExemptUserAgents...)
 	}
 	return result
 }

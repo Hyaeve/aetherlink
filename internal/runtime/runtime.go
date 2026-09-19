@@ -116,7 +116,7 @@ func (rt *Runtime) build(cfg *config.Config) (*stack, error) {
 		if redirectCfg.Mode == config.RedirectAlways {
 			redirectCfg.AllowPublicTargets = config.Bool(true)
 		}
-		proxies[upstreamCfg.ListenPort] = proxy.New(provider, mediaResolver, rt.stats, redirectCfg, upstreamCfg.RelayExemptUserAgents)
+		proxies[upstreamCfg.ListenPort] = proxy.New(provider, mediaResolver, rt.stats, redirectCfg)
 	}
 	return &stack{cfg: cfg, resolver: mediaResolver, proxies: proxies}, nil
 }

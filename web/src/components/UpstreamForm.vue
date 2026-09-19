@@ -29,8 +29,7 @@ function initialForm() {
       insecureSkipVerify: false,
       strmRoots: '',
       pathMappings: [{ from: '', to: '' }],
-      redirectMode: 'always',
-      relayExemptUserAgents: ''
+      redirectMode: 'always'
     }
   }
   return {
@@ -52,8 +51,7 @@ function initialForm() {
     pathMappings: (source.pathMappings || []).length
       ? source.pathMappings.map((mapping) => ({ ...mapping }))
       : [{ from: '', to: '' }],
-    redirectMode: source.redirectMode || 'always',
-    relayExemptUserAgents: (source.relayExemptUserAgents || []).join('\n')
+    redirectMode: source.redirectMode || 'always'
   }
 }
 
@@ -248,13 +246,7 @@ function buildPayload() {
     pathMappings: current.pathMappings
       .map((mapping) => ({ from: mapping.from.trim(), to: mapping.to.trim() }))
       .filter((mapping) => mapping.from || mapping.to),
-    redirectMode: current.redirectMode,
-    // 一行一个 UA；空行丢掉。空数组表示「没有例外」，不是「不改动」——
-    // 用户把内容全删掉就是要清空名单。
-    relayExemptUserAgents: current.relayExemptUserAgents
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
+    redirectMode: current.redirectMode
   }
   // 飞牛影视没有 API 密钥：表单里不显示这个输入框，这里也整段跳过，
   // 免得把配置文件里手工补过的 api_key 清掉。
@@ -467,15 +459,6 @@ async function save() {
               跳过 TLS 证书校验（自签证书才需要）
             </label>
           </div>
-        </div>
-
-        <div class="field-group">
-          <div class="title">不中继的客户端</div>
-          <textarea v-model="form.relayExemptUserAgents" rows="3" placeholder="AfuseKt"></textarea>
-          <small class="field-note">
-            名单里的播放器只认直链：命中者即使「播放跳转」选了「始终中继」也直接给直链（302）。
-            一行一个，大小写不敏感，填片段即可；留空表示所有客户端一视同仁。
-          </small>
         </div>
 
         <div class="field-group">

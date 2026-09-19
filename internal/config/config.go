@@ -109,17 +109,14 @@ type Upstream struct {
 	ListenPort   int          `yaml:"listen_port" json:"listenPort"`
 	Insecure     bool         `yaml:"insecure_skip_verify" json:"insecureSkipVerify"`
 	RedirectMode RedirectMode `yaml:"redirect_mode,omitempty" json:"redirectMode"`
-	// RelayExemptUserAgents 列出「别给它们中继」的客户端 UA。命中者即使本卡片选
-	// 的是「始终中继」，也把直链 302 出去（等价于让反代工具自己跟随重定向后代理，
-	// 也就是这批播放器唯一能播的形态）。
+	// RelayExemptUserAgents 是已废弃的卡片级「不中继的客户端」名单。它曾经让命中
+	// 的 UA 即使卡片选的是「始终中继」也直接拿直链——那是给 AfuseKt 那一系只认
+	// 直链的播放器留的例外，后来那一格连同判定一起删掉了，因为这条线上再没有
+	// 需要它的客户端。
 	//
-	// 存在的理由：中继与 302 交给播放器的字节、响应头已被逐项比对为等价，但仍有
-	// 播放器（AfuseKt 那一系）只在「拿着直链自己取流」时能播，走我们中继就只读几
-	// KB 就撒手。这是客户端的选路差异，不是中继能修的，所以把选择权交回用户：
-	// 把那个 UA 填进来，它单独走直链，其余客户端照旧中继。
-	//
-	// 匹配规则与「屏蔽 UA」名单一致：大小写不敏感的子串。
-	RelayExemptUserAgents []string `yaml:"relay_exempt_user_agents,omitempty" json:"relayExemptUserAgents,omitempty"`
+	// 与 Prefix / IgnoreDirectPlayVerdict 同理：声明保留只为让已经写过它的旧配置
+	// 仍能通过严格解析读进来，migrate 会把它清掉，因此它永远不会再被写回磁盘。
+	RelayExemptUserAgents []string `yaml:"relay_exempt_user_agents,omitempty" json:"-"`
 
 	// IgnoreDirectPlayVerdict 是已废弃的开关。它曾经让「上游说这个客户端不能
 	// 直接播放原始文件」那句判定变得可听可不听；后来四种跳转模式一律忽略那句
@@ -146,31 +143,6 @@ type Upstream struct {
 // means enabled.
 func (u Upstream) IsEnabled() bool { return u.Enabled == nil || *u.Enabled }
 
-// RelayExempt reports whether this client must be kept off the relay path and
-// handed the direct link instead. Matching mirrors the "blocked UA" lists:
-// case-insensitive fragments, so a user can paste either the whole UA or a
-// distinctive piece of it. An empty list never matches, which keeps every
-// existing card relaying exactly as before.
-func (u Upstream) RelayExempt(userAgent string) bool {
-	return RelayExemptUserAgent(u.RelayExemptUserAgents, userAgent)
-}
-
-// RelayExemptUserAgent 是上面那条判断的独立形式：代理拿得到的是名单本身
-// （构建时从配置里取出），不必持有整份上游配置。
-func RelayExemptUserAgent(exempt []string, userAgent string) bool {
-	candidate := strings.ToLower(strings.TrimSpace(userAgent))
-	if candidate == "" {
-		return false
-	}
-	for _, entry := range exempt {
-		fragment := normalizeUserAgentFragment(entry)
-		if fragment != "" && strings.Contains(candidate, fragment) {
-			return true
-		}
-	}
-	return false
-}
-
 // ListenAddr is the address the upstream's own reverse proxy listens on.
 func (u Upstream) ListenAddr() string { return fmt.Sprintf(":%d", u.ListenPort) }
 
@@ -187,7 +159,6 @@ func (u Upstream) Clone() Upstream {
 	}
 	copied.StrmRoots = append([]string(nil), u.StrmRoots...)
 	copied.PathMappings = append([]PathMapping(nil), u.PathMappings...)
-	copied.RelayExemptUserAgents = append([]string(nil), u.RelayExemptUserAgents...)
 	return copied
 }
 
@@ -559,9 +530,10 @@ func (c *Config) Migrated() bool { return c.migrated }
 
 // migrate 把旧版配置升级到当前结构，返回是否发生了改动。
 //
-// 两处已废弃字段在这里被清掉（Prefix 的路径前缀、IgnoreDirectPlayVerdict 的
-// 忽略判定开关）：Load 用的是严格解析，字段声明得留着才能把老配置读进来，
-// 但值已经不再被采纳，清空后下一次保存就不再写出它们。
+// 三处已废弃字段在这里被清掉（Prefix 的路径前缀、IgnoreDirectPlayVerdict 的
+// 忽略判定开关、RelayExemptUserAgents 的卡片级「不中继的客户端」名单）：
+// Load 用的是严格解析，字段声明得留着才能把老配置读进来，但值已经不再被采纳，
+// 清空后下一次保存就不再写出它们。
 //
 // 另外老配置没有 listen_port，这里按管理端口往上顺次分配一个空闲端口。
 func (c *Config) migrate() bool {
@@ -609,6 +581,10 @@ func (c *Config) migrate() bool {
 		}
 		if upstream.IgnoreDirectPlayVerdict != nil {
 			upstream.IgnoreDirectPlayVerdict = nil
+			changed = true
+		}
+		if upstream.RelayExemptUserAgents != nil {
+			upstream.RelayExemptUserAgents = nil
 			changed = true
 		}
 		if upstream.ListenPort > 0 {
@@ -980,8 +956,6 @@ func (u *Upstream) normalize() error {
 		roots = append(roots, normalized)
 	}
 	u.StrmRoots = roots
-	// 「不中继的客户端」与屏蔽 UA 同一套写法：去空、去重、大小写统一。
-	u.RelayExemptUserAgents = normalizeUserAgentList(u.RelayExemptUserAgents)
 	return nil
 }
 
