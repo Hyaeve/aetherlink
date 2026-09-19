@@ -2840,6 +2840,13 @@ label.field {
   font-size: 11px;
 }
 
+/* 「网络地址」卡片里那行只读的本机网段：它跟在输入框后面，属于卡片级的补充信息，
+   拉开一点距离，免得看起来像输入框的说明。 */
+.local-network-note {
+  margin-top: 10px;
+  line-height: 1.5;
+}
+
 label.inline {
   display: inline-flex;
   align-items: center;

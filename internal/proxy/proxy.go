@@ -402,7 +402,7 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 		finish(stats.OutcomeProxyStream, cacheNote(event)+"；直链是内网地址而客户端在外网，本次由 AetherLink 中继"+exemptNote)
 		return
 	}
-	finish(stats.OutcomeProxyStream, cacheNote(event)+"；按 302 策略不跳转，改由 AetherLink 中继："+s.noRedirectReason(resolution, event.Client)+privateTargetNote(playURL))
+	finish(stats.OutcomeProxyStream, cacheNote(event)+"；"+s.noRedirectReason(resolution, event.Client)+privateTargetNote(playURL))
 }
 
 // privateTargetNote 在直链指向内网服务时提示一个常见误会：302 出去的地址是
@@ -415,48 +415,60 @@ func privateTargetNote(playURL string) string {
 	return ""
 }
 
-// noRedirectReason 说明为什么一个已经解析成功的目标没有被 302 出去。
+// noRedirectReason 说明这次为什么没有 302 出去，末尾点明实际走了哪条路 ——
+// 先讲「卡片选了什么模式、客户端是谁、它算哪一边」，最后才是结论，用户一眼就能
+// 对上自己配的东西。
 // 注意：跳转策略按客户端 IP 的内外网归属判定（README「跳转模式」一节），
 // 与媒体直链指向哪台服务器无关；这里必须把客户端的情况说清楚，
 // 之前写成「而目标是内网地址」让用户对着公网直链排查目标，方向全错。
 func (s *Server) noRedirectReason(resolution *resolver.Resolution, client string) string {
 	if resolution == nil || resolution.Target == nil {
-		return "没有解析出可跳转的地址"
+		return "没有解析出可跳转的地址，改由 AetherLink 中继"
 	}
 	if resolution.Target.Type != strm.TargetRemote {
-		return "目标不是 http 地址"
+		return "目标不是 http 地址，改由 AetherLink 中继"
 	}
-	// scopeNote 是「为什么算内网」的补充说明，目前只有自动识别的「与本机同一网段」
-	// 会填它 —— 那一层用户看不见，日志里必须给出线索。
+	// scopeNote 是「为什么算内网」的补充说明，只有自动识别那一层会给出具体网段：
+	// 它是从本机地址推算出来的、界面上只看得到一行提示，日志里必须带上来源。
 	scope, scopeNote := resolver.ScopeOfClientWithReason(client, s.redirect.IntranetCIDRs...)
 	shown := client
 	if shown == "" {
-		shown = "空"
+		shown = "无法识别"
 	}
 	switch s.redirect.Mode {
 	case config.RedirectNever:
-		return fmt.Sprintf("跳转模式为%s，任何客户端都不 302", config.RedirectModeName(config.RedirectNever))
+		return fmt.Sprintf("跳转模式为%s，改由 AetherLink 中继", config.RedirectModeName(config.RedirectNever))
 	case config.RedirectPublic:
 		switch scope {
 		case resolver.ClientScopePrivate:
-			return fmt.Sprintf("跳转模式为%s，而客户端 %s 是内网地址%s（只有公网客户端才 302）", config.RedirectModeName(config.RedirectPublic), shown, scopeNote)
+			return fmt.Sprintf("跳转模式为%s，客户端 IP %s%s，改由 AetherLink 中继", config.RedirectModeName(config.RedirectPublic), shown, intranetReason(scopeNote))
 		case resolver.ClientScopeUnknown:
-			return fmt.Sprintf("跳转模式为%s，而客户端 IP 无法识别（若 AetherLink 前面还有反代，请把它加入 trusted_proxy_cidrs）", config.RedirectModeName(config.RedirectPublic))
+			return fmt.Sprintf("跳转模式为%s，客户端 IP 无法识别，改由 AetherLink 中继", config.RedirectModeName(config.RedirectPublic))
 		default:
-			return fmt.Sprintf("跳转模式为%s，而客户端 %s 未知", config.RedirectModeName(config.RedirectPublic), shown)
+			return fmt.Sprintf("跳转模式为%s，客户端 IP %s 归属未知，改由 AetherLink 中继", config.RedirectModeName(config.RedirectPublic), shown)
 		}
 	case config.RedirectPrivate:
 		switch scope {
 		case resolver.ClientScopePublic:
-			return fmt.Sprintf("跳转模式为%s，而客户端 %s 是公网地址（只有内网客户端才 302）", config.RedirectModeName(config.RedirectPrivate), shown)
+			return fmt.Sprintf("跳转模式为%s，客户端 IP %s 是公网地址，改由 AetherLink 中继", config.RedirectModeName(config.RedirectPrivate), shown)
 		case resolver.ClientScopeUnknown:
-			return fmt.Sprintf("跳转模式为%s，而客户端 IP 无法识别（若 AetherLink 前面还有反代，请把它加入 trusted_proxy_cidrs）", config.RedirectModeName(config.RedirectPrivate))
+			return fmt.Sprintf("跳转模式为%s，客户端 IP 无法识别，改由 AetherLink 中继", config.RedirectModeName(config.RedirectPrivate))
 		default:
-			return fmt.Sprintf("跳转模式为%s，而客户端 %s 未知", config.RedirectModeName(config.RedirectPrivate), shown)
+			return fmt.Sprintf("跳转模式为%s，客户端 IP %s 归属未知，改由 AetherLink 中继", config.RedirectModeName(config.RedirectPrivate), shown)
 		}
 	default:
-		return "跳转模式未启用"
+		return "跳转模式未启用，改由 AetherLink 中继"
 	}
+}
+
+// intranetReason 补出「这个客户端为什么算内网」。自动识别那一层带来的是具体网段
+// （scopeNote 形如「，与本机为同一网段 2409:…::/64」）；内置规则与配置声明的网段
+// 没什么可补充的，只说结论。
+func intranetReason(scopeNote string) string {
+	if scopeNote == "" {
+		return " 是内网地址"
+	}
+	return scopeNote
 }
 
 // logOutcome 把一条播放请求的处理结果写进日志。302 与透传都记成 info，

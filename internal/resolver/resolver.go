@@ -457,7 +457,8 @@ const (
 	// ClientScopePublic 是可全球路由的公网地址。
 	ClientScopePublic ClientScope = "公网"
 	// ClientScopePrivate 表示客户端与 AetherLink 在同一个网络里，三条来路：
-	// 内置规则（RFC1918 / 回环 / 链路本地 / IPv6 ULA）、设置页声明的「内网网段」、
+	// 内置规则（RFC1918 / 回环 / 链路本地 / IPv6 ULA）、配置文件里声明的网段
+	// （config.Redirect.IntranetCIDRs，界面上没有入口，只能手改 YAML）、
 	// 以及与 AetherLink 本机同一网段（自动的那一层，见 localnet.go）。
 	ClientScopePrivate ClientScope = "内网"
 	// ClientScopeUnknown 表示地址缺失或无法解析。条件跳转模式对它一律中继。
@@ -503,7 +504,7 @@ func scopeOfClient(address netip.Addr, declared []string, local []netip.Prefix) 
 	}
 	for _, prefix := range local {
 		if prefix.Contains(address) {
-			return ClientScopePrivate, "，与本机在同一网段 " + prefix.String()
+			return ClientScopePrivate, "，与本机为同一网段 " + prefix.String()
 		}
 	}
 	return ClientScopePublic, ""
@@ -512,7 +513,7 @@ func scopeOfClient(address netip.Addr, declared []string, local []netip.Prefix) 
 // ClientAddress 解析一条客户端地址，接受裸 IP（含带 zone 的 `fe80::1%eth0`）
 // 与 `ip:port`（含 `[fe80::1%eth0]:5000`）。解析结果一律去掉 zone：内外网判断
 // 只看地址本身，而 netip 的 `Prefix.Contains` 对带 zone 的地址**恒为 false** ——
-// 留着它，配置里的「内网网段」就匹配不上这台设备。返回零值表示无法识别。
+// 留着它，配置里声明的网段就匹配不上这台设备。返回零值表示无法识别。
 func ClientAddress(value string) netip.Addr {
 	trimmed := strings.TrimSpace(value)
 	address, err := netip.ParseAddr(trimmed)

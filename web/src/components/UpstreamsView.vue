@@ -32,8 +32,8 @@ const TYPE_LABELS = { audiobookshelf: 'Audiobookshelf', emby: 'Emby', fnos: '飞
 // 卡片左上角的服务标识图，与 public/icons 下的文件名一一对应。
 const TYPE_ICONS = { audiobookshelf: 'abs.png', emby: 'emby.png', fnos: 'fnmovie.png' }
 
-// 与 config.RedirectMode 的四个取值一一对应（内网/公网按客户端 IP 判断，
-// 见设置页「网络地址」里的前置代理与内网网段）。
+// 与 config.RedirectMode 的四个取值一一对应（内网/公网按客户端 IP 判断：
+// 内置私网规则、与本机同网段，以及设置页「网络地址」里的可信前置代理）。
 const REDIRECT_OPTIONS = [
   { value: 'always', label: '始终跳转' },
   { value: 'public', label: '公网跳转' },

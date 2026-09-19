@@ -658,9 +658,10 @@ func TestPutSettingsAppliesAndPersists(t *testing.T) {
 	}
 }
 
-// 设置页的「内网网段」要整条链路都能往返：/config 得下发它（界面靠这一项回填
-// 输入框），保存得落盘，读回来得还原。少任何一环，用户填的网段都会在下一次保存
-// 时被静默抹掉，而现象跟没填一模一样。
+// 配置里的 intranet_cidrs 要整条链路都能往返：/config 得下发它，保存得落盘，
+// 读回来得还原。界面上已经**没有**这个输入框（自动识别那一层覆盖了绝大多数部署），
+// 但设置页保存时会把手上的 settings 整体 PUT 回去 —— 少了任何一环，手改 YAML 填的
+// 网段都会在用户点一次保存之后被静默抹掉，而现象跟没填一模一样。
 func TestSettingsRoundTripKeepsIntranetCIDRs(t *testing.T) {
 	env := newEnv(t)
 	token := env.login(t, testUsername, testPassword)

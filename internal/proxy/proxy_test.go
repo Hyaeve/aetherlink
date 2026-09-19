@@ -1172,10 +1172,10 @@ func TestNoRedirectReasonNamesTheClientNotTheTarget(t *testing.T) {
 		client string
 		want   string
 	}{
-		{config.RedirectPublic, "192.168.1.3", "跳转模式为公网跳转（public），而客户端 192.168.1.3 是内网地址（只有公网客户端才 302）"},
-		{config.RedirectPrivate, "8.8.8.8", "跳转模式为内网跳转（private），而客户端 8.8.8.8 是公网地址（只有内网客户端才 302）"},
-		{config.RedirectPublic, "", "跳转模式为公网跳转（public），而客户端 IP 无法识别（若 AetherLink 前面还有反代，请把它加入 trusted_proxy_cidrs）"},
-		{config.RedirectNever, "8.8.8.8", "跳转模式为始终中继（never），任何客户端都不 302"},
+		{config.RedirectPublic, "192.168.1.3", "跳转模式为公网跳转（public），客户端 IP 192.168.1.3 是内网地址，改由 AetherLink 中继"},
+		{config.RedirectPrivate, "8.8.8.8", "跳转模式为内网跳转（private），客户端 IP 8.8.8.8 是公网地址，改由 AetherLink 中继"},
+		{config.RedirectPublic, "", "跳转模式为公网跳转（public），客户端 IP 无法识别，改由 AetherLink 中继"},
+		{config.RedirectNever, "8.8.8.8", "跳转模式为始终中继（never），改由 AetherLink 中继"},
 	}
 	for _, test := range cases {
 		server := &Server{redirect: config.Redirect{Mode: test.mode}}
@@ -1183,6 +1183,18 @@ func TestNoRedirectReasonNamesTheClientNotTheTarget(t *testing.T) {
 		if got != test.want {
 			t.Errorf("mode %s client %q reason = %q, want %q", test.mode, test.client, got, test.want)
 		}
+	}
+}
+
+// intranetReason 决定「这个客户端为什么算内网」那半句：自动识别那一层要原样带出
+// 具体网段，其余来路（内置规则、配置文件声明的网段）只说结论。
+func TestIntranetReasonExplainsOnlyTheAutomaticLayer(t *testing.T) {
+	if got := intranetReason(""); got != " 是内网地址" {
+		t.Errorf("没有补充说明时 = %q，want %q", got, " 是内网地址")
+	}
+	fromLocalNetwork := "，与本机为同一网段 2409:8a4c:5a46:5841::/64"
+	if got := intranetReason(fromLocalNetwork); got != fromLocalNetwork {
+		t.Errorf("自动识别那层应当原样带出网段，得到 %q", got)
 	}
 }
 
@@ -1710,8 +1722,8 @@ func TestPublicRedirectRelaysIntranetClientEvenWhenUpstreamBlocksDirectPlay(t *t
 // 用户实例（2026-09-19）：家里每台设备从路由器拿到的都是运营商下发的 IPv6 全局
 // 地址（240e:: 这类 GUA），而判定只按地址类型走 —— GUA 算公网，于是「公网跳转」
 // 把这些明明在内网的客户端统统 302 出去，播放器拿到的是一个它连不上的地址。
-// 一条 TCP 连接只有一个对端地址，从 IPv6 连接里问不出客户端的 IPv4，所以能做的
-// 只有把自家网段明确告诉 AetherLink（设置页「内网网段」）。
+// 一条 TCP 连接只有一个对端地址，从 IPv6 连接里问不出客户端的 IPv4，所以只能
+// 认与本机同网段这一层（不需要配置）+ 配置文件里的 intranet_cidrs（界面无入口）。
 func TestPublicRedirectRelaysIntranetIPv6WhenPrefixConfigured(t *testing.T) {
 	cdn := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Write([]byte("cdn-bytes"))
@@ -1806,10 +1818,13 @@ func TestPublicRedirectRelaysIntranetIPv6WhenPrefixConfigured(t *testing.T) {
 			ownClient, prefixes[0], ownRecorder.Code, ownRecorder.Body.String())
 	}
 	// 日志里的路径是客户端原始请求路径，不含查询串（stats.Event.Path = URL.Path）。
-	// 只有 ULA 的机器（fd00::/8）本来就落进内置规则、说明为空，那种机器不查这一条。
+	// 这一句是用户直接读到的东西，整句钉住：跳转模式、客户端 IP、与本机为同一网段、
+	// 改由 AetherLink 中继。只有 ULA 的机器（fd00::/8）本来就落进内置规则、说明为空，
+	// 那种机器不查这一条。
 	if !resolver.ClientAddress(ownClient).IsPrivate() &&
-		!logContainsAll("中继 /emby/Videos/movie-1/stream.mkv", "是内网地址，与本机在同一网段 "+prefixes[0].String()) {
-		t.Fatalf("自动识别那一次没有留下说明（本机网段 %s）", prefixes[0])
+		!logContainsAll("中继 /emby/Videos/movie-1/stream.mkv",
+			"跳转模式为公网跳转（public），客户端 IP "+ownClient+"，与本机为同一网段 "+prefixes[0].String()+"，改由 AetherLink 中继") {
+		t.Fatalf("自动识别那一次没有按新句式留下说明（本机网段 %s）", prefixes[0])
 	}
 }
 

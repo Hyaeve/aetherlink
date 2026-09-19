@@ -316,7 +316,9 @@ func TestScopeOfClientTreatsOwnNetworkAsIntranet(t *testing.T) {
 		want       ClientScope
 		wantInNote string // 日志说明里该出现的关键词；空串表示不该有说明
 	}{
-		{"本机网段里的 GUA", "2001:db8:1a2b:3c4d:a5f4:ce6f:b8bd:e4e9", local, ClientScopePrivate, "2001:db8:1a2b:3c4d::/64"},
+		// 第一条把整句都钉住（含前导逗号与「为」字）：这半句会被原样接进
+		// proxy 的日志行，措辞一改用户看到的话就变了，不能只断言网段出现过。
+		{"本机网段里的 GUA", "2001:db8:1a2b:3c4d:a5f4:ce6f:b8bd:e4e9", local, ClientScopePrivate, "，与本机为同一网段 2001:db8:1a2b:3c4d::/64"},
 		{"本机第二条链路的网段", "2001:db8:9a9b::12", local, ClientScopePrivate, "2001:db8:9a9b::/64"},
 		// ULA(fc00::/7) 本来就按内置规则算内网，轮不到自动识别，说明留空是对的。
 		{"本机网段里的 ULA", "fd00:7a7b::12", local, ClientScopePrivate, ""},
