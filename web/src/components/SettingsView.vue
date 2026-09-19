@@ -375,7 +375,7 @@ onMounted(load)
             <textarea v-model="trustedProxyText" rows="2" placeholder="192.168.1.10/32"></textarea>
           </label>
           <small class="field-note local-network-note" v-if="localNetworkText.length">本机网段（自动按内网处理）：{{ localNetworkText.join('、') }}</small>
-          <small class="field-note local-network-note" v-else>未检测到本机 IPv6 网段（容器不是 host 网络时看不到局域网网段，属正常）</small>
+          <small class="field-note local-network-note" v-else>未检测到本机网段（容器不是 host 网络时看不到局域网网段，属正常）</small>
           <div class="trusted-proxy-foot">
             <span v-if="proxySaved" class="save-confirm"><i></i>已保存</span>
             <button class="primary settings-save-button wide-action" :disabled="proxyBusy" @click="saveTrustedProxy">

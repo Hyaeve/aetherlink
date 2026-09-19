@@ -296,10 +296,10 @@ type settingsPayload struct {
 type redirectSettings struct {
 	TrustedProxyCIDRs []string `json:"trustedProxyCidrs"`
 	IntranetCIDRs     []string `json:"intranetCidrs"`
-	// LocalNetworkPrefixes 是只读的：AetherLink 检测到的本机 IPv6 网段。判定除了
-	// 用户填的 IntranetCIDRs，还会把这些网段里的客户端按内网处理（前缀随运营商变
-	// 时自动跟随）。放进响应是为了让它可见 —— 一个看不见的自动规则用户没法信，
-	// 也没法排查；请求里带上它不会被采纳。
+	// LocalNetworkPrefixes 是只读的：AetherLink 检测到的本机直连网段（IPv4 与 IPv6
+	// 都算）。判定除了用户填的 IntranetCIDRs，还会把这些网段里的客户端按内网处理
+	// （前缀随运营商变时自动跟随）。放进响应是为了让它可见 —— 一个看不见的自动规则
+	// 用户没法信，也没法排查；请求里带上它不会被采纳。
 	LocalNetworkPrefixes                     []string `json:"localNetworkPrefixes"`
 	Mode                                     string   `json:"mode"`
 	FollowUpstreamRedirects                  bool     `json:"followUpstreamRedirects"`

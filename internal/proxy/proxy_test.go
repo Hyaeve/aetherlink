@@ -1801,30 +1801,45 @@ func TestPublicRedirectRelaysIntranetIPv6WhenPrefixConfigured(t *testing.T) {
 	}
 
 	// 连配置都不用填的那一层：与 AetherLink 本机同网段的客户端同样按内网处理
-	// （运营商换前缀时它自动跟随）。拿真实网卡取样本，没有全局 IPv6 的机器跳过 ——
-	// 这一段的日志说明也只有这一层会写，正好一并钉住。
+	// （运营商换前缀时它自动跟随，v4 与 v6 的直连网段都算）。拿真实网卡取样本，
+	// 一个合用网段都取不到的机器跳过 —— 这一段的日志说明也只有这一层会写，
+	// 正好一并钉住。
 	prefixes := resolver.LocalNetworkPrefixes()
-	if len(prefixes) == 0 {
-		t.Log("这台机器没有全局 IPv6 网段（容器不是 host 网络时属正常），跳过自动识别那一段")
+	probeAddress, probePrefix := "", ""
+	for _, prefix := range prefixes {
+		candidate := prefix.Addr().Next()
+		// 私网的样本走内置规则、日志说明留空，验不出这一层；/32、/128 那种
+		// 下一条就出网段了，也不合用。
+		if !prefix.Contains(candidate) || candidate.IsPrivate() ||
+			candidate.IsLoopback() || candidate.IsLinkLocalUnicast() {
+			continue
+		}
+		probeAddress, probePrefix = candidate.String(), prefix.String()
+		break
+	}
+	if probeAddress == "" {
+		t.Logf("本机网段 %v 全被内置规则覆盖（或一个都没取到，容器不是 host 网络时属正常），跳过自动识别那一段", prefixes)
 		return
 	}
-	ownClient := prefixes[0].Addr().Next().String()
 	ownRecorder := httptest.NewRecorder()
 	ownRequest := httptest.NewRequest(http.MethodGet, streamPath, nil)
-	ownRequest.RemoteAddr = "[" + ownClient + "]:5000"
+	// 方括号只给 v6：netip.ParseAddrPort 不接受 [10.0.0.1]:5000 这种写法。
+	if strings.Contains(probeAddress, ":") {
+		ownRequest.RemoteAddr = "[" + probeAddress + "]:5000"
+	} else {
+		ownRequest.RemoteAddr = probeAddress + ":5000"
+	}
 	plainServer.ServeHTTP(ownRecorder, ownRequest)
 	if ownRecorder.Code != http.StatusOK || ownRecorder.Body.String() != "cdn-bytes" {
 		t.Fatalf("与本机同网段的客户端（%s，本机网段 %s）应当被中继：状态 %d，body %q",
-			ownClient, prefixes[0], ownRecorder.Code, ownRecorder.Body.String())
+			probeAddress, probePrefix, ownRecorder.Code, ownRecorder.Body.String())
 	}
 	// 日志里的路径是客户端原始请求路径，不含查询串（stats.Event.Path = URL.Path）。
 	// 这一句是用户直接读到的东西，整句钉住：跳转模式、客户端 IP、与本机为同一网段、
-	// 改由 AetherLink 中继。只有 ULA 的机器（fd00::/8）本来就落进内置规则、说明为空，
-	// 那种机器不查这一条。
-	if !resolver.ClientAddress(ownClient).IsPrivate() &&
-		!logContainsAll("中继 /emby/Videos/movie-1/stream.mkv",
-			"跳转模式为公网跳转（public），客户端 IP "+ownClient+"，与本机为同一网段 "+prefixes[0].String()+"，改由 AetherLink 中继") {
-		t.Fatalf("自动识别那一次没有按新句式留下说明（本机网段 %s）", prefixes[0])
+	// 改由 AetherLink 中继。（样本已经挑过，不落进内置规则，说明必定不为空。）
+	if !logContainsAll("中继 /emby/Videos/movie-1/stream.mkv",
+		"跳转模式为公网跳转（public），客户端 IP "+probeAddress+"，与本机为同一网段 "+probePrefix+"，改由 AetherLink 中继") {
+		t.Fatalf("自动识别那一次没有按新句式留下说明（本机网段 %s）", probePrefix)
 	}
 }
 
