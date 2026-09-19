@@ -100,7 +100,7 @@ func (p *embyProvider) WantsResponseRewrite(request *http.Request) bool {
 }
 
 // RewriteResponse 把 STRM 媒体源压成 DirectStream 引回 AetherLink 的 /stream
-// 路由，且没有例外：客户端必须先回到这条路，卡片上选的「播放跳转」才有意义——
+// 路由，且没有例外：客户端必须先回到这条路，卡片上选的「跳转模式」才有意义——
 // 模式决定的是字节由 AetherLink 302 出去还是由 AetherLink 中继，客户端若拿
 // DirectPlay 直连 Path（网盘 / OpenList 直链）就绕开了我们，四种模式全都等于没设。
 //

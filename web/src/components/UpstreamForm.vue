@@ -118,6 +118,14 @@ const redirectNote = computed(() => {
   }
 })
 
+// 飞牛影视下只有「始终跳转」这一档稳（用户 2026-09-19 反馈）。其余档位要在解析出直链的
+// 同时按客户端来源分流，而飞牛的直链要靠它自己的播放协商缓存（10 分钟）与播放器随请求
+// 带来的令牌：窗口一过那次就退回透传，表现成时好时坏。所以在这几档后面标一个黄色感叹号，
+// 把「不稳定」写在用户做选择的地方，而不是让他事后去日志里发现。
+const unstableRedirectHint =
+  '飞牛影视下这个档位不稳定：它要在解析直链的同时按客户端来源分流，而飞牛的直链依赖上游的播放协商缓存与播放器令牌，窗口一过那次会退回透传'
+const redirectUnstable = (value) => form.value.type === 'fnos' && value !== 'always'
+
 const keyPlaceholder = computed(() => {
   if (form.value.keepApiKey) return '留空保留原密钥'
   return serviceHint.value.key
@@ -325,7 +333,17 @@ async function save() {
       <div class="modal-head">
         <h2>{{ isCreate ? '添加反代上游' : `编辑 ${props.upstream.name}` }}</h2>
         <span class="tag" v-if="!isCreate && props.upstream.listening">端口已监听</span>
-        <button class="ghost close" @click="emit('close')">关闭</button>
+        <button
+          class="ghost close icon-button"
+          type="button"
+          title="关闭"
+          aria-label="关闭"
+          @click="emit('close')"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6.5 6.5l11 11M17.5 6.5l-11 11" />
+          </svg>
+        </button>
       </div>
 
       <div class="modal-body">
@@ -337,9 +355,9 @@ async function save() {
               <input v-model="form.name" placeholder="例如：我的有声书" />
             </label>
             <div class="field">
-              <span>服务端类型</span>
+              <span>媒体类型</span>
               <details class="form-select" @keydown="handleDropdownKey">
-                <summary :aria-label="`服务端类型：${optionLabel(serviceOptions, form.type)}`">{{ optionLabel(serviceOptions, form.type) }}</summary>
+                <summary :aria-label="`媒体类型：${optionLabel(serviceOptions, form.type)}`">{{ optionLabel(serviceOptions, form.type) }}</summary>
                 <div class="form-select-options">
                   <button
                     v-for="option in serviceOptions"
@@ -430,22 +448,39 @@ async function save() {
                 </button>
               </span>
             </label>
-            <!-- 播放跳转排在账号密码之后：飞牛影视没有 API 密钥这一项，
+            <!-- 跳转模式排在账号密码之后：飞牛影视没有 API 密钥这一项，
                  账号密码因此并排落在同一行，跳转选择框跟在它们后面。 -->
             <div class="field">
-              <span>播放跳转</span>
+              <span>跳转模式</span>
               <details class="form-select" @keydown="handleDropdownKey">
-                <summary :aria-label="`播放跳转：${optionLabel(redirectOptions, form.redirectMode)}`">{{ optionLabel(redirectOptions, form.redirectMode) }}</summary>
+                <summary
+                  :aria-label="`跳转模式：${optionLabel(redirectOptions, form.redirectMode)}${redirectUnstable(form.redirectMode) ? '，飞牛影视下不稳定' : ''}`"
+                  :title="redirectUnstable(form.redirectMode) ? unstableRedirectHint : undefined"
+                >
+                  {{ optionLabel(redirectOptions, form.redirectMode) }}
+                  <svg v-if="redirectUnstable(form.redirectMode)" class="jump-warn" viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="12" cy="12" r="8.6" />
+                    <path d="M12 7.6v5.2" />
+                    <path d="M12 16.1h.01" />
+                  </svg>
+                </summary>
                 <div class="form-select-options">
                   <button
                     v-for="option in redirectOptions"
                     :key="option.value"
                     type="button"
                     :aria-pressed="form.redirectMode === option.value"
+                    :aria-label="redirectUnstable(option.value) ? `${option.label}，飞牛影视下不稳定` : undefined"
+                    :title="redirectUnstable(option.value) ? unstableRedirectHint : undefined"
                     :class="{ selected: form.redirectMode === option.value }"
                     @click="selectOption('redirectMode', option.value, $event)"
                   >
                     {{ option.label }}
+                    <svg v-if="redirectUnstable(option.value)" class="jump-warn" viewBox="0 0 24 24" aria-hidden="true">
+                      <circle cx="12" cy="12" r="8.6" />
+                      <path d="M12 7.6v5.2" />
+                      <path d="M12 16.1h.01" />
+                    </svg>
                   </button>
                 </div>
               </details>

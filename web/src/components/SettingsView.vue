@@ -576,7 +576,17 @@ onMounted(load)
       <div class="modal account-confirm-modal">
         <div class="modal-head">
           <h2>确认修改账号</h2>
-          <button class="ghost close" @click="accountConfirm = false">关闭</button>
+          <button
+            class="ghost close icon-button"
+            type="button"
+            title="关闭"
+            aria-label="关闭"
+            @click="accountConfirm = false"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6.5 6.5l11 11M17.5 6.5l-11 11" />
+            </svg>
+          </button>
         </div>
         <div class="modal-body">
           <p>保存后当前登录会话会失效，需要使用新账号和密码重新登录。</p>

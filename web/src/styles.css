@@ -2441,6 +2441,13 @@ td.target-cell {
 .modal-body {
   padding: 20px 22px;
   overflow: auto;
+  /* 内容超过一屏时照样能用滚轮滚，但不摆那根竖滚动条：弹窗本身不宽，一条常驻的
+     滚动槽会把两列排版挤歪，露出来也像是出了问题（用户 2026-09-19 要求）。 */
+  scrollbar-width: none;
+}
+
+.modal-body::-webkit-scrollbar {
+  display: none;
 }
 
 .modal-foot {
@@ -2553,6 +2560,21 @@ td.target-cell {
   border-color: transparent;
   background: var(--accent-wash);
   color: var(--accent-ink);
+}
+
+/* 「飞牛影视下这个档位不稳定」的黄色感叹号：下拉选项与已选值（summary）里都会出现，
+   所以两份宿主（button 与 summary）都要能承接，属性就写全，不靠 button svg 那条规则。 */
+.jump-warn {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  margin-left: 4px;
+  fill: none;
+  stroke: #c9992f;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vertical-align: -2px;
 }
 
 /* ---------- 表格、标签与其他 ---------- */
