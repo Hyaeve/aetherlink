@@ -2577,6 +2577,58 @@ td.target-cell {
   vertical-align: -2px;
 }
 
+/* 悬停说明：原先挂在原生 title 上，框的宽窄由浏览器说了算（又宽、又不跟站内样式走），
+   所以换成自己做的小气泡。宽度上限取站内既有提示框（`.cell-tooltip` 的上限 620px）
+   的五分之二；圆角、描边与底色则与站内的输入框同一套（--radius-sm + --border-strong）。 */
+.jump-warn-tip {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  vertical-align: -2px;
+}
+
+/* 感叹号本身只有 14px，悬停热区太小；用绝对定位的伪元素往外扩一圈，不占布局。 */
+.jump-warn-tip::before {
+  content: '';
+  position: absolute;
+  inset: -5px -4px;
+}
+
+.jump-warn-tip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 9px);
+  z-index: 1000;
+  width: max-content;
+  max-width: 248px;
+  /* 伪元素不吃 `*` 选择器，默认是 content-box；不写这行的话 max-width 只卡内容宽，
+     算上 22px 内边距 + 2px 描边，露出来的是 272px 而不是 248px。 */
+  box-sizing: border-box;
+  padding: 9px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: rgba(253, 253, 252, 0.98);
+  box-shadow: var(--shadow-md);
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.6;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, 4px);
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+
+.jump-warn-tip:hover::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
 /* ---------- 表格、标签与其他 ---------- */
 
 table {

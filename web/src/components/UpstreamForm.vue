@@ -455,14 +455,21 @@ async function save() {
               <details class="form-select" @keydown="handleDropdownKey">
                 <summary
                   :aria-label="`跳转模式：${optionLabel(redirectOptions, form.redirectMode)}${redirectUnstable(form.redirectMode) ? '，飞牛影视下不稳定' : ''}`"
-                  :title="redirectUnstable(form.redirectMode) ? unstableRedirectHint : undefined"
                 >
                   {{ optionLabel(redirectOptions, form.redirectMode) }}
-                  <svg v-if="redirectUnstable(form.redirectMode)" class="jump-warn" viewBox="0 0 24 24" aria-hidden="true">
-                    <circle cx="12" cy="12" r="8.6" />
-                    <path d="M12 7.6v5.2" />
-                    <path d="M12 16.1h.01" />
-                  </svg>
+                  <!-- 说明气泡挂在这个 span 上：原生 title 的框宽由浏览器定，又宽又不跟站内样式走。
+                       不挂在 summary 上是因为它的 ::after 已经被下拉箭头占了。 -->
+                  <span
+                    v-if="redirectUnstable(form.redirectMode)"
+                    class="jump-warn-tip"
+                    :data-tooltip="unstableRedirectHint"
+                  >
+                    <svg class="jump-warn" viewBox="0 0 24 24" aria-hidden="true">
+                      <circle cx="12" cy="12" r="8.6" />
+                      <path d="M12 7.6v5.2" />
+                      <path d="M12 16.1h.01" />
+                    </svg>
+                  </span>
                 </summary>
                 <div class="form-select-options">
                   <button
@@ -471,16 +478,21 @@ async function save() {
                     type="button"
                     :aria-pressed="form.redirectMode === option.value"
                     :aria-label="redirectUnstable(option.value) ? `${option.label}，飞牛影视下不稳定` : undefined"
-                    :title="redirectUnstable(option.value) ? unstableRedirectHint : undefined"
                     :class="{ selected: form.redirectMode === option.value }"
                     @click="selectOption('redirectMode', option.value, $event)"
                   >
                     {{ option.label }}
-                    <svg v-if="redirectUnstable(option.value)" class="jump-warn" viewBox="0 0 24 24" aria-hidden="true">
-                      <circle cx="12" cy="12" r="8.6" />
-                      <path d="M12 7.6v5.2" />
-                      <path d="M12 16.1h.01" />
-                    </svg>
+                    <span
+                      v-if="redirectUnstable(option.value)"
+                      class="jump-warn-tip"
+                      :data-tooltip="unstableRedirectHint"
+                    >
+                      <svg class="jump-warn" viewBox="0 0 24 24" aria-hidden="true">
+                        <circle cx="12" cy="12" r="8.6" />
+                        <path d="M12 7.6v5.2" />
+                        <path d="M12 16.1h.01" />
+                      </svg>
+                    </span>
                   </button>
                 </div>
               </details>
