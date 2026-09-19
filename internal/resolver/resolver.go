@@ -438,9 +438,9 @@ func (r *Resolver) ShouldRedirectForClient(resolution *Resolution, redirectCfg c
 	case config.RedirectNever:
 		return false
 	case config.RedirectPublic:
-		return ScopeOfClient(client) == ClientScopePublic
+		return ScopeOfClient(client, redirectCfg.IntranetCIDRs...) == ClientScopePublic
 	case config.RedirectPrivate:
-		return ScopeOfClient(client) == ClientScopePrivate
+		return ScopeOfClient(client, redirectCfg.IntranetCIDRs...) == ClientScopePrivate
 	case config.RedirectAlways:
 		return true
 	default:
@@ -456,28 +456,76 @@ type ClientScope string
 const (
 	// ClientScopePublic 是可全球路由的公网地址。
 	ClientScopePublic ClientScope = "公网"
-	// ClientScopePrivate 是 RFC1918 / 回环 / 链路本地等内网地址。
+	// ClientScopePrivate 表示客户端与 AetherLink 在同一个网络里，三条来路：
+	// 内置规则（RFC1918 / 回环 / 链路本地 / IPv6 ULA）、设置页声明的「内网网段」、
+	// 以及与 AetherLink 本机同一网段（自动的那一层，见 localnet.go）。
 	ClientScopePrivate ClientScope = "内网"
 	// ClientScopeUnknown 表示地址缺失或无法解析。条件跳转模式对它一律中继。
 	ClientScopeUnknown ClientScope = "无法识别"
 )
 
 // ScopeOfClient 把一条客户端地址（裸 IP 或 ip:port）归类为公网、内网或无法识别。
-func ScopeOfClient(client string) ClientScope {
-	address, err := netip.ParseAddr(strings.TrimSpace(client))
+//
+// intranet 是配置里补充的内网网段（config.Redirect.IntranetCIDRs）。内置规则
+// 只认 RFC1918、回环、链路本地与 IPv6 ULA(fc00::/7)；而家里的设备拿到的常常是
+// 运营商下发的 IPv6 全局地址（240e:: 这类 GUA），按地址类型它是公网，可它确实
+// 在局域网里 —— 于是「公网跳转」会错误地 302 给它、「内网跳转」又会漏掉它。
+// 命中所列网段的一律按内网处理；此外**与本机处于同一网段的客户端**也算内网
+// （不需要配置的那一层，见 localnet.go）。
+func ScopeOfClient(client string, intranet ...string) ClientScope {
+	scope, _ := ScopeOfClientWithReason(client, intranet...)
+	return scope
+}
+
+// ScopeOfClientWithReason 同 ScopeOfClient，并额外返回一句可以直接接进日志的说明
+// （空串表示没什么可说的）。只有「与本机同一网段」这一层会出声：它是从本机地址
+// 推算出来的、界面上看不到，不留线索用户就只看到一句「客户端是内网地址」，
+// 无从判断该不该信。
+func ScopeOfClientWithReason(client string, intranet ...string) (ClientScope, string) {
+	return scopeOfClient(ClientAddress(client), intranet, LocalNetworkPrefixes())
+}
+
+// scopeOfClient 是内外网判定的全部逻辑，纯函数：declared 是用户声明的网段
+// （config.Redirect.IntranetCIDRs），local 是本机自己的网段。拆成纯函数是为了
+// 能拿固定网段直接验证，不必依赖跑测试那台机器上恰好插着什么网卡。
+func scopeOfClient(address netip.Addr, declared []string, local []netip.Prefix) (ClientScope, string) {
+	if !address.IsValid() || address.IsUnspecified() || address.IsMulticast() {
+		return ClientScopeUnknown, ""
+	}
+	if address.IsPrivate() || address.IsLoopback() || address.IsLinkLocalUnicast() {
+		return ClientScopePrivate, ""
+	}
+	for _, value := range declared {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(value))
+		if err == nil && prefix.Contains(address) {
+			return ClientScopePrivate, ""
+		}
+	}
+	for _, prefix := range local {
+		if prefix.Contains(address) {
+			return ClientScopePrivate, "，与本机在同一网段 " + prefix.String()
+		}
+	}
+	return ClientScopePublic, ""
+}
+
+// ClientAddress 解析一条客户端地址，接受裸 IP（含带 zone 的 `fe80::1%eth0`）
+// 与 `ip:port`（含 `[fe80::1%eth0]:5000`）。解析结果一律去掉 zone：内外网判断
+// 只看地址本身，而 netip 的 `Prefix.Contains` 对带 zone 的地址**恒为 false** ——
+// 留着它，配置里的「内网网段」就匹配不上这台设备。返回零值表示无法识别。
+func ClientAddress(value string) netip.Addr {
+	trimmed := strings.TrimSpace(value)
+	address, err := netip.ParseAddr(trimmed)
 	if err != nil {
-		if endpoint, endpointErr := netip.ParseAddrPort(strings.TrimSpace(client)); endpointErr == nil {
+		if endpoint, endpointErr := netip.ParseAddrPort(trimmed); endpointErr == nil {
 			address = endpoint.Addr()
 		}
 	}
-	address = address.Unmap()
-	if !address.IsValid() || address.IsUnspecified() || address.IsMulticast() {
-		return ClientScopeUnknown
+	address = address.Unmap().WithZone("")
+	if address.IsUnspecified() || address.IsMulticast() {
+		return netip.Addr{}
 	}
-	if address.IsPrivate() || address.IsLoopback() || address.IsLinkLocalUnicast() {
-		return ClientScopePrivate
-	}
-	return ClientScopePublic
+	return address
 }
 
 func resolveRelative(base, location string) (string, error) {

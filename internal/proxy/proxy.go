@@ -355,7 +355,7 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 	}
 	intranetTargetPublicClient := wantRedirect && s.redirect.FollowUpstreamRedirects &&
 		urlx.IsPrivateHost(playURL) &&
-		resolver.ScopeOfClient(event.Client) == resolver.ClientScopePublic
+		resolver.ScopeOfClient(event.Client, s.redirect.IntranetCIDRs...) == resolver.ClientScopePublic
 	if intranetTargetPublicClient {
 		// 安全网优先于名单：直链是内网地址而客户端在外网时，302 出去也连不上，
 		// 只能中继，名单在这一格上没有出路。
@@ -426,7 +426,9 @@ func (s *Server) noRedirectReason(resolution *resolver.Resolution, client string
 	if resolution.Target.Type != strm.TargetRemote {
 		return "目标不是 http 地址"
 	}
-	scope := resolver.ScopeOfClient(client)
+	// scopeNote 是「为什么算内网」的补充说明，目前只有自动识别的「与本机同一网段」
+	// 会填它 —— 那一层用户看不见，日志里必须给出线索。
+	scope, scopeNote := resolver.ScopeOfClientWithReason(client, s.redirect.IntranetCIDRs...)
 	shown := client
 	if shown == "" {
 		shown = "空"
@@ -437,7 +439,7 @@ func (s *Server) noRedirectReason(resolution *resolver.Resolution, client string
 	case config.RedirectPublic:
 		switch scope {
 		case resolver.ClientScopePrivate:
-			return fmt.Sprintf("跳转模式为%s，而客户端 %s 是内网地址（只有公网客户端才 302）", config.RedirectModeName(config.RedirectPublic), shown)
+			return fmt.Sprintf("跳转模式为%s，而客户端 %s 是内网地址%s（只有公网客户端才 302）", config.RedirectModeName(config.RedirectPublic), shown, scopeNote)
 		case resolver.ClientScopeUnknown:
 			return fmt.Sprintf("跳转模式为%s，而客户端 IP 无法识别（若 AetherLink 前面还有反代，请把它加入 trusted_proxy_cidrs）", config.RedirectModeName(config.RedirectPublic))
 		default:

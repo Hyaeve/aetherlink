@@ -195,6 +195,12 @@ func (u Upstream) Clone() Upstream {
 type Redirect struct {
 	TrustedProxyCIDRs []string     `yaml:"trusted_proxy_cidrs,omitempty" json:"trustedProxyCidrs"`
 	Mode              RedirectMode `yaml:"mode" json:"mode"`
+	// IntranetCIDRs 补充内置的内网判断。内置只认 RFC1918、回环、链路本地与
+	// IPv6 ULA(fc00::/7)；而家里的设备拿到的常常是运营商下发的 IPv6 全局地址
+	// （240e:: 这类 GUA），按地址类型它是公网，可它确实在局域网里 —— 于是
+	// 「公网跳转」会错误地 302 给它、「内网跳转」又会漏掉它。命中所列网段
+	// 即按内网处理，只影响跳转策略与日志里的内外网归属。
+	IntranetCIDRs []string `yaml:"intranet_cidrs,omitempty" json:"intranetCidrs,omitempty"`
 	// FollowUpstreamRedirects resolves intermediate 302 hops (common for 115
 	// pick-code services) before answering the client, so players that do not
 	// follow redirects still get a final URL.
@@ -435,6 +441,7 @@ func (c *Config) SetPath(path string) { c.path = path }
 func (c *Config) Clone() *Config {
 	copied := *c
 	copied.Redirect.TrustedProxyCIDRs = append([]string(nil), c.Redirect.TrustedProxyCIDRs...)
+	copied.Redirect.IntranetCIDRs = append([]string(nil), c.Redirect.IntranetCIDRs...)
 	copied.Redirect.ForwardUserAgent = clonePointer(c.Redirect.ForwardUserAgent)
 	copied.Redirect.BlockClientUserAgent = clonePointer(c.Redirect.BlockClientUserAgent)
 	copied.Redirect.BlockClientUserAgentEmby = clonePointer(c.Redirect.BlockClientUserAgentEmby)
@@ -714,6 +721,9 @@ func merge(base, parsed *Config) {
 	if parsed.Redirect.TrustedProxyCIDRs != nil {
 		base.Redirect.TrustedProxyCIDRs = append([]string(nil), parsed.Redirect.TrustedProxyCIDRs...)
 	}
+	if parsed.Redirect.IntranetCIDRs != nil {
+		base.Redirect.IntranetCIDRs = append([]string(nil), parsed.Redirect.IntranetCIDRs...)
+	}
 	if parsed.Redirect.FallbackUserAgent != "" {
 		base.Redirect.FallbackUserAgent = parsed.Redirect.FallbackUserAgent
 	}
@@ -824,6 +834,19 @@ func (c *Config) Validate() error {
 		prefix, err := netip.ParsePrefix(value)
 		if err != nil || prefix.Bits() == 0 {
 			return fmt.Errorf("可信代理 %q 必须为明确的 IP/CIDR 网段，不能信任全部地址", value)
+		}
+	}
+	// 内网网段：命中的客户端一律按内网处理，所以只拦「不是网段」与「覆盖全部
+	// 地址」两种。后者会让内外网判断整体失效（效果等同于把跳转模式改成始终
+	// 跳转或始终中继），真有那种需求应当直接改模式。
+	c.Redirect.IntranetCIDRs = normalizeStringList(c.Redirect.IntranetCIDRs)
+	for _, value := range c.Redirect.IntranetCIDRs {
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			return fmt.Errorf("内网网段 %q 不是合法的 IP/CIDR 网段", value)
+		}
+		if prefix.Bits() == 0 {
+			return fmt.Errorf("内网网段 %q 覆盖全部地址，会让内外网判断失效：请改用跳转模式表达", value)
 		}
 	}
 	// 飞牛影视屏蔽 UA 是从 Emby 共用配置拆出来的：老配置没有飞牛专属字段，

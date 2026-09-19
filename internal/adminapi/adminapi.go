@@ -294,7 +294,13 @@ type settingsPayload struct {
 }
 
 type redirectSettings struct {
-	TrustedProxyCIDRs                        []string `json:"trustedProxyCidrs"`
+	TrustedProxyCIDRs []string `json:"trustedProxyCidrs"`
+	IntranetCIDRs     []string `json:"intranetCidrs"`
+	// LocalNetworkPrefixes 是只读的：AetherLink 检测到的本机 IPv6 网段。判定除了
+	// 用户填的 IntranetCIDRs，还会把这些网段里的客户端按内网处理（前缀随运营商变
+	// 时自动跟随）。放进响应是为了让它可见 —— 一个看不见的自动规则用户没法信，
+	// 也没法排查；请求里带上它不会被采纳。
+	LocalNetworkPrefixes                     []string `json:"localNetworkPrefixes"`
 	Mode                                     string   `json:"mode"`
 	FollowUpstreamRedirects                  bool     `json:"followUpstreamRedirects"`
 	MaxFollowHops                            int      `json:"maxFollowHops"`
@@ -321,12 +327,25 @@ type cacheSettings struct {
 	MaxSize int    `json:"maxSize"`
 }
 
+// localNetworkPrefixes 把检测到的本机网段整理成字符串列表。空的时候给空列表而不是
+// nil —— 界面按数组处理，null 会让它以为拿到了一个值。
+func localNetworkPrefixes() []string {
+	prefixes := resolver.LocalNetworkPrefixes()
+	values := make([]string, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		values = append(values, prefix.String())
+	}
+	return values
+}
+
 func settingsFromConfig(cfg *config.Config) settingsPayload {
 	return settingsPayload{
 		LogLevel:  cfg.Server.LogLevel,
 		LogBuffer: cfg.Server.LogBuffer,
 		Redirect: redirectSettings{
 			TrustedProxyCIDRs:                        append([]string(nil), cfg.Redirect.TrustedProxyCIDRs...),
+			IntranetCIDRs:                            append([]string(nil), cfg.Redirect.IntranetCIDRs...),
+			LocalNetworkPrefixes:                     localNetworkPrefixes(),
 			Mode:                                     string(cfg.Redirect.Mode),
 			FollowUpstreamRedirects:                  cfg.Redirect.FollowUpstreamRedirects,
 			MaxFollowHops:                            cfg.Redirect.MaxFollowHops,
@@ -407,6 +426,7 @@ func (a *API) handlePutSettings(writer http.ResponseWriter, request *http.Reques
 		draft.Redirect.MaxFollowHops = payload.Redirect.MaxFollowHops
 		draft.Redirect.ForwardUserAgent = &payload.Redirect.ForwardUserAgent
 		draft.Redirect.TrustedProxyCIDRs = append([]string(nil), payload.Redirect.TrustedProxyCIDRs...)
+		draft.Redirect.IntranetCIDRs = append([]string(nil), payload.Redirect.IntranetCIDRs...)
 		draft.Redirect.BlockClientUserAgent = &payload.Redirect.BlockClientUserAgent
 		draft.Redirect.BlockClientUserAgentEmby = &payload.Redirect.BlockClientUserAgentEmby
 		draft.Redirect.BlockClientUserAgentFnos = &payload.Redirect.BlockClientUserAgentFnos

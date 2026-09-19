@@ -24,6 +24,12 @@ const accountBusy = ref(false)
 const accountConfirm = ref(false)
 const blockedUserAgentText = ref('')
 const trustedProxyText = ref('')
+// 内网网段：内置判断只认 RFC1918 / 回环 / 链路本地 / IPv6 ULA，运营商下发给
+// 家里设备的 IPv6 全局地址（240e:: 这类）会被算成公网。与可信前置代理共用
+// 一张卡片和一颗保存按钮。
+const intranetText = ref('')
+// 只读：AetherLink 检测到的本机网段，里面的客户端会被自动按内网处理。
+const localNetworkText = ref([])
 const blockedEmbyUserAgentText = ref('')
 const blockedFnosUserAgentText = ref('')
 const blockedAudiobookshelfUserAgentText = ref('')
@@ -92,6 +98,8 @@ const BLOCKED_LISTS = [
 
 function syncBlockedUserAgents(settingsPayload) {
   trustedProxyText.value = (settingsPayload?.redirect?.trustedProxyCidrs || []).join('\n')
+  intranetText.value = (settingsPayload?.redirect?.intranetCidrs || []).join('\n')
+  localNetworkText.value = settingsPayload?.redirect?.localNetworkPrefixes || []
   for (const [type, key] of [['emby', 'blockedUserAgentsEmbyUpstreams'], ['fnos', 'blockedUserAgentsFnosUpstreams'], ['audiobookshelf', 'blockedUserAgentsAudiobookshelfUpstreams']]) {
     if (!Array.isArray(settingsPayload?.redirect?.[key])) settingsPayload.redirect[key] = []
   }
@@ -103,6 +111,7 @@ function syncBlockedUserAgents(settingsPayload) {
 
 function applySecurityDraft() {
   settings.value.redirect.trustedProxyCidrs = trustedProxyText.value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)
+  settings.value.redirect.intranetCidrs = intranetText.value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)
   for (const [type, textRef] of BLOCKED_LISTS) {
     settings.value.redirect[listKey(type)] = textRef.value
       .split(/\r?\n/)
@@ -164,13 +173,18 @@ async function saveSecurity() {
   }
 }
 
-// 可信前置代理窗口有独立的保存按钮，只提交这一份草稿，不动屏蔽 UA。
+// 「网络地址」卡片有独立的保存按钮，只提交这一份草稿（前置代理 + 内网网段），
+// 不动屏蔽 UA。
 async function saveTrustedProxy() {
   proxyBusy.value = true
   proxySaved.value = false
   error.value = ''
   try {
     settings.value.redirect.trustedProxyCidrs = trustedProxyText.value
+      .split(/\r?\n/)
+      .map((value) => value.trim())
+      .filter(Boolean)
+    settings.value.redirect.intranetCidrs = intranetText.value
       .split(/\r?\n/)
       .map((value) => value.trim())
       .filter(Boolean)
@@ -360,11 +374,18 @@ onMounted(load)
         <section class="settings-card trusted-proxy-card">
           <div class="settings-card-head compact">
             <div class="settings-icon blue" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10" /></svg></div>
-            <div><h2>可信前置代理</h2><p>填写 NAS 反向代理的来源 IP 或 CIDR</p></div>
+            <div><h2>网络地址</h2><p>前置代理来源与内网网段</p></div>
           </div>
           <label class="field trusted-proxy-field">
-            <span>IP/CIDR</span>
+            <span>可信前置代理 IP/CIDR</span>
             <textarea v-model="trustedProxyText" rows="2" placeholder="192.168.1.10/32"></textarea>
+          </label>
+          <label class="field trusted-proxy-field">
+            <span>内网网段</span>
+            <textarea v-model="intranetText" rows="2" placeholder="240e:390:1a2b:3c4d::/64"></textarea>
+            <small class="field-note">运营商下发的 IPv6 全局地址按地址类型算公网，填这里让它按内网处理；与本机同网段的客户端本来就会自动按内网处理，不必填</small>
+            <small class="field-note" v-if="localNetworkText.length">本机检测到的网段（自动按内网处理）：{{ localNetworkText.join('、') }}</small>
+            <small class="field-note" v-else>未检测到本机 IPv6 网段（容器不是 host 网络时看不到局域网网段，属正常）</small>
           </label>
           <div class="trusted-proxy-foot">
             <span v-if="proxySaved" class="save-confirm"><i></i>已保存</span>

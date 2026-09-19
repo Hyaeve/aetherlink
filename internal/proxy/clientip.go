@@ -4,23 +4,15 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
+
+	"github.com/aetherlink/aetherlink/internal/resolver"
 )
 
+// clientAddress 与 resolver.ClientAddress 用同一套解析：裸 IP、`ip:port`、
+// 带 zone 的链路本地地址。内外网判断与日志里的「客户端 IP」共用它，不要各写
+// 一份 —— 两边不一致时，日志会显示一个判不出归属的地址。
 func clientAddress(value string) netip.Addr {
-	value = strings.TrimSpace(value)
-	address, err := netip.ParseAddr(value)
-	if err != nil {
-		endpoint, endpointErr := netip.ParseAddrPort(value)
-		if endpointErr != nil {
-			return netip.Addr{}
-		}
-		address = endpoint.Addr()
-	}
-	address = address.Unmap()
-	if address.IsUnspecified() || address.IsMulticast() {
-		return netip.Addr{}
-	}
-	return address
+	return resolver.ClientAddress(value)
 }
 
 func clientIP(request *http.Request, trustedCIDRs ...string) string {

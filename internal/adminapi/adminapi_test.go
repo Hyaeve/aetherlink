@@ -14,6 +14,7 @@ import (
 	"github.com/aetherlink/aetherlink/internal/auth"
 	"github.com/aetherlink/aetherlink/internal/config"
 	"github.com/aetherlink/aetherlink/internal/pathmap"
+	"github.com/aetherlink/aetherlink/internal/resolver"
 	"github.com/aetherlink/aetherlink/internal/runtime"
 	"github.com/aetherlink/aetherlink/internal/stats"
 )
@@ -654,6 +655,101 @@ func TestPutSettingsAppliesAndPersists(t *testing.T) {
 	}
 	if reloaded.Redirect.Mode != config.RedirectPrivate || reloaded.Redirect.ShouldForwardUserAgent() {
 		t.Fatalf("settings were not persisted: %+v", reloaded.Redirect)
+	}
+}
+
+// 设置页的「内网网段」要整条链路都能往返：/config 得下发它（界面靠这一项回填
+// 输入框），保存得落盘，读回来得还原。少任何一环，用户填的网段都会在下一次保存
+// 时被静默抹掉，而现象跟没填一模一样。
+func TestSettingsRoundTripKeepsIntranetCIDRs(t *testing.T) {
+	env := newEnv(t)
+	token := env.login(t, testUsername, testPassword)
+	payload := `{"logLevel":"info","redirect":{"mode":"public","probeTimeout":"15s",` +
+		`"intranetCidrs":["240e:390:1a2b:3c4d::/64","192.168.0.0/16"]},` +
+		`"cache":{"ttl":"5m","maxSize":10}}`
+	if recorder := env.do(http.MethodPut, BasePath+"/settings", payload, token); recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	cfg := env.rt.Config()
+	if len(cfg.Redirect.IntranetCIDRs) != 2 || cfg.Redirect.IntranetCIDRs[0] != "240e:390:1a2b:3c4d::/64" {
+		t.Fatalf("内网网段没有被应用：%v", cfg.Redirect.IntranetCIDRs)
+	}
+	reloaded, err := config.Load(env.confPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Redirect.IntranetCIDRs) != 2 {
+		t.Fatalf("内网网段没有落盘：%v", reloaded.Redirect.IntranetCIDRs)
+	}
+
+	recorder := env.do(http.MethodGet, BasePath+"/config", "", token)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("读取配置 status = %d", recorder.Code)
+	}
+	var response struct {
+		Settings struct {
+			Redirect struct {
+				IntranetCIDRs []string `json:"intranetCidrs"`
+			} `json:"redirect"`
+		} `json:"settings"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode config: %v (body=%s)", err, recorder.Body.String())
+	}
+	if len(response.Settings.Redirect.IntranetCIDRs) != 2 || response.Settings.Redirect.IntranetCIDRs[1] != "192.168.0.0/16" {
+		t.Fatalf("/config 没有下发内网网段：%v", response.Settings.Redirect.IntranetCIDRs)
+	}
+}
+
+// 本机网段是只读的：随设置接口下发，让用户看得见「哪些客户端会被自动按内网处理」，
+// 但请求里带上它不该被当成配置存下来。
+func TestSettingsExposeLocalNetworkPrefixesReadOnly(t *testing.T) {
+	env := newEnv(t)
+	token := env.login(t, testUsername, testPassword)
+
+	// 请求里塞一个假的本机网段，看它会不会被采纳。
+	payload := `{"logLevel":"info","redirect":{"mode":"public","probeTimeout":"15s",` +
+		`"intranetCidrs":[],"localNetworkPrefixes":["203.0.113.0/24"]},` +
+		`"cache":{"ttl":"5m","maxSize":10}}`
+	if recorder := env.do(http.MethodPut, BasePath+"/settings", payload, token); recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	if cfg := env.rt.Config(); len(cfg.Redirect.IntranetCIDRs) != 0 {
+		t.Fatalf("只读字段不该被写进配置：%v", cfg.Redirect.IntranetCIDRs)
+	}
+
+	recorder := env.do(http.MethodGet, BasePath+"/config", "", token)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("读取配置 status = %d", recorder.Code)
+	}
+	// 空的时候也必须是 []，不是 null —— 界面按数组处理。
+	if !strings.Contains(recorder.Body.String(), `"localNetworkPrefixes":[`) {
+		t.Fatalf("/config 没有把本机网段当成数组下发：%s", recorder.Body.String())
+	}
+	var response struct {
+		Settings struct {
+			Redirect struct {
+				LocalNetworkPrefixes []string `json:"localNetworkPrefixes"`
+			} `json:"redirect"`
+		} `json:"settings"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode config: %v (body=%s)", err, recorder.Body.String())
+	}
+	// 下发的是这台机器真实检测到的网段，不是请求里塞的那个。
+	machine := make([]string, 0, 4)
+	for _, prefix := range resolver.LocalNetworkPrefixes() {
+		machine = append(machine, prefix.String())
+	}
+	got := response.Settings.Redirect.LocalNetworkPrefixes
+	if len(got) != len(machine) {
+		t.Fatalf("本机网段 = %v, want %v", got, machine)
+	}
+	for index := range machine {
+		if got[index] != machine[index] {
+			t.Fatalf("本机网段 = %v, want %v", got, machine)
+		}
 	}
 }
 

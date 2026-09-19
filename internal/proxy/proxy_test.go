@@ -1707,6 +1707,112 @@ func TestPublicRedirectRelaysIntranetClientEvenWhenUpstreamBlocksDirectPlay(t *t
 	}
 }
 
+// 用户实例（2026-09-19）：家里每台设备从路由器拿到的都是运营商下发的 IPv6 全局
+// 地址（240e:: 这类 GUA），而判定只按地址类型走 —— GUA 算公网，于是「公网跳转」
+// 把这些明明在内网的客户端统统 302 出去，播放器拿到的是一个它连不上的地址。
+// 一条 TCP 连接只有一个对端地址，从 IPv6 连接里问不出客户端的 IPv4，所以能做的
+// 只有把自家网段明确告诉 AetherLink（设置页「内网网段」）。
+func TestPublicRedirectRelaysIntranetIPv6WhenPrefixConfigured(t *testing.T) {
+	cdn := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Write([]byte("cdn-bytes"))
+	}))
+	defer cdn.Close()
+
+	remoteSource := map[string]any{
+		"Id":        "source-strm",
+		"Path":      cdn.URL + "/movie.mkv",
+		"Protocol":  "Http",
+		"Container": "strm",
+		"MediaType": "Video",
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/emby/Items/movie-1/PlaybackInfo", func(writer http.ResponseWriter, request *http.Request) {
+		writeJSON(t, writer, map[string]any{"MediaSources": []map[string]any{remoteSource}})
+	})
+	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
+		writer.Write([]byte("upstream:" + request.URL.Path))
+	})
+	emby := httptest.NewServer(mux)
+	t.Cleanup(emby.Close)
+
+	streamPath := "/emby/Videos/movie-1/stream.mkv?MediaSourceId=source-strm"
+	// 先走一遍 PlaybackInfo 把改写缓存写热：/stream 命中缓存才会直接用上那份
+	// 媒体源，不然会掉进「回头问上游」的冷路径，那是另一条故事线。
+	warm := func(server *Server) {
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/emby/Items/movie-1/PlaybackInfo", strings.NewReader(`{}`)))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("PlaybackInfo status = %d", recorder.Code)
+		}
+	}
+
+	// 未配置网段：这就是用户报的现象，内网的 IPv6 客户端被判成公网拿到 302。
+	// 样本用 2001:db8::/32（文档保留段）：判定还会参考「本机网段」，用真前缀当
+	// 「应当算公网」的样本时，跑测试那台机器万一就有那个网段，断言会翻车。
+	plain := defaultRedirect()
+	plain.Mode = config.RedirectPublic
+	plainServer, _ := newEmbyTestServer(t, emby.URL, plain)
+	warm(plainServer)
+	plainRecorder := httptest.NewRecorder()
+	plainRequest := httptest.NewRequest(http.MethodGet, streamPath, nil)
+	plainRequest.RemoteAddr = "[2001:db8:1a2b:3c4d::12]:5000"
+	plainServer.ServeHTTP(plainRecorder, plainRequest)
+	if plainRecorder.Code != http.StatusFound {
+		t.Fatalf("没配置内网网段时应当保持原行为（302），得到 %d", plainRecorder.Code)
+	}
+
+	// 配置了自家网段：同一个客户端改为中继。
+	configured := defaultRedirect()
+	configured.Mode = config.RedirectPublic
+	configured.IntranetCIDRs = []string{"2001:db8:1a2b:3c4d::/64"}
+	server, collector := newEmbyTestServer(t, emby.URL, configured)
+	warm(server)
+
+	intranetRecorder := httptest.NewRecorder()
+	intranetRequest := httptest.NewRequest(http.MethodGet, streamPath, nil)
+	intranetRequest.RemoteAddr = "[2001:db8:1a2b:3c4d::12]:5000"
+	server.ServeHTTP(intranetRecorder, intranetRequest)
+	if intranetRecorder.Code != http.StatusOK || intranetRecorder.Body.String() != "cdn-bytes" {
+		t.Fatalf("配置内网网段后应当中继：状态 %d，body %q", intranetRecorder.Code, intranetRecorder.Body.String())
+	}
+
+	// 网段之外的同族地址照旧 302：补充网段不能把公网客户端一起吞进来。
+	outsideRecorder := httptest.NewRecorder()
+	outsideRequest := httptest.NewRequest(http.MethodGet, streamPath, nil)
+	outsideRequest.RemoteAddr = "[2001:db8:1a2b:3c4e::12]:5000"
+	server.ServeHTTP(outsideRecorder, outsideRequest)
+	if outsideRecorder.Code != http.StatusFound {
+		t.Fatalf("网段之外的 IPv6 客户端状态 = %d，want 302", outsideRecorder.Code)
+	}
+	if snapshot := collector.Snapshot(10); snapshot.ProxyStreams != 1 || snapshot.Redirects != 1 {
+		t.Fatalf("中继 %d 次、302 %d 次，want 各 1", snapshot.ProxyStreams, snapshot.Redirects)
+	}
+
+	// 连配置都不用填的那一层：与 AetherLink 本机同网段的客户端同样按内网处理
+	// （运营商换前缀时它自动跟随）。拿真实网卡取样本，没有全局 IPv6 的机器跳过 ——
+	// 这一段的日志说明也只有这一层会写，正好一并钉住。
+	prefixes := resolver.LocalNetworkPrefixes()
+	if len(prefixes) == 0 {
+		t.Log("这台机器没有全局 IPv6 网段（容器不是 host 网络时属正常），跳过自动识别那一段")
+		return
+	}
+	ownClient := prefixes[0].Addr().Next().String()
+	ownRecorder := httptest.NewRecorder()
+	ownRequest := httptest.NewRequest(http.MethodGet, streamPath, nil)
+	ownRequest.RemoteAddr = "[" + ownClient + "]:5000"
+	plainServer.ServeHTTP(ownRecorder, ownRequest)
+	if ownRecorder.Code != http.StatusOK || ownRecorder.Body.String() != "cdn-bytes" {
+		t.Fatalf("与本机同网段的客户端（%s，本机网段 %s）应当被中继：状态 %d，body %q",
+			ownClient, prefixes[0], ownRecorder.Code, ownRecorder.Body.String())
+	}
+	// 日志里的路径是客户端原始请求路径，不含查询串（stats.Event.Path = URL.Path）。
+	// 只有 ULA 的机器（fd00::/8）本来就落进内置规则、说明为空，那种机器不查这一条。
+	if !resolver.ClientAddress(ownClient).IsPrivate() &&
+		!logContainsAll("中继 /emby/Videos/movie-1/stream.mkv", "是内网地址，与本机在同一网段 "+prefixes[0].String()) {
+		t.Fatalf("自动识别那一次没有留下说明（本机网段 %s）", prefixes[0])
+	}
+}
+
 func TestJoinPathAvoidsDuplicateBasePrefix(t *testing.T) {
 	tests := []struct {
 		basePath    string
