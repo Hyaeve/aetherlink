@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { api, visibleMessage } from '../api'
 import { cardStyleFor } from '../palette'
+import { REDIRECT_OPTIONS, redirectLabel, redirectPaths, redirectUnstable } from '../redirectModes'
 import ContextMenu from './ContextMenu.vue'
 import FloatToast from './FloatToast.vue'
 import UpstreamForm from './UpstreamForm.vue'
@@ -32,15 +33,7 @@ const TYPE_LABELS = { audiobookshelf: 'Audiobookshelf', emby: 'Emby', fnos: '飞
 // 卡片左上角的服务标识图，与 public/icons 下的文件名一一对应。
 const TYPE_ICONS = { audiobookshelf: 'abs.png', emby: 'emby.png', fnos: 'fnmovie.png' }
 
-// 与 config.RedirectMode 的四个取值一一对应（内网/公网按客户端 IP 判断：
-// 内置私网规则、与本机同网段，以及设置页「网络地址」里的可信前置代理）。
-const REDIRECT_OPTIONS = [
-  { value: 'always', label: '始终跳转' },
-  { value: 'public', label: '公网跳转' },
-  { value: 'private', label: '内网跳转' },
-  { value: 'never', label: '始终中继' }
-]
-const REDIRECT_LABELS = Object.fromEntries(REDIRECT_OPTIONS.map((option) => [option.value, option.label]))
+// 跳转模式的四档（标签与语义图标）在 ../redirectModes.js，卡片和编辑弹窗共用一份。
 
 const runningCount = computed(() => upstreams.value.filter((item) => item.enabled && item.listening).length)
 const stoppedCount = computed(() => upstreams.value.length - runningCount.value)
@@ -96,8 +89,9 @@ function typeIcon(type) {
   return `/aetherlink/icons/${TYPE_ICONS[type] || 'aetherlink-logo.png'}`
 }
 
-function redirectLabel(mode) {
-  return REDIRECT_LABELS[mode] || REDIRECT_LABELS.always
+// 卡片上的档位要不要标黄：只有飞牛影视、且不是「始终跳转」时才标（判定与编辑弹窗共用）。
+function modeUnstable(upstream) {
+  return redirectUnstable(upstream.type, upstream.redirectMode)
 }
 
 function openProxy(upstream) {
@@ -121,12 +115,15 @@ function closeModeMenu() {
 
 // 下拉挂在卡片外层（卡片 overflow:hidden 会裁掉绝对定位的子元素），
 // 所以用 fixed 定位 + 挂载后按实际尺寸回折，贴住触发按钮的右下角。
-// 宽度直接取触发按钮的宽度，和卡片右上角的模式标识一样宽。
+// 宽度取「触发按钮宽度」与「选项自然宽度」的较大值：选项里除了模式名还有档位图标，
+// 飞牛的非「始终跳转」档后面还跟一个感叹号，可能比按钮宽。
 async function openModeMenu(event, upstream) {
   if (busy.value || modeBusy.value) return
   const anchor = event.currentTarget.getBoundingClientRect()
   modeMenu.value = {
     name: upstream.name,
+    // 带上类型：菜单里要按它决定哪些档位标黄（与编辑弹窗同一个判定）。
+    type: upstream.type,
     current: upstream.redirectMode || 'always',
     width: Math.round(anchor.width),
     left: anchor.right,
@@ -135,11 +132,19 @@ async function openModeMenu(event, upstream) {
   await nextTick()
   const node = modePanel.value
   if (!node || !modeMenu.value) return
-  const { width, height } = node.getBoundingClientRect()
   const margin = 10
+  node.style.width = 'auto'
+  const natural = Math.ceil(node.getBoundingClientRect().width)
+  node.style.width = ''
+  const width = Math.min(
+    Math.max(modeMenu.value.width, natural),
+    Math.max(160, window.innerWidth - margin * 2)
+  )
+  const { height } = node.getBoundingClientRect()
   const below = anchor.bottom + 8
   modeMenu.value = {
     ...modeMenu.value,
+    width,
     left: Math.min(Math.max(margin, anchor.right - width), Math.max(margin, window.innerWidth - width - margin)),
     // 下方放不下就翻到按钮上方，免得贴着视口底边被裁掉。
     top: below + height <= window.innerHeight - margin ? below : Math.max(margin, anchor.top - height - 8)
@@ -316,13 +321,24 @@ onUnmounted(() => {
             :class="{ open: modeMenu?.name === upstream.name }"
             :disabled="busy"
             :title="`跳转模式：${redirectLabel(upstream.redirectMode)}，点击切换`"
-            :aria-label="`${upstream.name}，跳转模式 ${redirectLabel(upstream.redirectMode)}，点击切换`"
+            :aria-label="`${upstream.name}，跳转模式 ${redirectLabel(upstream.redirectMode)}${modeUnstable(upstream) ? '，飞牛影视下不稳定' : ''}，点击切换`"
             :aria-expanded="modeMenu?.name === upstream.name"
             aria-haspopup="menu"
             @click.stop="openModeMenu($event, upstream)"
             @keyup.stop
           >
+            <!-- 档位图标：语义见 redirectModes.js，颜色跟着按钮文字走。 -->
+            <svg class="mode-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path v-for="(d, index) in redirectPaths(upstream.redirectMode)" :key="index" :d="d" />
+            </svg>
             <span>{{ redirectLabel(upstream.redirectMode) }}</span>
+            <!-- 飞牛影视下非「始终跳转」的档位不稳定：和编辑弹窗一样标黄色感叹号，
+                 但卡片上不挂悬停说明，悬停只保留原来的「点击切换」。 -->
+            <svg v-if="modeUnstable(upstream)" class="jump-warn" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="8.6" />
+              <path d="M12 7.6v5.2" />
+              <path d="M12 16.1h.01" />
+            </svg>
             <svg class="mode-caret" viewBox="0 0 24 24" aria-hidden="true">
               <path d="m6 9 6 6 6-6" />
             </svg>
@@ -391,10 +407,20 @@ onUnmounted(() => {
           class="mode-option"
           :class="{ selected: modeMenu.current === option.value }"
           :aria-checked="modeMenu.current === option.value"
+          :aria-label="redirectUnstable(modeMenu.type, option.value) ? `${option.label}，飞牛影视下不稳定` : undefined"
           :disabled="modeBusy"
           @click="selectMode(option.value)"
         >
+          <svg class="mode-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path v-for="(d, index) in option.paths" :key="index" :d="d" />
+          </svg>
           <span class="mode-option-label">{{ option.label }}</span>
+          <!-- 与编辑弹窗同一套判定：飞牛影视下除「始终跳转」都标黄，但这里不挂悬停说明。 -->
+          <svg v-if="redirectUnstable(modeMenu.type, option.value)" class="jump-warn" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="8.6" />
+            <path d="M12 7.6v5.2" />
+            <path d="M12 16.1h.01" />
+          </svg>
         </button>
       </div>
     </div>

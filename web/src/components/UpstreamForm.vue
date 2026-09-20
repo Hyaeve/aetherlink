@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api, visibleMessage } from '../api'
+import { REDIRECT_OPTIONS, redirectPaths, redirectUnstable } from '../redirectModes'
 
 const props = defineProps({
   // upstream 为 null 表示新增。
@@ -97,12 +98,8 @@ const serviceHint = computed(() => serviceHints[form.value.type] || serviceHints
 // 飞牛影视没有静态 API 密钥，表单里为它换成账号密码两项。
 const showApiKey = computed(() => form.value.type !== 'fnos')
 const showCredentials = computed(() => form.value.type === 'fnos')
-const redirectOptions = [
-  { value: 'always', label: '始终跳转' },
-  { value: 'public', label: '公网跳转' },
-  { value: 'private', label: '内网跳转' },
-  { value: 'never', label: '始终中继' }
-]
+// 四档的标签与语义图标都在 ../redirectModes.js，卡片右上角的下拉共用同一份。
+const redirectOptions = REDIRECT_OPTIONS
 // 档位名只写了「公网 / 内网」，用户真正要判断的是自己这台客户端会走哪条路，
 // 所以把当前档位的实际行为直接写在选择框下面（与 README 的「跳转模式」同一套说法）。
 const redirectNote = computed(() => {
@@ -118,13 +115,11 @@ const redirectNote = computed(() => {
   }
 })
 
-// 飞牛影视下只有「始终跳转」这一档稳（用户 2026-09-19 反馈）。其余档位要在解析出直链的
-// 同时按客户端来源分流，而飞牛的直链要靠它自己的播放协商缓存（10 分钟）与播放器随请求
-// 带来的令牌：窗口一过那次就退回透传，表现成时好时坏。所以在这几档后面标一个黄色感叹号，
-// 把「不稳定」写在用户做选择的地方，而不是让他事后去日志里发现。
+// 飞牛影视下只有「始终跳转」这一档稳（用户 2026-09-19 反馈），判定与卡片共用（见
+// redirectModes.js）。这里比卡片多一条悬停气泡，把原因讲清楚——弹窗里有地方放。
 const unstableRedirectHint =
   '飞牛影视下这个档位不稳定：它要在解析直链的同时按客户端来源分流，而飞牛的直链依赖上游的播放协商缓存与播放器令牌，窗口一过那次会退回透传'
-const redirectUnstable = (value) => form.value.type === 'fnos' && value !== 'always'
+const unstableMode = (value) => redirectUnstable(form.value.type, value)
 
 const keyPlaceholder = computed(() => {
   if (form.value.keepApiKey) return '留空保留原密钥'
@@ -454,13 +449,17 @@ async function save() {
               <span>跳转模式</span>
               <details class="form-select" @keydown="handleDropdownKey">
                 <summary
-                  :aria-label="`跳转模式：${optionLabel(redirectOptions, form.redirectMode)}${redirectUnstable(form.redirectMode) ? '，飞牛影视下不稳定' : ''}`"
+                  :aria-label="`跳转模式：${optionLabel(redirectOptions, form.redirectMode)}${unstableMode(form.redirectMode) ? '，飞牛影视下不稳定' : ''}`"
                 >
-                  {{ optionLabel(redirectOptions, form.redirectMode) }}
+                  <!-- 档位图标：语义见 redirectModes.js，颜色跟着选择框的文字走。 -->
+                  <svg class="mode-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path v-for="(d, index) in redirectPaths(form.redirectMode)" :key="index" :d="d" />
+                  </svg>
+                  <span>{{ optionLabel(redirectOptions, form.redirectMode) }}</span>
                   <!-- 说明气泡挂在这个 span 上：原生 title 的框宽由浏览器定，又宽又不跟站内样式走。
                        不挂在 summary 上是因为它的 ::after 已经被下拉箭头占了。 -->
                   <span
-                    v-if="redirectUnstable(form.redirectMode)"
+                    v-if="unstableMode(form.redirectMode)"
                     class="jump-warn-tip"
                     :data-tooltip="unstableRedirectHint"
                   >
@@ -477,13 +476,16 @@ async function save() {
                     :key="option.value"
                     type="button"
                     :aria-pressed="form.redirectMode === option.value"
-                    :aria-label="redirectUnstable(option.value) ? `${option.label}，飞牛影视下不稳定` : undefined"
+                    :aria-label="unstableMode(option.value) ? `${option.label}，飞牛影视下不稳定` : undefined"
                     :class="{ selected: form.redirectMode === option.value }"
                     @click="selectOption('redirectMode', option.value, $event)"
                   >
-                    {{ option.label }}
+                    <svg class="mode-icon" viewBox="0 0 24 24" aria-hidden="true">
+                      <path v-for="(d, index) in option.paths" :key="index" :d="d" />
+                    </svg>
+                    <span>{{ option.label }}</span>
                     <span
-                      v-if="redirectUnstable(option.value)"
+                      v-if="unstableMode(option.value)"
                       class="jump-warn-tip"
                       :data-tooltip="unstableRedirectHint"
                     >

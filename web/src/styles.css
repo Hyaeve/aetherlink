@@ -897,19 +897,21 @@ code {
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* 菜单与触发按钮同宽，选项只放模式名，居中排布。 */
+/* 菜单与触发按钮同宽（不够宽时按内容的自然宽度撑开），选项「图标 + 模式名」左对齐，
+   这样四档的图标落在同一条竖线上，不会因为有的档位多一个感叹号而左右晃。 */
 .mode-option {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
+  gap: 7px;
   width: 100%;
-  padding: 7px 8px;
+  padding: 7px 10px;
   border: none;
   border-radius: 9px;
   background: transparent;
   color: var(--text);
   font-family: inherit;
-  text-align: center;
+  text-align: left;
   cursor: pointer;
   transition: background 0.14s ease, color 0.14s ease;
 }
@@ -2486,6 +2488,9 @@ td.target-cell {
 
 .form-select summary {
   position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   min-height: 39px;
   padding: 9px 36px 9px 12px;
   border: 1px solid var(--border-strong);
@@ -2560,6 +2565,21 @@ td.target-cell {
   border-color: transparent;
   background: var(--accent-wash);
   color: var(--accent-ink);
+}
+
+/* 跳转模式的语义图标（图形见 web/src/redirectModes.js）：卡片右上角的触发器、卡片下拉的
+   选项、编辑弹窗里「跳转模式」的已选值与选项，四处共用这一个尺寸。宿主有的是 button 有的
+   是 summary，所以属性写全，不靠 `button svg` 那条规则。 */
+.mode-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.85;
 }
 
 /* 「飞牛影视下这个档位不稳定」的黄色感叹号：下拉选项与已选值（summary）里都会出现，
