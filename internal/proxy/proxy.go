@@ -263,6 +263,7 @@ func (s *Server) serveMedia(writer http.ResponseWriter, request *http.Request, r
 	// 账号密码更可靠，也少了登录往返。上游配了凭据时仍以配置的为准（见
 	// apiClient.credentials）。
 	ctx := upstream.WithClientCredentials(request.Context(), request)
+	ctx = upstream.WithUserAgent(ctx, event.EffectiveUserAgent)
 	resolution, cacheSource, cacheTTL, err := s.resolver.ResolveWithSource(ctx, s.provider, ref, request.UserAgent())
 	event.CacheSource = string(cacheSource)
 	event.CacheHit = cacheSource != resolver.CacheSourceMiss

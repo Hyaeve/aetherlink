@@ -137,6 +137,12 @@ func (r *Resolver) ResolveWithSource(ctx context.Context, provider upstream.Prov
 	effectiveUserAgent := r.effectiveUserAgentFor(provider.Type(), provider.Name(), userAgent)
 	ctx = upstream.WithUserAgent(ctx, effectiveUserAgent)
 	key := ref.CacheKey(provider.Name()) + "\x00ua=" + effectiveUserAgent
+	key += "\x00scope=" + upstream.PlaybackCacheScope(ctx)
+	if namespaced, ok := provider.(interface{ CacheNamespace() string }); ok {
+		key += "\x00server=" + namespaced.CacheNamespace()
+	} else {
+		key += "\x00server=" + string(provider.Type()) + ":" + provider.BaseURL().String()
+	}
 	if cached, remaining, restored, ok := r.cache.getWithSource(key); ok {
 		if restored {
 			return cached, CacheSourceRestored, remaining, nil
@@ -148,6 +154,13 @@ func (r *Resolver) ResolveWithSource(ctx context.Context, provider upstream.Prov
 	// Collapse concurrent requests for the same track. Players routinely open
 	// several ranged requests at once when seeking.
 	r.inflightMu.Lock()
+	if cached, remaining, restored, ok := r.cache.getWithSource(key); ok {
+		r.inflightMu.Unlock()
+		if restored {
+			return cached, CacheSourceRestored, remaining, nil
+		}
+		return cached, CacheSourceHit, remaining, nil
+	}
 	if call, ok := r.inflight[key]; ok {
 		r.inflightMu.Unlock()
 		select {
@@ -165,17 +178,15 @@ func (r *Resolver) ResolveWithSource(ctx context.Context, provider upstream.Prov
 	r.inflightMu.Unlock()
 
 	call.resolution, call.err = r.resolveUncached(ctx, provider, ref, userAgent)
-	close(call.done)
-
-	r.inflightMu.Lock()
-	delete(r.inflight, key)
-	r.inflightMu.Unlock()
-
 	resolvedTTL := time.Duration(0)
 	if call.err == nil {
 		resolvedTTL = r.cacheTTLFor(provider, call.resolution, ttl)
 		r.cache.put(key, call.resolution, resolvedTTL)
 	}
+	r.inflightMu.Lock()
+	close(call.done)
+	delete(r.inflight, key)
+	r.inflightMu.Unlock()
 	return call.resolution, CacheSourceMiss, resolvedTTL, call.err
 }
 
@@ -293,7 +304,7 @@ func (r *Resolver) resolveUncached(ctx context.Context, provider upstream.Provid
 	if resolution.Target.Type == strm.TargetRemote {
 		resolution.FinalURL = resolution.Target.URL
 		if r.config.FollowUpstreamRedirects {
-			finalURL, hops, err := r.followRedirects(ctx, resolution.Target.URL, userAgent)
+			finalURL, hops, err := r.followRedirects(ctx, resolution.Target.URL, upstream.EffectiveContextUserAgent(ctx))
 			if err != nil {
 				// A failed pre-flight is not fatal: hand the original URL to the
 				// client and let the player negotiate directly.

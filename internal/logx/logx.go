@@ -100,7 +100,7 @@ func emit(l Level, format string, args ...any) {
 	if !enabled(l) {
 		return
 	}
-	entry := Entry{Time: time.Now(), Level: l.String(), Message: fmt.Sprintf(format, args...)}
+	entry := Entry{Time: time.Now(), Level: l.String(), Message: Redact(fmt.Sprintf(format, args...))}
 	buffer.mu.Lock()
 	buffer.entries = append(buffer.entries, entry)
 	if len(buffer.entries) > buffer.max {

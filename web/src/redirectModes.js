@@ -56,10 +56,6 @@ export function redirectPaths(mode) {
   return (REDIRECT_OPTIONS.find((option) => option.value === mode) || REDIRECT_OPTIONS[0]).paths
 }
 
-// 飞牛影视下只有「始终跳转」这一档稳（用户 2026-09-19 反馈）。其余档位要在解析出直链的
-// 同时按客户端来源分流，而飞牛的直链靠它自己的播放协商缓存（10 分钟）与播放器随请求带来
-// 的令牌：窗口一过那次就退回透传，表现成时好时坏。卡片与编辑弹窗共用这一条判定，
-// 命中就标黄色感叹号，把「不稳定」写在用户做选择的地方。
 export function redirectUnstable(type, mode) {
   return type === 'fnos' && mode !== 'always'
 }

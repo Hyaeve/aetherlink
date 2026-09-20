@@ -9,6 +9,7 @@ package upstream
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -163,11 +164,16 @@ func contextUserAgent(ctx context.Context) string {
 
 type clientCredentialsContextKey struct{}
 
+func EffectiveContextUserAgent(ctx context.Context) string {
+	return contextUserAgent(ctx)
+}
+
 // clientIdentity 是播放器请求里带上的 Emby 身份：令牌，以及它所属的用户 ID。
 // 两者通常都有（Emby 客户端标准形态），也可能只有其一，所以分开存。
 type clientIdentity struct {
-	Token  string
-	UserID string
+	Token   string
+	UserID  string
+	Session string
 }
 
 // WithClientCredentials 把「发起这次请求的播放器自己带的 Emby 身份」放进上下文。
@@ -184,10 +190,11 @@ func WithClientCredentials(ctx context.Context, request *http.Request) context.C
 		return ctx
 	}
 	identity := clientIdentity{
-		Token:  embyTokenFromRequest(request),
-		UserID: clientUserIDFromRequest(request),
+		Token:   embyTokenFromRequest(request),
+		UserID:  clientUserIDFromRequest(request),
+		Session: request.Header.Get("Cookie"),
 	}
-	if identity.Token == "" && identity.UserID == "" {
+	if identity.Token == "" && identity.UserID == "" && identity.Session == "" {
 		return ctx
 	}
 	return context.WithValue(ctx, clientCredentialsContextKey{}, identity)
@@ -214,12 +221,16 @@ var embyAuthTokenRe = regexp.MustCompile(`(?i)\bToken\s*=\s*"([^"]*)"`)
 // X-Emby-Authorization、简写的 X-Emby-Token，以及部分播放器只带的 ?api_key=。
 // 这三种都是 Emby 系独有的，其它上游的请求不会误命中。
 func embyTokenFromRequest(request *http.Request) string {
-	if value := strings.TrimSpace(request.Header.Get("X-Emby-Authorization")); value != "" {
+	for _, header := range []string{"X-Emby-Authorization", "Authorization"} {
+		value := strings.TrimSpace(request.Header.Get(header))
 		if matches := embyAuthTokenRe.FindStringSubmatch(value); matches != nil {
 			if token := strings.TrimSpace(matches[1]); token != "" {
 				return token
 			}
 		}
+	}
+	if authorization := strings.TrimSpace(request.Header.Get("Authorization")); len(authorization) > 7 && strings.EqualFold(authorization[:7], "Bearer ") {
+		return strings.TrimSpace(authorization[7:])
 	}
 	if token := strings.TrimSpace(request.Header.Get("X-Emby-Token")); token != "" {
 		return token
@@ -282,6 +293,17 @@ func New(cfg config.Upstream) (Provider, error) {
 		mapper: pathmap.New(rules, cfg.StrmRoots),
 		client: client,
 	}
+	namespaceConfig := cfg
+	namespaceConfig.RedirectMode = ""
+	namespaceConfig.Enabled = nil
+	namespaceConfig.ListenPort = 0
+	namespaceBytes, _ := json.Marshal(struct {
+		Config   config.Upstream
+		APIKey   string
+		Password string
+	}{namespaceConfig, cfg.APIKey, cfg.Password})
+	namespaceHash := sha256.Sum256(namespaceBytes)
+	shared.cacheNamespace = fmt.Sprintf("%x", namespaceHash)
 	// 四种跳转模式都接管 STRM 源（见 embyProvider.RewriteResponse）：卡片选的
 	// 只是字节去向（302 / 中继 / 按客户端来源二选一），客户端不回 AetherLink 的
 	// /stream，那些档位就等于没设。上游那句「当前客户端不能直接播放原始文件」
@@ -357,14 +379,16 @@ func newTransport(insecure bool) *http.Transport {
 
 // providerBase holds the fields shared by every provider implementation.
 type providerBase struct {
-	name   string
-	kind   config.UpstreamType
-	port   int
-	base   *url.URL
-	mapper *pathmap.Mapper
-	client *apiClient
+	cacheNamespace string
+	name           string
+	kind           config.UpstreamType
+	port           int
+	base           *url.URL
+	mapper         *pathmap.Mapper
+	client         *apiClient
 }
 
+func (b *providerBase) CacheNamespace() string       { return b.cacheNamespace }
 func (b *providerBase) Name() string                 { return b.name }
 func (b *providerBase) Type() config.UpstreamType    { return b.kind }
 func (b *providerBase) ListenPort() int              { return b.port }

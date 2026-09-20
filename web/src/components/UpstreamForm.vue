@@ -118,7 +118,7 @@ const redirectNote = computed(() => {
 // 飞牛影视下只有「始终跳转」这一档稳（用户 2026-09-19 反馈），判定与卡片共用（见
 // redirectModes.js）。这里比卡片多一条悬停气泡，把原因讲清楚——弹窗里有地方放。
 const unstableRedirectHint =
-  '飞牛影视下这个档位不稳定：它要在解析直链的同时按客户端来源分流，而飞牛的直链依赖上游的播放协商缓存与播放器令牌，窗口一过那次会退回透传'
+  '此档位可能使用中继，部分飞牛播放器存在兼容性问题。四种档位共用直链解析；凭证失效或解析失败时，均可能退回上游处理。'
 const unstableMode = (value) => redirectUnstable(form.value.type, value)
 
 const keyPlaceholder = computed(() => {
@@ -276,22 +276,8 @@ function buildPayload() {
   return payload
 }
 
-// 飞牛影视的试连必须带上登录凭据：它没有静态密钥，未登录时上游连服务信息都
-// 不给，试连必然失败 —— 那种失败说明不了地址对不对，等于白试。已经保存过密码
-// 时字段留空是允许的（后端会沿用原值），所以「已保存」也算作有密码。
-function testCredentialError() {
-  if (!showCredentials.value) return ''
-  if (!form.value.username.trim()) {
-    return '飞牛影视需要先填写登录账号与密码：它没有静态密钥，未登录无法连接'
-  }
-  if (!form.value.password && !props.upstream?.hasPassword) {
-    return '飞牛影视需要先填写登录密码，否则试连没有意义'
-  }
-  return ''
-}
-
 async function test() {
-  error.value = credentialError() || testCredentialError()
+  error.value = credentialError()
   if (error.value) return
   testResult.value = { loading: true }
   try {

@@ -113,6 +113,11 @@ func (p *embyProvider) WantsResponseRewrite(request *http.Request) bool {
 // 正常。模式既然按客户端来源分派，就该真的分派，所以判定与它背后的开关一起删掉了
 // （代价是上游认为解不了原文件的客户端现在也会拿到原文件）。
 func (p *embyProvider) RewriteResponse(originalPath string, response *http.Response) (int, error) {
+	playbackContext := context.Background()
+	if response != nil && response.Request != nil {
+		playbackContext = WithClientCredentials(response.Request.Context(), response.Request)
+		playbackContext = WithUserAgent(playbackContext, response.Request.UserAgent())
+	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices || response.Body == nil {
 		return 0, nil
 	}
@@ -197,7 +202,8 @@ func (p *embyProvider) RewriteResponse(originalPath string, response *http.Respo
 		// 自相矛盾，部分客户端仍会照它去要转码 HLS。
 		source["TranscodeReasons"] = []any{}
 		source["TranscodingReasons"] = []any{}
-		p.rememberPlaybackSource(itemID, embyMediaSourceFromMap(source))
+		mediaSource := embyMediaSourceFromMap(source)
+		p.rememberPlaybackSource(itemID, mediaSource, playbackContext)
 		source["DirectStreamUrl"] = embyDirectStreamURL(prefix, itemID, source)
 		changed++
 		mutated = true
@@ -222,6 +228,7 @@ func (p *embyProvider) RewriteResponse(originalPath string, response *http.Respo
 	response.ContentLength = int64(len(encodedBody))
 	response.Header.Set("Content-Length", strconv.Itoa(len(encodedBody)))
 	response.Header.Set("Content-Type", "application/json; charset=utf-8")
+	response.Header.Set("Cache-Control", "no-store")
 	response.Header.Del("Content-Encoding")
 	response.Header.Del("ETag")
 	response.Header.Del("Content-MD5")
@@ -470,10 +477,19 @@ func embyPlaybackSourceKey(itemID, sourceID string) string {
 	return itemID + "\x00" + sourceID
 }
 
-func (p *embyProvider) rememberPlaybackSource(itemID string, source embyMediaSource) {
+func playbackScopedItem(itemID string, contexts []context.Context) string {
+	ctx := context.Background()
+	if len(contexts) > 0 {
+		ctx = contexts[0]
+	}
+	return PlaybackCacheScope(ctx) + ":" + itemID
+}
+
+func (p *embyProvider) rememberPlaybackSource(itemID string, source embyMediaSource, contexts ...context.Context) {
 	if itemID == "" || source.Path == "" {
 		return
 	}
+	itemID = playbackScopedItem(itemID, contexts)
 	p.playbackMu.Lock()
 	defer p.playbackMu.Unlock()
 	if p.playbackSources == nil {
@@ -507,7 +523,8 @@ func (p *embyProvider) rememberPlaybackSource(itemID string, source embyMediaSou
 // 所以除了带 Id 的精确命中，还要有两条退路：没有 Id 时退回「该条目下唯一的那一条」
 // （请求没带 Id 而缓存是按 Id 存的时候同理）。**多条候选时绝不猜** —— 选错媒体源
 // 就是选错文件，那种情况宁可回头去问上游。
-func (p *embyProvider) rememberedPlaybackSource(itemID, sourceID string) (embyMediaSource, bool) {
+func (p *embyProvider) rememberedPlaybackSource(itemID, sourceID string, contexts ...context.Context) (embyMediaSource, bool) {
+	itemID = playbackScopedItem(itemID, contexts)
 	p.playbackMu.Lock()
 	defer p.playbackMu.Unlock()
 	if p.playbackSources == nil {
@@ -857,7 +874,7 @@ type embyUser struct {
 // API. Only when Emby reports a plain filesystem path do we fall back to reading
 // a pointer file ourselves.
 func (p *embyProvider) MediaTarget(ctx context.Context, ref MediaRef) (MediaTarget, error) {
-	if source, ok := p.rememberedPlaybackSource(ref.ItemID, ref.MediaSourceID); ok {
+	if source, ok := p.rememberedPlaybackSource(ref.ItemID, ref.MediaSourceID, ctx); ok {
 		// 不再回头质疑上游那句「不可直放」：PlaybackInfo 里已经把它抹掉了
 		// （见 RewriteResponse），客户端要的就是原始文件，而 strm 的真实目标本来
 		// 就是直链，交给 302 或中继即可。
