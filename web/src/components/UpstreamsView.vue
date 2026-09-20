@@ -306,7 +306,6 @@ onUnmounted(() => {
             type="button"
             class="service-mark"
             :class="upstream.type"
-            :title="upstream.enabled ? '点击停用' : '点击启用'"
             :aria-label="`${upstream.name}，${upstream.enabled ? '点击停用' : '点击启用'}`"
             :aria-pressed="upstream.enabled"
             :disabled="busy"
@@ -320,7 +319,6 @@ onUnmounted(() => {
             class="card-tag mode-tag mode-trigger"
             :class="{ open: modeMenu?.name === upstream.name }"
             :disabled="busy"
-            :title="`跳转模式：${redirectLabel(upstream.redirectMode)}，点击切换`"
             :aria-label="`${upstream.name}，跳转模式 ${redirectLabel(upstream.redirectMode)}${modeUnstable(upstream) ? '，飞牛影视下不稳定' : ''}，点击切换`"
             :aria-expanded="modeMenu?.name === upstream.name"
             aria-haspopup="menu"
@@ -332,8 +330,9 @@ onUnmounted(() => {
               <path v-for="(d, index) in redirectPaths(upstream.redirectMode)" :key="index" :d="d" />
             </svg>
             <span>{{ redirectLabel(upstream.redirectMode) }}</span>
-            <!-- 飞牛影视下非「始终跳转」的档位不稳定：和编辑弹窗一样标黄色感叹号，
-                 但卡片上不挂悬停说明，悬停只保留原来的「点击切换」。 -->
+            <!-- 飞牛影视下非「始终跳转」的档位不稳定：和编辑弹窗一样标黄色感叹号。
+                 卡片上的悬浮提示已全部去掉（原生 title 会冒出浏览器自己的文本框），
+                 状态只由 aria-label 交代，读屏仍听得到。 -->
             <svg v-if="modeUnstable(upstream)" class="jump-warn" viewBox="0 0 24 24" aria-hidden="true">
               <circle cx="12" cy="12" r="8.6" />
               <path d="M12 7.6v5.2" />
@@ -362,7 +361,11 @@ onUnmounted(() => {
           <button
             class="route-port"
             :disabled="!upstream.enabled || !upstream.listening"
-            :title="upstream.enabled && upstream.listening ? '打开反代入口' : '入口未运行'"
+            :aria-label="
+              upstream.enabled && upstream.listening
+                ? `${upstream.name}，打开反代入口（端口 ${upstream.listenPort}）`
+                : `${upstream.name}，反代入口未运行`
+            "
             @click.stop="openProxy(upstream)"
           >{{ upstream.listenPort }}</button>
           </div>
