@@ -86,7 +86,7 @@ volumes:
 
 容器以非 root 用户（uid 10001）运行，被挂载的目录需对该用户可读。
 
-`./cache:/cache` 用于持久化 iOS 音频适配缓存。AAC 重新封装或 WMA 转码后的文件会按书名放在 `/cache/<书名>/` 下，并保留原音频文件名（输出扩展名统一为 `.m4a`）；不同 UA 的缓存变体放在内部键目录中，避免互相覆盖。连续 2 小时没有再次获取请求后，AetherLink 会自动删除。关于 Audiobookshelf 那份 compose 里的 `./podcasts:/podcasts`：那是 Audiobookshelf 的播客库目录，用来存它自己下载的播客音频。AetherLink 不需要它——播客是真实文件，走透传交给上游处理。
+`./cache:/cache` 用于持久化 iOS 音频适配缓存。AAC 重新封装或 WMA 转码后的文件会按书名放在 `/cache/<书名>/` 下，并保留原音频文件名（输出扩展名统一为 `.m4a`）；不同 UA 的缓存变体放在内部键目录中，避免互相覆盖。连续 2 小时没有再次获取请求后，AetherLink 会自动删除；一本书的转码文件全部删掉之后，剩下的空书名目录（连同它下面的键目录）也一并删掉，只留缓存根目录本身。关于 Audiobookshelf 那份 compose 里的 `./podcasts:/podcasts`：那是 Audiobookshelf 的播客库目录，用来存它自己下载的播客音频。AetherLink 不需要它——播客是真实文件，走透传交给上游处理。
 
 播放流水统计会持久化在 `/config/playback-stats.json`，重启后恢复最近保留的播放事件与统计数据。
 

@@ -709,11 +709,7 @@ func (c *audioCache) cachePath(bookName, key, filename string) string {
 
 func (c *audioCache) getOrCreate(ctx context.Context, bookName, key, filename string, build func(string) error) (string, bool, error) {
 	now := time.Now()
-	bookDirectory := c.cacheDirectory(bookName)
-	variantDirectory := filepath.Join(bookDirectory, key)
-	if err := os.MkdirAll(variantDirectory, 0o755); err != nil {
-		return "", false, fmt.Errorf("create audio cache directory: %w", err)
-	}
+	variantDirectory := filepath.Join(c.cacheDirectory(bookName), key)
 
 	c.mu.Lock()
 	c.cleanupLocked(now)
@@ -745,6 +741,12 @@ func (c *audioCache) getOrCreate(ctx context.Context, bookName, key, filename st
 		return finalPath, true, nil
 	}
 
+	// 目录到这里才建：上面那次 cleanupLocked 可能刚把这条变体所在的空目录链删掉
+	// （它的文件已经过期），提前建好只会被它一并删走，紧接着的 CreateTemp 就报 ENOENT。
+	if err := os.MkdirAll(variantDirectory, 0o755); err != nil {
+		c.mu.Unlock()
+		return "", false, fmt.Errorf("create audio cache directory: %w", err)
+	}
 	temporary, err := os.CreateTemp(variantDirectory, ".aetherlink-*.part")
 	if err != nil {
 		c.mu.Unlock()
@@ -803,6 +805,7 @@ func (c *audioCache) cleanup() {
 	c.mu.Unlock()
 
 	cutoff := now.Add(-audioCacheIdle)
+	var removed []string
 	_ = filepath.WalkDir(c.dir, func(filename string, entry os.DirEntry, err error) error {
 		if err != nil || entry.IsDir() {
 			return nil
@@ -812,10 +815,14 @@ func (c *audioCache) cleanup() {
 		}
 		info, infoErr := entry.Info()
 		if infoErr == nil && info.ModTime().Before(cutoff) {
-			_ = os.Remove(filename)
+			if os.Remove(filename) == nil {
+				removed = append(removed, filename)
+			}
+			c.pruneEmptyDirectories(filepath.Dir(filename))
 		}
 		return nil
 	})
+	c.forgetPaths(removed)
 }
 
 func (c *audioCache) cleanupLocked(now time.Time) {
@@ -825,9 +832,49 @@ func (c *audioCache) cleanupLocked(now time.Time) {
 		case <-entry.ready:
 			if entry.err == nil && entry.lastUsed.Before(cutoff) {
 				_ = os.Remove(entry.path)
+				c.pruneEmptyDirectories(filepath.Dir(entry.path))
 				delete(c.entries, key)
 			}
 		default:
+		}
+	}
+}
+
+// pruneEmptyDirectories 从一本有声书的内部键目录往上收拾：这本书的全部转码 /
+// 重新封装文件都删掉之后，剩下的空目录链（先键目录、再书籍目录）就没有别的用途了，
+// 留着只会让 /cache 越攒越乱，也让人以为缓存还在。
+//
+// 不先数一遍文件再删，是因为 os.Remove 对非空目录本来就失败：「删到第一次失败
+// 为止」既省掉一次遍历，也顺带保证目录里还有文件（正在读写的缓存）时绝不会被删走。
+// 缓存根目录本身不动——它通常是 compose 里挂进来的挂载点。
+func (c *audioCache) pruneEmptyDirectories(directory string) {
+	root := filepath.Clean(c.dir)
+	prefix := root + string(filepath.Separator)
+	for current := filepath.Clean(directory); current != root; current = filepath.Dir(current) {
+		if !strings.HasPrefix(current, prefix) {
+			return
+		}
+		if err := os.Remove(current); err != nil {
+			return
+		}
+	}
+}
+
+// forgetPaths 丢掉指向已经删掉的文件的内存记录：留着它，下一次请求会命中一条
+// 空路径，把 502 交给客户端。
+func (c *audioCache) forgetPaths(filenames []string) {
+	if len(filenames) == 0 {
+		return
+	}
+	gone := make(map[string]struct{}, len(filenames))
+	for _, filename := range filenames {
+		gone[filename] = struct{}{}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key, entry := range c.entries {
+		if _, ok := gone[entry.path]; ok {
+			delete(c.entries, key)
 		}
 	}
 }

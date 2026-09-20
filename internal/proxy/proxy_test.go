@@ -101,6 +101,141 @@ func TestAudioCachePersistsByBookAndRefreshesIdleTime(t *testing.T) {
 	}
 }
 
+func seedAudioCacheFile(t *testing.T, cache *audioCache, book, source, mode, name string) string {
+	t.Helper()
+	key := audioCacheKey(source, mode, "Komic-iOS")
+	filename, hit, err := cache.getOrCreate(context.Background(), book, key, name, func(destination string) error {
+		return os.WriteFile(destination, []byte("m4a"), 0o600)
+	})
+	if err != nil || hit {
+		t.Fatalf("seed %s/%s = path %q hit %v err %v", book, mode, filename, hit, err)
+	}
+	return filename
+}
+
+func ageAudioCacheFile(t *testing.T, filename string) {
+	t.Helper()
+	expired := time.Now().Add(-audioCacheIdle - time.Minute)
+	if err := os.Chtimes(filename, expired, expired); err != nil {
+		t.Fatalf("age %s: %v", filename, err)
+	}
+}
+
+// 一本书的全部转码 / 重新封装文件都删掉之后，书目录（连同它下面的键目录）也要跟着
+// 消失——否则 /cache 里会攒下一堆空文件夹，看着像缓存还在。
+func TestAudioCacheCleanupRemovesEmptyBookDirectory(t *testing.T) {
+	directory := t.TempDir()
+	cache := &audioCache{dir: directory, entries: make(map[string]*audioCacheEntry)}
+
+	staleFirst := seedAudioCacheFile(t, cache, "测试书", "https://example.test/book.aac", "aac-remux", "第001集.m4a")
+	staleSecond := seedAudioCacheFile(t, cache, "测试书", "https://example.test/book.wma", "wma-transcode", "第002集.m4a")
+	fresh := seedAudioCacheFile(t, cache, "另一本书", "https://example.test/other.aac", "aac-remux", "第001集.m4a")
+	if filepath.Base(filepath.Dir(filepath.Dir(staleFirst))) != "测试书" {
+		t.Fatalf("cache layout = %q, want 书名目录在最外层", staleFirst)
+	}
+
+	// 只让「测试书」过期，另一本书留着——用来看这次清理会不会误伤别人。
+	ageAudioCacheFile(t, staleFirst)
+	ageAudioCacheFile(t, staleSecond)
+	cache.cleanup()
+
+	if _, err := os.Stat(filepath.Join(directory, "测试书")); !os.IsNotExist(err) {
+		t.Fatalf("书目录应该在最后一个文件删掉后消失，stat err = %v", err)
+	}
+	if _, err := os.Stat(staleSecond); !os.IsNotExist(err) {
+		t.Fatalf("过期文件应该被删掉，stat err = %v", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("没过期的书不该被连累：%v", err)
+	}
+	if info, err := os.Stat(filepath.Join(directory, "另一本书")); err != nil || !info.IsDir() {
+		t.Fatalf("没过期的书目录不该消失：%v", err)
+	}
+	if info, err := os.Stat(directory); err != nil || !info.IsDir() {
+		t.Fatalf("缓存根目录要留着：%v", err)
+	}
+	if _, ok := cache.entries[audioCacheKey("https://example.test/book.aac", "aac-remux", "Komic-iOS")]; ok {
+		t.Fatal("文件已经删了，内存里不该再留着指向它的记录")
+	}
+}
+
+// 内存条目那条清理路（每次取缓存顺带做的空闲回收）也要把空书目录带走。
+func TestAudioCacheIdleReclaimRemovesEmptyBookDirectory(t *testing.T) {
+	directory := t.TempDir()
+	cache := &audioCache{dir: directory, entries: make(map[string]*audioCacheEntry)}
+	key := audioCacheKey("https://example.test/book.aac", "aac-remux", "Komic-iOS")
+	filename := seedAudioCacheFile(t, cache, "测试书", "https://example.test/book.aac", "aac-remux", "第001集.m4a")
+
+	// 只推内存里的空闲时间，磁盘 mtime 不动——专门走 cleanupLocked 这一支。
+	cache.mu.Lock()
+	cache.entries[key].lastUsed = time.Now().Add(-audioCacheIdle - time.Minute)
+	cache.mu.Unlock()
+	cache.cleanupLocked(time.Now())
+
+	if _, err := os.Stat(filename); !os.IsNotExist(err) {
+		t.Fatalf("空闲变体应该被回收，stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(directory, "测试书")); !os.IsNotExist(err) {
+		t.Fatalf("空书目录应该跟着消失，stat err = %v", err)
+	}
+	if info, err := os.Stat(directory); err != nil || !info.IsDir() {
+		t.Fatalf("缓存根目录要留着：%v", err)
+	}
+}
+
+// 书目录里还有别的东西（不是本缓存写的 .m4a）时，那层目录不能删：能删的只有自己
+// 建的、且确实空掉的那条目录链。
+func TestAudioCacheKeepsBookDirectoryWithForeignFiles(t *testing.T) {
+	directory := t.TempDir()
+	cache := &audioCache{dir: directory, entries: make(map[string]*audioCacheEntry)}
+
+	filename := seedAudioCacheFile(t, cache, "测试书", "https://example.test/book.aac", "aac-remux", "第001集.m4a")
+	bookDirectory := filepath.Dir(filepath.Dir(filename))
+	keeper := filepath.Join(bookDirectory, "notes.txt")
+	if err := os.WriteFile(keeper, []byte("手动放进来的东西"), 0o600); err != nil {
+		t.Fatalf("write keeper: %v", err)
+	}
+
+	ageAudioCacheFile(t, filename)
+	cache.cleanup()
+
+	if _, err := os.Stat(filename); !os.IsNotExist(err) {
+		t.Fatalf("过期文件应该被删掉，stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(filename)); !os.IsNotExist(err) {
+		t.Fatalf("键目录空了就该删掉，stat err = %v", err)
+	}
+	if _, err := os.Stat(keeper); err != nil {
+		t.Fatalf("书目录里的其他文件不能被删：%v", err)
+	}
+	if info, err := os.Stat(bookDirectory); err != nil || !info.IsDir() {
+		t.Fatalf("书目录非空就不能删：%v", err)
+	}
+}
+
+// 目录被清理删掉之后，同一个变体再来一次请求必须能重新建出来：目录要是在清理
+// 之前就建好，那一轮 cleanupLocked 会把它连着删走，紧接着的 CreateTemp 直接 ENOENT。
+func TestAudioCacheRebuildsDirectoryRemovedByCleanup(t *testing.T) {
+	directory := t.TempDir()
+	cache := &audioCache{dir: directory, entries: make(map[string]*audioCacheEntry)}
+	key := audioCacheKey("https://example.test/book.aac", "aac-remux", "Komic-iOS")
+	seedAudioCacheFile(t, cache, "测试书", "https://example.test/book.aac", "aac-remux", "第001集.m4a")
+
+	// 让内存条目先过期：下一次 getOrCreate 会在锁内把它清掉，空目录也一起没。
+	cache.mu.Lock()
+	cache.entries[key].lastUsed = time.Now().Add(-audioCacheIdle - time.Minute)
+	cache.mu.Unlock()
+
+	rebuilt := seedAudioCacheFile(t, cache, "测试书", "https://example.test/book.aac", "aac-remux", "第001集.m4a")
+	info, err := os.Stat(rebuilt)
+	if err != nil {
+		t.Fatalf("目录被清理删掉后应该能重建：%v", err)
+	}
+	if info.Size() == 0 {
+		t.Fatalf("重建出来的文件不该是空的：%s", rebuilt)
+	}
+}
+
 // fakeABS stands in for an Audiobookshelf server. It serves the item metadata
 // used to locate media on disk plus a plain UI route for pass-through checks.
 type fakeABS struct {
