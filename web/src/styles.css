@@ -1839,8 +1839,33 @@ td.target-cell {
   padding-top: 14px;
 }
 
-.trusted-proxy-foot .save-confirm {
-  justify-content: center;
+/* 「网络地址」的保存回执改成浮在卡片右上角、过一会儿自己淡掉：它只是「刚才那一下
+   点成功了」的回执，挂在保存按钮上方既会把按钮推来推去，也容易被误当成常驻状态。 */
+.trusted-proxy-card {
+  position: relative;
+}
+
+.save-flash {
+  position: absolute;
+  top: 16px;
+  right: 18px;
+  padding: 4px 10px 4px 9px;
+  border-radius: 999px;
+  background: rgba(93, 124, 107, 0.12);
+  box-shadow: 0 6px 14px rgba(93, 124, 107, 0.16);
+  /* 它只是个回执，别把鼠标事件从下面的内容上抢走。 */
+  pointer-events: none;
+}
+
+.save-fade-enter-active,
+.save-fade-leave-active {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.save-fade-enter-from,
+.save-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
 }
 
 .trusted-proxy-foot .settings-save-button {

@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { api, visibleMessage } from '../api'
 
 defineProps({ status: { type: Object, default: null } })
@@ -35,6 +35,27 @@ const restoreInput = ref(null)
 const backupBusy = ref(false)
 const proxySaved = ref(false)
 const proxyBusy = ref(false)
+// 「网络地址」的保存提示是右上角的浮层，露一下就走——它只是「刚才那一下点成功了」
+// 的回执，不是需要一直盯着看的状态。定时器留着句柄，重复保存和组件卸载都要清掉。
+let proxySavedTimer = null
+const PROXY_SAVED_VISIBLE_MS = 2600
+
+function flashProxySaved() {
+  if (proxySavedTimer) clearTimeout(proxySavedTimer)
+  proxySaved.value = true
+  proxySavedTimer = setTimeout(() => {
+    proxySavedTimer = null
+    proxySaved.value = false
+  }, PROXY_SAVED_VISIBLE_MS)
+}
+
+function hideProxySaved() {
+  if (proxySavedTimer) {
+    clearTimeout(proxySavedTimer)
+    proxySavedTimer = null
+  }
+  proxySaved.value = false
+}
 
 // 飞牛影视已从 Emby 拆出独立的屏蔽 UA 配置，三种类型各自有开关、名单与勾选。
 const CANDIDATE_TYPES = { emby: ['emby'], fnos: ['fnos'], audiobookshelf: ['audiobookshelf'] }
@@ -175,7 +196,7 @@ async function saveSecurity() {
 // 手改过 YAML 的人不会因为点一次保存就被抹掉。）
 async function saveTrustedProxy() {
   proxyBusy.value = true
-  proxySaved.value = false
+  hideProxySaved()
   error.value = ''
   try {
     settings.value.redirect.trustedProxyCidrs = trustedProxyText.value
@@ -185,7 +206,7 @@ async function saveTrustedProxy() {
     const payload = await api.saveSettings(settings.value)
     settings.value = payload.settings
     syncBlockedUserAgents(settings.value)
-    proxySaved.value = true
+    flashProxySaved()
     emit('saved')
   } catch (saveError) {
     error.value = visibleMessage(saveError)
@@ -262,6 +283,10 @@ async function confirmAccountSave() {
 }
 
 onMounted(load)
+
+// 浮层的定时器跟着组件走：切去别的页时它没机会自己到点，留着会继续扣着一个
+// 已经卸载的组件的状态。卸载时顺手清掉，重新进来又是干净的一张卡片。
+onUnmounted(hideProxySaved)
 </script>
 
 <template>
@@ -366,6 +391,9 @@ onMounted(load)
         </section>
 
         <section class="settings-card trusted-proxy-card">
+          <Transition name="save-fade">
+            <span v-if="proxySaved" class="save-confirm save-flash"><i></i>已保存</span>
+          </Transition>
           <div class="settings-card-head compact">
             <div class="settings-icon blue" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10" /></svg></div>
             <div><h2>网络地址</h2><p>前置代理来源与本机网段</p></div>
@@ -377,7 +405,6 @@ onMounted(load)
           <small class="field-note local-network-note" v-if="localNetworkText.length">本机网段：{{ localNetworkText.join('、') }}</small>
           <small class="field-note local-network-note" v-else>未检测到本机网段（容器不是 host 网络时看不到局域网网段，属正常）</small>
           <div class="trusted-proxy-foot">
-            <span v-if="proxySaved" class="save-confirm"><i></i>已保存</span>
             <button class="primary settings-save-button wide-action" :disabled="proxyBusy" @click="saveTrustedProxy">
               {{ proxyBusy ? '保存中…' : '保存设置' }}
             </button>
