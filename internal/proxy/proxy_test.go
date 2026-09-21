@@ -264,7 +264,7 @@ func TestAudioCacheStartupPrunesEmptyDirectories(t *testing.T) {
 		t.Fatalf("write foreign file: %v", err)
 	}
 
-	cache.pruneEmptyCacheDirectories()
+	cache.pruneEmptyCacheDirectories("启动清理")
 
 	if _, err := os.Stat(filepath.Join(directory, "残留书")); !os.IsNotExist(err) {
 		t.Fatalf("空书目录应该被扫掉，stat err = %v", err)
@@ -289,6 +289,99 @@ func TestAudioCacheStartupPrunesEmptyDirectories(t *testing.T) {
 	}
 }
 
+// 运行期那一遍：容器每跑满 24 小时（24h / 48h / 72h…）要把空目录整扫一遍，好把
+// 上一次没来得及收尾、之后又没人再碰过的空目录收掉，不必等到下次重启。真实间隔是
+// 24 小时，用例把它缩到毫秒级——验的是「到点会不会扫」，不是 24 小时这个数字。
+func TestAudioCacheSweepsEmptyDirectoriesEveryInterval(t *testing.T) {
+	directory := t.TempDir()
+	cache := &audioCache{dir: directory, entries: make(map[string]*audioCacheEntry)}
+
+	// 只有「整扫」这条腿能收掉它：没有任何文件被删，运行期的收尾不会被触发。
+	if err := os.MkdirAll(filepath.Join(directory, "残留书", "key-a"), 0o755); err != nil {
+		t.Fatalf("mkdir leftover: %v", err)
+	}
+	// 同时放一个过期文件，用来证明同一个循环里「删过期文件」那条腿也没被改坏。
+	stale := seedAudioCacheFile(t, cache, "过期书", "https://example.test/book.aac", "aac-remux", "第001集.m4a")
+	ageAudioCacheFile(t, stale)
+
+	stop := make(chan struct{})
+	defer close(stop)
+	go cache.loopWithIntervals(10*time.Millisecond, 20*time.Millisecond, time.Now(), stop)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		_, leftoverErr := os.Stat(filepath.Join(directory, "残留书"))
+		_, staleErr := os.Stat(stale)
+		if os.IsNotExist(leftoverErr) && os.IsNotExist(staleErr) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("到点应该删过期文件并整扫空目录：残留书 stat err = %v，过期文件 stat err = %v",
+				leftoverErr, staleErr)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// 整扫的排期跟着「容器运行时长」走：启动后满 24h 第一遍，之后 48h、72h… 各一遍；
+// 锚点是进程启动，缓存实例被重建（保存配置）也不会把这一遍推后。
+func TestAudioCacheSweepScheduleFollowsContainerUptime(t *testing.T) {
+	anchor := time.Date(2026, 9, 21, 10, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		now  time.Time
+		want time.Time
+	}{
+		{"刚启动", anchor, anchor.Add(24 * time.Hour)},
+		{"差一分钟满 24h", anchor.Add(23*time.Hour + 59*time.Minute), anchor.Add(24 * time.Hour)},
+		{"正好满 24h（这一遍已经该扫了，排下一格）", anchor.Add(24 * time.Hour), anchor.Add(48 * time.Hour)},
+		{"刚过 24h", anchor.Add(24*time.Hour + time.Minute), anchor.Add(48 * time.Hour)},
+		{"满 71h", anchor.Add(71 * time.Hour), anchor.Add(72 * time.Hour)},
+		{"刚过 72h", anchor.Add(72*time.Hour + time.Second), anchor.Add(96 * time.Hour)},
+	}
+	for _, item := range cases {
+		if got := nextSweepAfter(anchor, item.now, audioCacheFullSweepInterval); !got.Equal(item.want) {
+			t.Fatalf("%s：nextSweepAfter = %s，想要 %s", item.name, got, item.want)
+		}
+	}
+
+	// 真实常量就是 24 小时：别被用例里的毫秒级间隔带跑。
+	if audioCacheFullSweepInterval != 24*time.Hour {
+		t.Fatalf("整扫间隔 = %s，想要 24h", audioCacheFullSweepInterval)
+	}
+}
+
+// 整扫删目录时要跟「建目录」互斥：`getOrCreate` 从 MkdirAll 到 CreateTemp 全程持锁，
+// 扫描若在锁外动手，就会把那个刚建好、还是空的变体目录删走，紧接着的 CreateTemp
+// 报 ENOENT。这里把锁拿在手上模拟「正在建」，扫描必须等。
+func TestAudioCacheSweepWaitsForInFlightBuild(t *testing.T) {
+	directory := t.TempDir()
+	cache := &audioCache{dir: directory, entries: make(map[string]*audioCacheEntry)}
+	if err := os.MkdirAll(filepath.Join(directory, "在途书", "key-live"), 0o755); err != nil {
+		t.Fatalf("mkdir in-flight variant: %v", err)
+	}
+
+	cache.mu.Lock()
+	swept := make(chan struct{})
+	go func() {
+		cache.pruneEmptyCacheDirectories("每日清理")
+		close(swept)
+	}()
+	select {
+	case <-swept:
+		cache.mu.Unlock()
+		t.Fatal("扫描不该在建目录期间就动手：会把刚建好的空目录删掉，紧接着的 CreateTemp 就 ENOENT")
+	case <-time.After(100 * time.Millisecond):
+	}
+	cache.mu.Unlock()
+
+	select {
+	case <-swept:
+	case <-time.After(3 * time.Second):
+		t.Fatal("放锁之后扫描应该继续跑完")
+	}
+}
+
 // 缓存目录里全是空目录的时候（刚清完、或者第一次起来时挂载点本来就是空的），扫描
 // 一轮要把书目录 / 键目录收掉，但根目录本身必须留下——它通常是 compose 的挂载点，
 // 删掉之后后面的转码会写不进来。
@@ -299,7 +392,7 @@ func TestAudioCacheStartupKeepsCacheRootWhenEverythingIsEmpty(t *testing.T) {
 		t.Fatalf("mkdir empty book: %v", err)
 	}
 
-	cache.pruneEmptyCacheDirectories()
+	cache.pruneEmptyCacheDirectories("启动清理")
 
 	if _, err := os.Stat(filepath.Join(directory, "空书")); !os.IsNotExist(err) {
 		t.Fatalf("空书目录应该被扫掉，stat err = %v", err)

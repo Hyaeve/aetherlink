@@ -594,7 +594,17 @@ func audioAdaptationNote(cacheHit bool) string {
 }
 
 const audioCacheIdle = 2 * time.Hour
+
+// audioCacheCleanupInterval 是「删过期文件」的周期；audioCacheFullSweepInterval 是
+// 「把空目录整扫一遍」的周期——容器启动时先扫一次（见 startupPruneOnce），之后每跑满
+// 24 小时再扫一次，也就是容器运行 24h、48h、72h… 各一遍。
+const audioCacheCleanupInterval = 10 * time.Minute
+const audioCacheFullSweepInterval = 24 * time.Hour
 const defaultAudioCacheDir = "/cache"
+
+// audioCacheStartedAt 是整扫的计时锚点，取进程启动时间：这样「容器运行满 24 小时」就是
+// 真的按容器运行时长算，保存配置重建缓存实例也不会把它推后（实例自己的 ticker 会）。
+var audioCacheStartedAt = time.Now()
 
 // startupPruneOnce 让「启动时扫一遍空目录」在每个进程里只发生一次。
 //
@@ -603,6 +613,9 @@ const defaultAudioCacheDir = "/cache"
 // 刚建好变体目录、临时文件还没落盘，这时扫一遍空目录会把它的目录删掉，紧接着的
 // CreateTemp 直接报 ENOENT。放在进程首次建缓存时做，既对得上「容器启动时清理」的
 // 语义，也避开这个窗口；顺带省掉每次保存配置都去遍历一遍缓存目录。
+//
+// 运行期那一遍（每满 24 小时，见 audioCacheFullSweepInterval）不需要也做成 once：
+// 它由实例自己的锁保护，频率也低得多。
 var startupPruneOnce sync.Once
 
 type audioCache struct {
@@ -627,9 +640,9 @@ func newAudioCache() *audioCache {
 		dir:     directory,
 		entries: make(map[string]*audioCacheEntry),
 	}
-	// 启动时先把上一次留下的空目录扫掉（只在本进程首次建缓存时做一次），
-	// 再开始周期性清理。
-	startupPruneOnce.Do(cache.pruneEmptyCacheDirectories)
+	// 启动时先把上一次留下的空目录扫掉（只在本进程首次建缓存时做一次），再开始
+	// 周期性清理——后者每 10 分钟删过期文件，每满 24 小时也会整扫一遍空目录。
+	startupPruneOnce.Do(func() { cache.pruneEmptyCacheDirectories("启动清理") })
 	go cache.cleanupLoop()
 	return cache
 }
@@ -803,11 +816,45 @@ func touchAudioCacheFile(filename string) error {
 }
 
 func (c *audioCache) cleanupLoop() {
-	ticker := time.NewTicker(10 * time.Minute)
-	defer ticker.Stop()
-	for range ticker.C {
-		c.cleanup()
+	c.loopWithIntervals(audioCacheCleanupInterval, audioCacheFullSweepInterval, audioCacheStartedAt, nil)
+}
+
+// loopWithIntervals 是清理循环本体：每 cleanupEvery 删一遍过期文件，每到「距 anchor
+// 满 sweepEvery 整数倍」的时刻把空目录整扫一遍（真实值是启动后 24h / 48h / 72h…）。
+//
+// 锚点传进来而不是就地起 ticker，是因为这个循环属于缓存实例，而保存配置会重建实例：
+// 若从实例创建时刻重新计时，改设置比 24 小时更勤的话，这一遍就永远轮不到。锚点钉在
+// 进程启动上，容器运行满 24 小时、48 小时… 才触发，跟重建无关。
+//
+// 两个间隔做成参数只是为了让用例能用毫秒级验「到点会不会扫」；stop 为 nil 表示一直跑
+// （生产路径），用例传一个能关掉的通道，免得留下停不下来的 goroutine。
+func (c *audioCache) loopWithIntervals(cleanupEvery, sweepEvery time.Duration, anchor time.Time, stop <-chan struct{}) {
+	cleanupTicker := time.NewTicker(cleanupEvery)
+	defer cleanupTicker.Stop()
+	sweepTimer := time.NewTimer(time.Until(nextSweepAfter(anchor, time.Now(), sweepEvery)))
+	defer sweepTimer.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-cleanupTicker.C:
+			c.cleanup()
+		case <-sweepTimer.C:
+			c.pruneEmptyCacheDirectories("每日清理")
+			sweepTimer.Reset(nextSweepAfter(anchor, time.Now(), sweepEvery).Sub(time.Now()))
+		}
 	}
+}
+
+// nextSweepAfter 给出 now 之后第一个「距 anchor 满 interval 整数倍」的时刻，也就是
+// 容器运行满 24h / 48h / 72h… 的那几刻。刚好处在整点上时给的是下一格（那一刻已经该扫
+// 了，这一遍是扫完之后的排期）。
+func nextSweepAfter(anchor, now time.Time, interval time.Duration) time.Time {
+	steps := now.Sub(anchor)/interval + 1
+	if steps < 1 {
+		steps = 1
+	}
+	return anchor.Add(steps * interval)
 }
 
 func (c *audioCache) cleanup() {
@@ -872,19 +919,25 @@ func (c *audioCache) pruneEmptyDirectories(directory string) {
 	}
 }
 
-// pruneEmptyCacheDirectories 是启动期那一遍全量扫描：把缓存目录下已经空掉的目录链
-// 收掉，然后才开始周期性清理。由 startupPruneOnce 保证每个进程只做一次（见那里的
-// 说明：保存配置重建 stack 时不能再扫，否则会删掉在途请求刚建好的目录）。
+// pruneEmptyCacheDirectories 是「把空目录整扫一遍」，两处调用：容器启动时一次
+// （由 startupPruneOnce 保证每个进程只做一次，见那里的说明：保存配置重建 stack 时
+// 不能再扫，否则会删掉在途请求刚建好的目录），以及运行期每满 24 小时一次
+// （cleanupLoop 里那条 ticker，容器运行 24h / 48h / 72h… 各一遍）。
 //
 // 为什么需要它：运行期的收尾只发生在「刚刚删掉一个文件」的那一刻（cleanup 与
 // cleanupLocked 里的 pruneEmptyDirectories）。上一次进程要是被杀在删文件和收尾之间，
-// 或者有人手动 rm 掉缓存文件，剩下的空目录就再没人管了，会一直摆在 /cache 里。
+// 或者有人手动 rm 掉缓存文件，剩下的空目录就再没人管了，会一直摆在 /cache 里 ——
+// 24 小时那一遍就是给这种情况兜底，免得非等到下次重启才收拾。
 //
 // 只删空目录，不碰任何文件：WalkDir 先父后子，所以倒着遍历就是从最深的一层往上删，
 // 子目录先空掉、父目录才可能跟着空；非空目录 os.Remove 本来就失败，正在用的缓存
 // 以及手动放进书目录的东西都会原样留着。缓存根目录本身不动——它通常是 compose 里
 // 挂进来的挂载点。
-func (c *audioCache) pruneEmptyCacheDirectories() {
+//
+// 删的时候才拿锁：`getOrCreate` 从建变体目录到 CreateTemp 落盘全程都在锁内，这样
+// 扫描不会在两者之间把那个刚建好、还是空的目录删走（否则紧接着的 CreateTemp 就是
+// ENOENT）。遍历不持锁，所以不会把取缓存的请求挡在一次完整的目录遍历后面。
+func (c *audioCache) pruneEmptyCacheDirectories(reason string) {
 	root := filepath.Clean(c.dir)
 	directories := make([]string, 0, 16)
 	_ = filepath.WalkDir(root, func(current string, entry os.DirEntry, err error) error {
@@ -893,6 +946,8 @@ func (c *audioCache) pruneEmptyCacheDirectories() {
 		}
 		return nil
 	})
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	removed := 0
 	for index := len(directories) - 1; index >= 0; index-- {
 		if os.Remove(directories[index]) == nil {
@@ -900,7 +955,7 @@ func (c *audioCache) pruneEmptyCacheDirectories() {
 		}
 	}
 	if removed > 0 {
-		logx.Infof("[proxy] 启动清理：缓存目录 %s 下清掉 %d 个空目录", root, removed)
+		logx.Infof("[proxy] %s：缓存目录 %s 下清掉 %d 个空目录", reason, root, removed)
 	}
 }
 
