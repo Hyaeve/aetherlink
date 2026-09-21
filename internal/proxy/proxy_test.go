@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -233,6 +234,113 @@ func TestAudioCacheRebuildsDirectoryRemovedByCleanup(t *testing.T) {
 	}
 	if info.Size() == 0 {
 		t.Fatalf("重建出来的文件不该是空的：%s", rebuilt)
+	}
+}
+
+// 容器启动时要把上一次留下的空目录扫掉。运行期的收尾只发生在「刚刚删掉一个文件」的
+// 那一刻，进程被杀在删文件与收尾之间、或者有人手动 rm 掉缓存文件，剩下的空目录就再
+// 没人管了。启动这一遍必须把它们回收，同时一根手指都不许碰有文件的地方。
+func TestAudioCacheStartupPrunesEmptyDirectories(t *testing.T) {
+	directory := t.TempDir()
+	cache := &audioCache{dir: directory, entries: make(map[string]*audioCacheEntry)}
+
+	// 残留一：整本书的缓存都没了，书目录 / 键目录两级全空，键目录里还套了个空的子目录。
+	if err := os.MkdirAll(filepath.Join(directory, "残留书", "key-a", "empty-child"), 0o755); err != nil {
+		t.Fatalf("mkdir leftover book: %v", err)
+	}
+	// 残留二：书还在，但多出来一个空的键目录（上一次转码中途被打断）。
+	fresh := seedAudioCacheFile(t, cache, "另一本书", "https://example.test/other.aac", "aac-remux", "第001集.m4a")
+	orphanKey := filepath.Join(directory, "另一本书", "key-orphan")
+	if err := os.MkdirAll(orphanKey, 0o755); err != nil {
+		t.Fatalf("mkdir orphan key: %v", err)
+	}
+	// 手动放进来的东西：目录非空，一律不许动。
+	foreignDirectory := filepath.Join(directory, "手动放的目录")
+	if err := os.MkdirAll(foreignDirectory, 0o755); err != nil {
+		t.Fatalf("mkdir foreign directory: %v", err)
+	}
+	foreignFile := filepath.Join(foreignDirectory, "notes.txt")
+	if err := os.WriteFile(foreignFile, []byte("手动放进来的东西"), 0o600); err != nil {
+		t.Fatalf("write foreign file: %v", err)
+	}
+
+	cache.pruneEmptyCacheDirectories()
+
+	if _, err := os.Stat(filepath.Join(directory, "残留书")); !os.IsNotExist(err) {
+		t.Fatalf("空书目录应该被扫掉，stat err = %v", err)
+	}
+	if _, err := os.Stat(orphanKey); !os.IsNotExist(err) {
+		t.Fatalf("多出来的空键目录应该被扫掉，stat err = %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(directory, "另一本书")); err != nil || !info.IsDir() {
+		t.Fatalf("书目录里还有缓存文件，不能删：%v", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("有缓存的文件不能动：%v", err)
+	}
+	if _, err := os.Stat(foreignFile); err != nil {
+		t.Fatalf("非空目录里的文件不能动：%v", err)
+	}
+	if info, err := os.Stat(foreignDirectory); err != nil || !info.IsDir() {
+		t.Fatalf("非空目录不能删：%v", err)
+	}
+	if info, err := os.Stat(directory); err != nil || !info.IsDir() {
+		t.Fatalf("缓存根目录要留着：%v", err)
+	}
+}
+
+// 缓存目录里全是空目录的时候（刚清完、或者第一次起来时挂载点本来就是空的），扫描
+// 一轮要把书目录 / 键目录收掉，但根目录本身必须留下——它通常是 compose 的挂载点，
+// 删掉之后后面的转码会写不进来。
+func TestAudioCacheStartupKeepsCacheRootWhenEverythingIsEmpty(t *testing.T) {
+	directory := t.TempDir()
+	cache := &audioCache{dir: directory, entries: make(map[string]*audioCacheEntry)}
+	if err := os.MkdirAll(filepath.Join(directory, "空书", "key-a"), 0o755); err != nil {
+		t.Fatalf("mkdir empty book: %v", err)
+	}
+
+	cache.pruneEmptyCacheDirectories()
+
+	if _, err := os.Stat(filepath.Join(directory, "空书")); !os.IsNotExist(err) {
+		t.Fatalf("空书目录应该被扫掉，stat err = %v", err)
+	}
+	if info, err := os.Stat(directory); err != nil || !info.IsDir() {
+		t.Fatalf("缓存根目录即便空了也要留着（通常是挂载点）：%v", err)
+	}
+}
+
+// 启动扫描必须真的挂在启动路径上，而且只在首次建缓存时做一次：newAudioCache 是容器
+// 启动时建缓存的唯一入口，但保存配置重建 stack（runtime.Apply）时它也会被调用，那时
+// 旧缓存还有请求在途——再扫一遍会把它们的目录删掉。所以这里要同时验两件事：
+// 第一次建缓存扫掉残留；重建时不再扫。
+func TestNewAudioCachePrunesEmptyDirectoriesOnlyAtStartup(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "cache")
+	t.Setenv("AETHERLINK_AUDIO_CACHE_DIR", directory)
+	if err := os.MkdirAll(filepath.Join(directory, "残留书", "key-a"), 0o755); err != nil {
+		t.Fatalf("mkdir leftover: %v", err)
+	}
+	startupPruneOnce = sync.Once{}
+
+	cache := newAudioCache()
+	if filepath.Clean(cache.dir) != filepath.Clean(directory) {
+		t.Fatalf("cache dir = %q, want %q", cache.dir, directory)
+	}
+	if _, err := os.Stat(filepath.Join(directory, "残留书")); !os.IsNotExist(err) {
+		t.Fatalf("启动时应该扫掉残留空目录，stat err = %v", err)
+	}
+
+	// 保存配置那条重建路不该再扫：这个变体目录模拟旧缓存刚建好、临时文件还没落盘的状态，
+	// 扫掉它，紧接着的 CreateTemp 就会 ENOENT。
+	liveVariant := filepath.Join(directory, "在途书", "key-live")
+	if err := os.MkdirAll(liveVariant, 0o755); err != nil {
+		t.Fatalf("mkdir live variant: %v", err)
+	}
+	rebuilt := newAudioCache()
+	if filepath.Clean(rebuilt.dir) != filepath.Clean(directory) {
+		t.Fatalf("rebuilt cache dir = %q, want %q", rebuilt.dir, directory)
+	}
+	if info, err := os.Stat(liveVariant); err != nil || !info.IsDir() {
+		t.Fatalf("重建时不该再扫一遍空目录（会把在途请求刚建好的目录删掉）：%v", err)
 	}
 }
 

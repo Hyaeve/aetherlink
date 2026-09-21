@@ -596,6 +596,15 @@ func audioAdaptationNote(cacheHit bool) string {
 const audioCacheIdle = 2 * time.Hour
 const defaultAudioCacheDir = "/cache"
 
+// startupPruneOnce 让「启动时扫一遍空目录」在每个进程里只发生一次。
+//
+// 不能放在每次 newAudioCache 里：管理界面每次保存配置都会重建整套 proxy
+// （runtime.Apply → build → proxy.New），而那期间旧缓存还在服务请求——可能有请求
+// 刚建好变体目录、临时文件还没落盘，这时扫一遍空目录会把它的目录删掉，紧接着的
+// CreateTemp 直接报 ENOENT。放在进程首次建缓存时做，既对得上「容器启动时清理」的
+// 语义，也避开这个窗口；顺带省掉每次保存配置都去遍历一遍缓存目录。
+var startupPruneOnce sync.Once
+
 type audioCache struct {
 	mu      sync.Mutex
 	dir     string
@@ -618,6 +627,9 @@ func newAudioCache() *audioCache {
 		dir:     directory,
 		entries: make(map[string]*audioCacheEntry),
 	}
+	// 启动时先把上一次留下的空目录扫掉（只在本进程首次建缓存时做一次），
+	// 再开始周期性清理。
+	startupPruneOnce.Do(cache.pruneEmptyCacheDirectories)
 	go cache.cleanupLoop()
 	return cache
 }
@@ -857,6 +869,38 @@ func (c *audioCache) pruneEmptyDirectories(directory string) {
 		if err := os.Remove(current); err != nil {
 			return
 		}
+	}
+}
+
+// pruneEmptyCacheDirectories 是启动期那一遍全量扫描：把缓存目录下已经空掉的目录链
+// 收掉，然后才开始周期性清理。由 startupPruneOnce 保证每个进程只做一次（见那里的
+// 说明：保存配置重建 stack 时不能再扫，否则会删掉在途请求刚建好的目录）。
+//
+// 为什么需要它：运行期的收尾只发生在「刚刚删掉一个文件」的那一刻（cleanup 与
+// cleanupLocked 里的 pruneEmptyDirectories）。上一次进程要是被杀在删文件和收尾之间，
+// 或者有人手动 rm 掉缓存文件，剩下的空目录就再没人管了，会一直摆在 /cache 里。
+//
+// 只删空目录，不碰任何文件：WalkDir 先父后子，所以倒着遍历就是从最深的一层往上删，
+// 子目录先空掉、父目录才可能跟着空；非空目录 os.Remove 本来就失败，正在用的缓存
+// 以及手动放进书目录的东西都会原样留着。缓存根目录本身不动——它通常是 compose 里
+// 挂进来的挂载点。
+func (c *audioCache) pruneEmptyCacheDirectories() {
+	root := filepath.Clean(c.dir)
+	directories := make([]string, 0, 16)
+	_ = filepath.WalkDir(root, func(current string, entry os.DirEntry, err error) error {
+		if err == nil && entry.IsDir() && filepath.Clean(current) != root {
+			directories = append(directories, current)
+		}
+		return nil
+	})
+	removed := 0
+	for index := len(directories) - 1; index >= 0; index-- {
+		if os.Remove(directories[index]) == nil {
+			removed++
+		}
+	}
+	if removed > 0 {
+		logx.Infof("[proxy] 启动清理：缓存目录 %s 下清掉 %d 个空目录", root, removed)
 	}
 }
 
