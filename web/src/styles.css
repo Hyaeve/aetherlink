@@ -2996,6 +2996,22 @@ label.inline input[type='checkbox'] {
   margin-bottom: 14px;
 }
 
+/* 「保持登录」那一行：勾选框和文案靠左，右边挂一句「能管多久」的说明。整行是
+   <label>，点文案也能勾上。别用 label.inline 的 inline-flex 居中——登录面板整体
+   是 text-align:center，那样会把这一行飘到中间去。 */
+.gate .login-remember {
+  display: flex;
+  width: 100%;
+  margin: -2px 0 16px;
+  cursor: pointer;
+}
+
+.gate .login-remember small {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .gate p {
   font-size: 12px;
   line-height: 1.6;

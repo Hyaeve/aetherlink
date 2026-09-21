@@ -77,7 +77,10 @@ const jsonBody = (payload) => ({ body: JSON.stringify(payload ?? {}) })
 
 export const api = {
   bootstrap: () => request('/bootstrap'),
-  login: (username, password) => request('/login', { method: 'POST', ...jsonBody({ username, password }) }),
+  // remember 来自登录页的「保持登录」：勾上之后后端会把会话落盘，容器重启也不用
+  // 重登（7 天有效）；不勾就还是重启即失效的普通会话。
+  login: (username, password, remember = false) =>
+    request('/login', { method: 'POST', ...jsonBody({ username, password, remember: !!remember }) }),
   logout: () => request('/logout', { method: 'POST', ...jsonBody({}) }),
   updateAccount: (username, password) =>
     request('/account', { method: 'POST', ...jsonBody({ username, password }) }),

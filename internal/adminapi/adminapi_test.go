@@ -815,3 +815,84 @@ func TestPurgeCacheRequiresToken(t *testing.T) {
 		t.Fatalf("status = %d, want 401", recorder.Code)
 	}
 }
+
+// newPersistentEnv 和 newBareEnv 是同一套东西，只是会话存储挂在磁盘上——等价于
+// main.go 里那一行 auth.OpenStore。用来验证「保持登录」真的能扛过容器重启。
+// 返回值里带上会话文件路径，测试可以拿它在「重启后」重新开一个 Store。
+func newPersistentEnv(t *testing.T) (*testEnv, string) {
+	t.Helper()
+	root := t.TempDir()
+	strmPath := filepath.Join(root, "001.strm")
+	if err := os.WriteFile(strmPath, []byte("http://10.0.0.31:19527/d/bi6jeznun2rvu88v6.m4a?/001.总序.m4a"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	confPath := filepath.Join(root, "config", "config.yaml")
+	cfg, _, err := config.LoadOrCreate(confPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, err := runtime.New(cfg, stats.New(20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaults, err := auth.Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.Apply(func(draft *config.Config) error {
+		draft.Auth = defaults
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sessionPath := filepath.Join(root, "sessions.json")
+	sessions := auth.OpenStore(time.Hour, sessionPath)
+	return &testEnv{
+		handler:  New(rt, sessions).Handler(),
+		rt:       rt,
+		sessions: sessions,
+		strmPath: pathmap.Normalize(strmPath),
+		confPath: confPath,
+	}, sessionPath
+}
+
+// 登录页勾了「保持登录」，后端就得按「7 天 + 落盘」签发，并把这个选择如实回报，
+// 前端据此确认自己勾的到底生效没有。重启之后（同一个会话文件上重开一套 API）
+// 那个令牌必须还能用。
+func TestLoginRememberSurvivesRestart(t *testing.T) {
+	env, sessionPath := newPersistentEnv(t)
+	body := `{"username":"` + auth.DefaultUsername + `","password":"` + auth.DefaultPassword + `","remember":true}`
+	recorder := env.do(http.MethodPost, BasePath+"/login", body, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("login status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Token    string    `json:"token"`
+		Expires  time.Time `json:"expiresAt"`
+		Remember bool      `json:"remember"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode login: %v (body=%s)", err, recorder.Body.String())
+	}
+	if !response.Remember {
+		t.Fatalf("remember = false in %s", recorder.Body.String())
+	}
+	if delta := time.Until(response.Expires) - auth.DefaultRememberTTL; delta > time.Minute || delta < -time.Minute {
+		t.Fatalf("expiresAt = %v, want about %v from now", response.Expires, auth.DefaultRememberTTL)
+	}
+
+	// 容器重启。
+	restarted := auth.OpenStore(time.Hour, sessionPath)
+	if !restarted.Valid(response.Token) {
+		t.Fatal("a remembered token should still be accepted after a restart")
+	}
+}
+
+// 没勾的那一半：普通的 12 小时内存会话，容器一重启就必须重新登录。
+func TestLoginWithoutRememberDoesNotSurviveRestart(t *testing.T) {
+	env, sessionPath := newPersistentEnv(t)
+	token := env.login(t, auth.DefaultUsername, auth.DefaultPassword)
+	if auth.OpenStore(time.Hour, sessionPath).Valid(token) {
+		t.Fatal("a session without remember must not survive a restart")
+	}
+}

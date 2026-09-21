@@ -147,6 +147,9 @@ func (a *API) handleBootstrap(writer http.ResponseWriter, request *http.Request)
 type loginPayload struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+	// Remember 来自登录页的「保持登录」。勾上之后会话落盘，容器重启也不用重登，
+	// 有效期是 auth.DefaultRememberTTL（7 天）；不勾就还是只活在内存里的普通会话。
+	Remember bool `json:"remember"`
 }
 
 type accountPayload struct {
@@ -168,16 +171,26 @@ func (a *API) handleLogin(writer http.ResponseWriter, request *http.Request) {
 		writeError(writer, http.StatusUnauthorized, "账号或密码不正确")
 		return
 	}
-	a.issueSession(writer)
+	a.issueSession(writer, payload.Remember)
 }
 
-func (a *API) issueSession(writer http.ResponseWriter) {
-	token, expires, err := a.sessions.Issue()
+// issueSession 按登录页的选择签发会话：remembered 为真时签发「保持登录」令牌，
+// 它会落盘、能扛过容器重启（有效期见 auth.DefaultRememberTTL）。
+func (a *API) issueSession(writer http.ResponseWriter, remembered bool) {
+	issue := a.sessions.Issue
+	if remembered {
+		issue = a.sessions.IssueRemembered
+	}
+	token, expires, err := issue()
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "签发会话失败: "+err.Error())
 		return
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"token": token, "expiresAt": expires})
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"token":     token,
+		"expiresAt": expires,
+		"remember":  remembered,
+	})
 }
 
 func (a *API) handleLogout(writer http.ResponseWriter, request *http.Request) {

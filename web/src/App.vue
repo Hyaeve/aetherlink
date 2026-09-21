@@ -63,6 +63,14 @@ const password = ref('')
 // 密码与上游编辑窗口同一套约定：默认就是一串圆点，右侧小眼睛点一下显示明文、
 // 图标变成斜线眼睛，再点一下回到圆点。
 const passwordVisible = ref(false)
+// 「保持登录」勾选状态记在 localStorage：下次打开登录页还是上次的选择，省得重启
+// 之后除了重登还要再勾一次。它只影响下一次登录，不改变已经签发出去的那个会话。
+const REMEMBER_KEY = 'aetherlink.remember'
+const rememberLogin = ref(localStorage.getItem(REMEMBER_KEY) === 'on')
+watch(rememberLogin, (value) => {
+  if (value) localStorage.setItem(REMEMBER_KEY, 'on')
+  else localStorage.removeItem(REMEMBER_KEY)
+})
 const authBusy = ref(false)
 const authError = ref('')
 
@@ -141,7 +149,7 @@ async function submitLogin() {
   authError.value = ''
   authBusy.value = true
   try {
-    const result = await api.login(username.value, password.value)
+    const result = await api.login(username.value, password.value, rememberLogin.value)
     setToken(result.token)
     status.value = await api.status()
     enterApp()
@@ -320,6 +328,11 @@ function toggleAccountMenu() {
             </svg>
           </button>
         </span>
+      </label>
+      <label class="inline login-remember">
+        <input type="checkbox" v-model="rememberLogin" />
+        <span>保持登录</span>
+        <small>7 天内无需重新登录</small>
       </label>
       <button class="primary block" :disabled="authBusy" @click="submitLogin">
         {{ authBusy ? '登录中…' : '登录' }}
