@@ -36,9 +36,10 @@ var ErrPointerUnavailable = errors.New("strm pointer file is not readable inside
 const (
 	audiobookshelfCacheTTL = 15 * time.Minute
 	embyFallbackCacheTTL   = 2 * time.Hour
-	// cmecloudCacheTTL 是直链落在移动云盘（cmecloud.cn）时的固定缓存上限。
+	// cmecloudCacheTTL 是直链落在移动云盘（cmecloud.cn）时的固定缓存值。
 	// 这类直链的有效期远短于其它网盘，沿用 Emby 那条 2 小时的回退会让客户端
 	// 在缓存命中之后拿到一条已经失效的地址 —— 现象是「突然有一批播不了」。
+	// 它是**固定值**：关键词命中就是 15 分钟，不看直链自带的 `t`（原因见 cacheTTLFor）。
 	cmecloudCacheTTL = 15 * time.Minute
 )
 
@@ -145,30 +146,21 @@ func (r *Resolver) Resolve(ctx context.Context, provider upstream.Provider, ref 
 func (r *Resolver) ResolveWithSource(ctx context.Context, provider upstream.Provider, ref upstream.MediaRef, userAgent string) (resolution *Resolution, source CacheSource, cacheTTL time.Duration, err error) {
 	effectiveUserAgent := r.effectiveUserAgentFor(provider.Type(), provider.Name(), userAgent)
 	ctx = upstream.WithUserAgent(ctx, effectiveUserAgent)
-	key := ref.CacheKey(provider.Name()) + "\x00ua=" + effectiveUserAgent
-	key += "\x00scope=" + upstream.PlaybackCacheScope(ctx)
-	if namespaced, ok := provider.(interface{ CacheNamespace() string }); ok {
-		key += "\x00server=" + namespaced.CacheNamespace()
-	} else {
-		key += "\x00server=" + string(provider.Type()) + ":" + provider.BaseURL().String()
-	}
-	if cached, remaining, restored, ok := r.cache.getWithSource(key); ok {
-		if restored {
-			return cached, CacheSourceRestored, remaining, nil
-		}
-		return cached, CacheSourceHit, remaining, nil
+	// 两个键。共享键里只有「哪个文件 + 哪台上游」，不带 UA 与播放器身份 —— 它只对
+	// 移动云盘那类直链开放，见 lookup 与 putResolution。
+	sharedKey := ref.CacheKey(provider.Name()) + "\x00server=" + cacheNamespaceOf(provider)
+	key := sharedKey + "\x00ua=" + effectiveUserAgent + "\x00scope=" + upstream.PlaybackCacheScope(ctx)
+	if cached, source, remaining, ok := r.lookup(key, sharedKey); ok {
+		return cached, source, remaining, nil
 	}
 	ttl := r.cacheTTL(provider)
 
 	// Collapse concurrent requests for the same track. Players routinely open
 	// several ranged requests at once when seeking.
 	r.inflightMu.Lock()
-	if cached, remaining, restored, ok := r.cache.getWithSource(key); ok {
+	if cached, source, remaining, ok := r.lookup(key, sharedKey); ok {
 		r.inflightMu.Unlock()
-		if restored {
-			return cached, CacheSourceRestored, remaining, nil
-		}
-		return cached, CacheSourceHit, remaining, nil
+		return cached, source, remaining, nil
 	}
 	if call, ok := r.inflight[key]; ok {
 		r.inflightMu.Unlock()
@@ -190,7 +182,7 @@ func (r *Resolver) ResolveWithSource(ctx context.Context, provider upstream.Prov
 	resolvedTTL := time.Duration(0)
 	if call.err == nil {
 		resolvedTTL = r.cacheTTLFor(provider, call.resolution, ttl)
-		r.cache.put(key, call.resolution, resolvedTTL)
+		r.putResolution(key, sharedKey, call.resolution, resolvedTTL)
 	}
 	r.inflightMu.Lock()
 	close(call.done)
@@ -199,22 +191,68 @@ func (r *Resolver) ResolveWithSource(ctx context.Context, provider upstream.Prov
 	return call.resolution, CacheSourceMiss, resolvedTTL, call.err
 }
 
+// lookup 先按完整键（带 UA 与播放器身份）找，再退回共享键。
+//
+// 共享键只对移动云盘那类直链开放，而且**必须回读到内容再判一次**：其它网盘的直链
+// 可能与 UA 绑定，跨 UA 复用会把一条只有某个播放器才播得动的地址发给别人。
+func (r *Resolver) lookup(scopedKey, sharedKey string) (*Resolution, CacheSource, time.Duration, bool) {
+	if cached, remaining, restored, ok := r.cache.getWithSource(scopedKey); ok {
+		return cached, cacheSourceFor(restored), remaining, true
+	}
+	if cached, remaining, restored, ok := r.cache.getWithSource(sharedKey); ok && cmecloudDirectLink(cached) {
+		return cached, cacheSourceFor(restored), remaining, true
+	}
+	return nil, CacheSourceMiss, 0, false
+}
+
+// putResolution 决定这条结果记在哪个键下：移动云盘的直链记共享键（同一个文件不同
+// UA / 不同播放器共用一条），其余记带 UA 与播放器身份的完整键。
+func (r *Resolver) putResolution(scopedKey, sharedKey string, resolution *Resolution, ttl time.Duration) {
+	if cmecloudDirectLink(resolution) {
+		r.cache.put(sharedKey, resolution, ttl)
+		return
+	}
+	r.cache.put(scopedKey, resolution, ttl)
+}
+
+func cacheSourceFor(restored bool) CacheSource {
+	if restored {
+		return CacheSourceRestored
+	}
+	return CacheSourceHit
+}
+
+// cacheNamespaceOf 取「哪台上游」这一段摘要：优先用 provider 自己算好的配置摘要
+// （服务器地址、类型、凭据、路径规则都算在里面），取不到再退回类型 + 地址。
+func cacheNamespaceOf(provider upstream.Provider) string {
+	if namespaced, ok := provider.(interface{ CacheNamespace() string }); ok {
+		return namespaced.CacheNamespace()
+	}
+	return string(provider.Type()) + ":" + provider.BaseURL().String()
+}
+
+// Close 停掉直链缓存的后台写盘，并把未落盘的改动补写一次。重建 resolver（保存
+// 配置）与进程退出时调用；不调用只会丢掉最后一次写盘，不影响正确性。
+func (r *Resolver) Close() { r.cache.close() }
+
 func (r *Resolver) cacheTTLFor(provider upstream.Provider, resolution *Resolution, fallback time.Duration) time.Duration {
 	if resolution == nil {
 		return fallback
 	}
-	ttl := fallback
-	if provider != nil && provider.Type().IsEmbyFamily() {
-		if fromURL, ok := directURLTTL(resolution); ok {
-			ttl = fromURL
-		}
-	}
-	// 移动云盘直链封顶 15 分钟。只往下压、不往上抬：直链自带 `t` 时那个时间才是
-	// 它真正的寿命，`t` 已经过期（ttl 为 0，等于不缓存）也必须保持不缓存。
-	if ttl > cmecloudCacheTTL && cmecloudDirectLink(resolution) {
+	// 移动云盘直链（含 cmecloud.cn）**固定**缓存 cmecloudCacheTTL，不读它自带的 `t`：
+	// 关键词命中就是 15 分钟。这类直链上的 `t` 多半不是到期时间戳（移动云盘给的就是
+	// 一个像签名的值），拿它当寿命会把这一档整个抵消掉 —— 旧实现按「在 15 分钟的基础上
+	// 往下压」写，`t` 取不到有效值时压成 0，而 0 在 put() 里等于不入缓存，界面上就
+	// 显示成「不缓存」。这一支也必须**先于**下面 Emby 系按 `t` 的分支判定。
+	if cmecloudDirectLink(resolution) {
 		return cmecloudCacheTTL
 	}
-	return ttl
+	if provider != nil && provider.Type().IsEmbyFamily() {
+		if fromURL, ok := directURLTTL(resolution); ok {
+			return fromURL
+		}
+	}
+	return fallback
 }
 
 // directLinkCandidates 列出这次解析结果里客户端会真正请求到的直链：FinalURL 是

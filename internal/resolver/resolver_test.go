@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -92,8 +93,13 @@ func TestPersistentCacheSurvivesReopen(t *testing.T) {
 	}
 	first := newPersistentLRUCache(time.Hour, 4, cachePath)
 	first.put("provider:item:ua", value, time.Hour)
+	// 写盘交给后台协程了，所以「重开」之前必须先关掉这一个：关的时候会把还没落盘的
+	// 改动补写一次。不关就直接重开，读到的还是旧文件 —— 那是后台写盘本来的样子，
+	// 不是丢缓存（用户要的正是「别挡在客户端前面」，见 TestPutDoesNotWaitForDiskWrite）。
+	first.close()
 
 	second := newPersistentLRUCache(time.Hour, 4, cachePath)
+	defer second.close()
 	got, _, ok := second.get("provider:item:ua")
 	if !ok || got.PlayURL() != value.PlayURL() {
 		t.Fatalf("persistent cache entry was not restored: got=%+v ok=%v", got, ok)
@@ -104,8 +110,10 @@ func TestPersistentCacheReportsRestoredThenNormalHit(t *testing.T) {
 	cachePath := filepath.Join(t.TempDir(), "direct-links-cache.json")
 	first := newPersistentLRUCache(time.Hour, 4, cachePath)
 	first.put("provider:item:ua", &Resolution{Target: &strm.Target{Type: strm.TargetRemote, URL: "https://cdn.example/book.m4a"}}, time.Hour)
+	first.close()
 
 	reopened := newPersistentLRUCache(time.Hour, 4, cachePath)
+	defer reopened.close()
 	if _, _, restored, ok := reopened.getWithSource("provider:item:ua"); !ok || !restored {
 		t.Fatalf("first lookup after reopening should be restored hit: ok=%v restored=%v", ok, restored)
 	}
@@ -119,8 +127,10 @@ func TestPersistentCacheSkipsExpiredEntries(t *testing.T) {
 	cache := newPersistentLRUCache(time.Hour, 4, cachePath)
 	cache.put("expired", &Resolution{Target: &strm.Target{Type: strm.TargetRemote, URL: "https://cdn.example/expired"}}, time.Millisecond)
 	time.Sleep(10 * time.Millisecond)
+	cache.close()
 
 	reopened := newPersistentLRUCache(time.Hour, 4, cachePath)
+	defer reopened.close()
 	if reopened.size() != 0 {
 		t.Fatalf("expired persistent entry was restored: %d entries", reopened.size())
 	}
@@ -180,13 +190,18 @@ func TestFnosSharesEmbyFamilyDirectLinkCachePolicy(t *testing.T) {
 
 // 移动云盘（cmecloud.cn）的直链有效期远短于其它网盘。沿用 Emby 那条「没带 t 就
 // 固定 2 小时」的回退，客户端会在缓存命中之后拿到一条已经失效的地址，现象是
-// 「过一会儿突然一批播不了」，而播放流水里还写着缓存命中。固定规则：这类直链
-// 封顶 15 分钟。
+// 「过一会儿突然一批播不了」，而播放流水里还写着缓存命中。
 //
-// 表里带三条对照：别的网盘仍是 2 小时（证明被压的是这一类直链，不是所有直链）、
+// 固定规则（2026-09-22 明确）：只要直链里出现 `cmecloud.cn`，缓存就是 15 分钟 ——
+// **关键词命中即成立，不读它自带的 `t`**（`t` 的各种取值见 TestCmecloudDirectLinkIgnoresT）。
+// 这类直链上的 `t` 常常不是到期时间戳，让它参与判断会把这一档整个抵消掉：旧实现写成
+// 「在 15 分钟的基础上往下压」，`t` 拿不到有效值时压成 0，而 0 在 put() 里等于不入缓存，
+// 播放流水里显示的正是用户看到的「不缓存」。
+//
+// 表里带三条对照：别的网盘仍是 2 小时（证明被改的只是这一类直链，不是所有直链）、
 // 移动云盘只出现在跳转链中间时仍是 2 小时（客户端不会去请求中间跳）、
 // Audiobookshelf 本来就是 15 分钟（不该被这条规则顺手改成别的值）。
-func TestCmecloudDirectLinkIsCachedForAtMostFifteenMinutes(t *testing.T) {
+func TestCmecloudDirectLinkIsCachedForFifteenMinutes(t *testing.T) {
 	mediaResolver := New(config.Cache{TTL: 5 * time.Hour, MaxSize: 4}, config.Redirect{})
 	emby := testUpstream(t, config.UpstreamEmby, "emby", "http://127.0.0.1:8096")
 	fnos := testUpstream(t, config.UpstreamFnos, "飞牛影视", "http://127.0.0.1:8005")
@@ -273,34 +288,32 @@ func TestCmecloudDirectLinkIsCachedForAtMostFifteenMinutes(t *testing.T) {
 	}
 }
 
-// 上限只往下压、不往上抬：直链自带 `t` 时那个时间才是它真正的寿命，比 15 分钟
-// 短就得按它来 —— 否则等于我们主动把一条已经过期的地址继续发给客户端。
-func TestCmecloudDirectLinkKeepsEarlierExpiryFromT(t *testing.T) {
-	mediaResolver := New(config.Cache{TTL: 5 * time.Hour, MaxSize: 4}, config.Redirect{})
-	emby := testUpstream(t, config.UpstreamEmby, "emby", "http://127.0.0.1:8096")
-	expiry := time.Now().Add(40 * time.Second).Unix()
-
-	signed := remoteResolution(fmt.Sprintf("https://dl.cmecloud.cn/abc/book.m4a?t=%d", expiry))
-	ttl := mediaResolver.cacheTTLFor(emby, signed, mediaResolver.cacheTTL(emby))
-	if ttl < 30*time.Second || ttl > 41*time.Second {
-		t.Fatalf("移动云盘签名直链的缓存 ttl = %v, want 约 40s（应按直链的 t 到期，而不是被抬到 15 分钟）", ttl)
-	}
-}
-
-// 另一半：`t` 比 15 分钟更长时按 15 分钟封顶；`t` 已经过期时保持不缓存（ttl 为 0），
-// 不能被这条规则顺手改成「缓存 15 分钟」—— 那等于把一条死链当成新链存下来。
-func TestCmecloudDirectLinkCapsLaterTExpiryAndKeepsExpired(t *testing.T) {
+// `t` 一律不参与判断：只剩 40 秒的、还有 3 小时的、已经过期的、根本不是时间戳的、
+// 压根没有的，结果都是 15 分钟。
+//
+// **别再把 `t` 加回来**（用户 2026-09-22 纠正过一次）：这类直链上的 `t` 常常只是个
+// 签名 / 序号，让它参与判断会把这一档整个抵消掉 ——「更早则按 `t`」在 `t` 取不到有效值
+// 时会落成 0，而 0 在 put() 里等于不入缓存，界面上就是「不缓存」。
+func TestCmecloudDirectLinkIgnoresT(t *testing.T) {
 	mediaResolver := New(config.Cache{TTL: 5 * time.Hour, MaxSize: 4}, config.Redirect{})
 	emby := testUpstream(t, config.UpstreamEmby, "emby", "http://127.0.0.1:8096")
 
-	longLived := remoteResolution(fmt.Sprintf("https://dl.cmecloud.cn/abc/book.m4a?t=%d", time.Now().Add(3*time.Hour).Unix()))
-	if got := mediaResolver.cacheTTLFor(emby, longLived, mediaResolver.cacheTTL(emby)); got != cmecloudCacheTTL {
-		t.Fatalf("t 还有 3 小时的移动云盘直链缓存 ttl = %v, want %v（封顶）", got, cmecloudCacheTTL)
+	cases := []struct {
+		name string
+		url  string
+	}{
+		{"t 只剩 40 秒", fmt.Sprintf("https://dl.cmecloud.cn/abc/book.m4a?t=%d", time.Now().Add(40*time.Second).Unix())},
+		{"t 还有 3 小时", fmt.Sprintf("https://dl.cmecloud.cn/abc/book.m4a?t=%d", time.Now().Add(3*time.Hour).Unix())},
+		{"t 是已经过去的时间", fmt.Sprintf("https://dl.cmecloud.cn/abc/book.m4a?t=%d", time.Now().Add(-time.Minute).Unix())},
+		{"t 不是数字（像签名或某种序号）", "https://dl.cmecloud.cn/abc/book.m4a?t=2f8a1c9d"},
+		{"只有别的参数、压根没有 t", "https://dl.cmecloud.cn/abc/book.m4a?sign=abc&userId=7"},
+		{"连查询串都没有", "https://dl.cmecloud.cn/abc/book.m4a"},
 	}
-
-	expired := remoteResolution(fmt.Sprintf("https://dl.cmecloud.cn/abc/book.m4a?t=%d", time.Now().Add(-time.Minute).Unix()))
-	if got := mediaResolver.cacheTTLFor(emby, expired, mediaResolver.cacheTTL(emby)); got != 0 {
-		t.Fatalf("t 已过期的移动云盘直链缓存 ttl = %v, want 0（不缓存，而不是 15 分钟）", got)
+	for _, test := range cases {
+		resolution := remoteResolution(test.url)
+		if got := mediaResolver.cacheTTLFor(emby, resolution, mediaResolver.cacheTTL(emby)); got != cmecloudCacheTTL {
+			t.Errorf("%s：缓存 ttl = %v, want %v", test.name, got, cmecloudCacheTTL)
+		}
 	}
 }
 
@@ -666,5 +679,74 @@ func TestBlockedClientUserAgentUsesFallback(t *testing.T) {
 	}
 	if got := resolver.EffectiveUserAgent("Emby/4.8"); got != "Emby/4.8" {
 		t.Fatalf("unblocked User-Agent = %q, want client value", got)
+	}
+}
+
+// 「直链缓存写在把链接发给客户端之后」是用户明确要求的行为：put 只改内存、给后台写盘
+// 丢一个信号就返回，绝不能等一次「序列化整张表 + 写临时文件 + rename」。
+//
+// 用「先把写盘锁攥在手里」来验，不看时钟也不看机器快慢：旧实现里 put 会一路走到
+// persist 并卡在这把锁上，这条用例必定超时失败。反过来，它绿了就说明 put 与写盘
+// 之间确实没有等待关系 —— 客户端不必为落盘多等哪怕一次 rename。
+func TestPutDoesNotWaitForDiskWrite(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), "direct-links-cache.json")
+	cache := newPersistentLRUCache(time.Hour, 4, cachePath)
+	defer cache.close()
+	cache.persistMu.Lock()
+	defer cache.persistMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		cache.put("provider:item:ua", remoteResolution("https://cdn.example/book.m4a"), time.Hour)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("put 被写盘阻塞了：客户端会因此多等一次完整写盘 + rename（缓存要在响应之后再做）")
+	}
+}
+
+// 安静下来之后要真的把缓存写回文件。丢的是通知不是数据：写盘时读的是整张表，
+// 所以接连几个 put 只留一次写盘也不会漏条目。
+func TestPersistentCacheFlushesAfterQuietPeriod(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), "direct-links-cache.json")
+	cache := newPersistentLRUCache(time.Hour, 4, cachePath)
+	defer cache.close()
+	target := "https://cdn.example/book.m4a"
+	cache.put("provider:item:ua", remoteResolution(target), time.Hour)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(cachePath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("put 之后一直等不到写盘：缓存必须在不挡客户端的前提下落回文件")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	reopened := newPersistentLRUCache(time.Hour, 4, cachePath)
+	defer reopened.close()
+	if got, _, ok := reopened.get("provider:item:ua"); !ok || got.PlayURL() != target {
+		t.Fatalf("写回的缓存没能恢复：got=%+v ok=%v", got, ok)
+	}
+}
+
+// 不等安静窗口直接关闭也要把改动补写出去：重建 resolver（保存配置）与进程退出走的
+// 就是这条路。少了这一步，每保存一次配置就丢掉这段时间里新解析出来的直链 ——
+// 表现为「刚配好一重启，播放又都回头问上游了」。
+func TestPersistentCacheFlushesOnClose(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), "direct-links-cache.json")
+	cache := newPersistentLRUCache(time.Hour, 4, cachePath)
+	cache.put("provider:item:ua", remoteResolution("https://cdn.example/book.m4a"), time.Hour)
+	cache.close()
+
+	reopened := newPersistentLRUCache(time.Hour, 4, cachePath)
+	defer reopened.close()
+	if _, _, ok := reopened.get("provider:item:ua"); !ok {
+		t.Fatal("关闭时没有把还没落盘的缓存补写出去")
 	}
 }

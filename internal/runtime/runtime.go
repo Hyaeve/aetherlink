@@ -199,6 +199,10 @@ func (rt *Runtime) Shutdown(ctx context.Context) {
 			logx.Debugf("[runtime] 关闭端口 %d 时出错: %v", entry.port, err)
 		}
 	}
+	// 直链缓存是后台写盘的，退出前补写一次，别丢掉最后那几百毫秒的改动。
+	if current := rt.current.Load(); current != nil {
+		current.resolver.Close()
+	}
 }
 
 // acquirePorts 先把目标 stack 需要的新端口全部绑定下来，成功后返回 commit 与
@@ -310,8 +314,14 @@ func (rt *Runtime) Apply(mutate func(draft *config.Config) error) error {
 		rollback()
 		return fmt.Errorf("写入配置文件 %s 失败: %w", rt.configPath, err)
 	}
+	previous := rt.current.Load()
 	rt.current.Store(built)
 	commit()
+	// 旧 stack 的直链缓存还可能有没落盘的改动（写盘交给后台做）。补写一次并停掉它的
+	// 写盘协程，否则每保存一次配置就会丢掉这段时间里新解析出来的直链。
+	if previous != nil && previous != built {
+		previous.resolver.Close()
+	}
 
 	logx.SetLevel(logx.ParseLevel(draft.Server.LogLevel))
 	logx.SetMaxEntries(draft.Server.LogBuffer)
