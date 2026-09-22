@@ -1349,12 +1349,13 @@ input:focus-visible + .toggle-control {
   background: rgba(143, 137, 184, 0.48);
 }
 
-.pager {
+/* 两块列表 2026-09-22 起改成虚拟滚动，页脚只剩一行条数，不再有上一页/下一页。 */
+.list-count {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 12px;
-  min-height: 52px;
+  min-height: 40px;
   padding: 8px 18px;
   border-top: 1px solid var(--border);
   background: rgba(242, 243, 245, 0.72);
@@ -1364,32 +1365,18 @@ input:focus-visible + .toggle-control {
   box-shadow: 0 -6px 16px rgba(63, 69, 80, 0.06);
 }
 
-.table-wrap > .pager,
-.log-stream > .pager {
-  position: static;
-  margin-top: 8px;
-  border-radius: var(--radius);
+/* 虚拟列表的上下占位元素：只负责把滚动条撑到真实长度，不参与任何视觉。 */
+.virtual-spacer {
+  padding: 0;
+  border: 0;
+  background: none;
+  pointer-events: none;
 }
 
-.pager-button {
-  min-width: 64px;
-  padding: 6px 10px;
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--text-soft);
-  font-size: 12px;
-}
-
-.pager-button:not(:disabled):hover {
-  border-color: var(--accent);
-  background: var(--accent-wash);
-  color: var(--accent-ink);
-}
-
-.pager-button:disabled {
-  cursor: default;
-  opacity: 0.45;
+/* 占位行里那个空单元格别把行撑高：撑高度的是行自己的 height。 */
+.playback-table tr.virtual-spacer td {
+  padding: 0;
+  border: 0;
 }
 
 .log-line {
@@ -1410,8 +1397,11 @@ input:focus-visible + .toggle-control {
 
 .log-message {
   min-width: 0;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  /* 2026-09-22 起日志改成虚拟列表，行高必须一致，所以不再折行：超长的那条截断成一行，
+     悬停时由 .log-floating-tooltip 展开全文（那段逻辑本来就是「截断了才弹」）。 */
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .log-floating-tooltip {

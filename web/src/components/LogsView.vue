@@ -12,9 +12,19 @@ const error = ref('')
 const levelFilter = ref('all')
 const outcomeFilter = ref('all')
 const autoRefresh = ref(true)
-const pageSize = 25
-const eventPage = ref(1)
-const logPage = ref(1)
+// 虚拟滚动（2026-09-22 起不再分页）：两块列表各自只渲染视口附近的行，用上下两个
+// 占位元素把滚动条撑到真实长度，滚到底就是最后一条。行高取实测值（样式改了不用跟着
+// 改数字），一条都没有、量不到时用下面的兜底值。
+const ROW_FALLBACK = { event: 41, log: 43 }
+const OVERSCAN = 8
+const eventScroller = ref(null)
+const logScroller = ref(null)
+const eventScrollTop = ref(0)
+const logScrollTop = ref(0)
+const eventViewport = ref(0)
+const logViewport = ref(0)
+const eventRowHeight = ref(ROW_FALLBACK.event)
+const logRowHeight = ref(ROW_FALLBACK.log)
 const copiedTarget = ref('')
 const copiedUserAgent = ref('')
 const hoverTooltip = ref(null)
@@ -22,6 +32,7 @@ const tooltipElement = ref(null)
 let timer = null
 let copyTimer = null
 let tooltipTimer = null
+let observer = null
 
 const OUTCOME_LABELS = {
   redirect: '302 跳转',
@@ -46,6 +57,10 @@ async function load() {
       logLines: entries.value.length
     })
     error.value = ''
+    // 数据换了就重新量一次视口与行高：第一次渲染之前量不到行，实测值要靠这里落到
+    // 变量上；窗口/卡片尺寸也会在两次刷新之间变。
+    await nextTick()
+    syncVirtualList()
   } catch (loadError) {
     // 这个页面每 5 秒轮询一次，容器一重启它往往比其他请求更早撞上 401。会话失效
     // 已经由 api 层处理成「清令牌 + 回登录页」，这里必须显示空串，否则那句
@@ -63,18 +78,25 @@ const visible = computed(() =>
   levelFilter.value === 'all' ? entries.value : entries.value.filter((entry) => entry.level === levelFilter.value)
 )
 
-const eventPageCount = computed(() => Math.max(1, Math.ceil(events.value.length / pageSize)))
-const logPageCount = computed(() => Math.max(1, Math.ceil(visible.value.length / pageSize)))
-const pagedEvents = computed(() => pageSlice(events.value, eventPage.value))
-const pagedVisible = computed(() => pageSlice(visible.value, logPage.value))
+const eventWindow = computed(() =>
+  windowRange(events.value.length, eventScrollTop.value, eventViewport.value, eventRowHeight.value)
+)
+const visibleEvents = computed(() => events.value.slice(eventWindow.value.start, eventWindow.value.end))
+const logWindow = computed(() =>
+  windowRange(visible.value.length, logScrollTop.value, logViewport.value, logRowHeight.value)
+)
+const visibleLogs = computed(() => visible.value.slice(logWindow.value.start, logWindow.value.end))
 
-watch(events, () => {
-  if (eventPage.value > eventPageCount.value) eventPage.value = eventPageCount.value
-})
+// 换筛选条件等于换了一份列表，滚动位置得回到顶部，否则会停在一片空白上。
+function resetScroll(scroller, scrollTop) {
+  scrollTop.value = 0
+  nextTick(() => {
+    if (scroller.value) scroller.value.scrollTop = 0
+  })
+}
 
-watch(visible, () => {
-  if (logPage.value > logPageCount.value) logPage.value = logPageCount.value
-})
+watch(outcomeFilter, () => resetScroll(eventScroller, eventScrollTop))
+watch(levelFilter, () => resetScroll(logScroller, logScrollTop))
 
 // 一眼能看出问题的诊断结论：有播放请求但一次都没跳转，就直接说清最可能的原因。
 const diagnosis = computed(() => {
@@ -232,25 +254,46 @@ function legacyCopy(target) {
     if (!copied) throw new Error('无法复制到剪贴板')
 }
 
-function pageSlice(items, page) {
-  const start = (page - 1) * pageSize
-  return items.slice(start, start + pageSize)
+// windowRange 是虚拟滚动的全部数学：给「总条数 + 当前滚动位置 + 视口高度 + 行高」，
+// 算出该渲染哪一段（start..end）与上下各留多高的占位。前后各多渲染 OVERSCAN 行，
+// 滚动时边缘才不会先看到空白再补上。
+function windowRange(total, scrollTop, viewport, rowHeight) {
+  if (total <= 0 || rowHeight <= 0) return { start: 0, end: 0, top: 0, bottom: 0 }
+  const first = Math.floor(Math.max(0, scrollTop) / rowHeight)
+  const start = Math.max(0, first - OVERSCAN)
+  const wanted = Math.ceil(Math.max(viewport, rowHeight) / rowHeight) + OVERSCAN * 2
+  const end = Math.min(total, start + wanted)
+  return { start, end, top: start * rowHeight, bottom: (total - end) * rowHeight }
 }
 
-function previousEventPage() {
-  eventPage.value = Math.max(1, eventPage.value - 1)
+function onEventScroll(event) {
+  eventScrollTop.value = event.target.scrollTop
 }
 
-function nextEventPage() {
-  eventPage.value = Math.min(eventPageCount.value, eventPage.value + 1)
+function onLogScroll(event) {
+  logScrollTop.value = event.target.scrollTop
 }
 
-function previousLogPage() {
-  logPage.value = Math.max(1, logPage.value - 1)
+// refreshViewport 量两块滚动区的高度。窗口缩放、侧栏展开、卡片高度跟着视口走，
+// 都靠它跟上 —— 只量一次会算错该渲染多少行。
+function refreshViewport() {
+  if (eventScroller.value) eventViewport.value = eventScroller.value.clientHeight
+  if (logScroller.value) logViewport.value = logScroller.value.clientHeight
 }
 
-function nextLogPage() {
-  logPage.value = Math.min(logPageCount.value, logPage.value + 1)
+// measureRowHeight 量一行渲染出来的真实高度，量到就记住。量不到（列表空、还没渲染）
+// 就保持上一次的值，别退回兜底值 —— 那会让滚动位置整体偏一截。
+function measureRowHeight(scroller, selector, target) {
+  const row = scroller.value?.querySelector(selector)
+  if (!row) return
+  const height = row.getBoundingClientRect().height
+  if (height > 1) target.value = height
+}
+
+function syncVirtualList() {
+  refreshViewport()
+  measureRowHeight(eventScroller, 'tbody tr:not(.virtual-spacer)', eventRowHeight)
+  measureRowHeight(logScroller, '.log-line', logRowHeight)
 }
 
 function isTruncated(target) {
@@ -304,11 +347,21 @@ function hideTooltip() {
   hoverTooltip.value = null
 }
 
-onMounted(() => {
-  load()
+onMounted(async () => {
+  await load()
+  window.addEventListener('resize', syncVirtualList)
+  // 卡片高度跟着视口伸缩，视口尺寸不能只量一次。ResizeObserver 比 window.resize 更
+  // 贴切：侧栏展开、筛选后行数变化都会改这块区域的高度。
+  if (typeof ResizeObserver === 'function') {
+    observer = new ResizeObserver(syncVirtualList)
+    if (eventScroller.value) observer.observe(eventScroller.value)
+    if (logScroller.value) observer.observe(logScroller.value)
+  }
   timer = setInterval(() => autoRefresh.value && load(), 5000)
 })
 onUnmounted(() => {
+  window.removeEventListener('resize', syncVirtualList)
+  if (observer) observer.disconnect()
   if (timer) clearInterval(timer)
   if (copyTimer) clearTimeout(copyTimer)
   if (tooltipTimer) clearTimeout(tooltipTimer)
@@ -342,7 +395,7 @@ onUnmounted(() => {
           </button>
         </div>
       </div>
-      <div class="table-wrap">
+      <div ref="eventScroller" class="table-wrap" @scroll="onEventScroll">
         <table class="playback-table">
           <colgroup>
             <col class="playback-time-column" />
@@ -359,7 +412,9 @@ onUnmounted(() => {
             <tr><th>时间</th><th>上游</th><th>UA</th><th>结果</th><th>目标</th><th>客户端 IP</th><th>缓存状态</th><th>缓存有效期</th><th>耗时</th></tr>
           </thead>
           <tbody>
-            <tr v-for="(event, index) in pagedEvents" :key="index">
+            <!-- 上下两个占位行把滚动条撑到真实长度，中间只渲染视口附近那一段。 -->
+            <tr v-if="eventWindow.top" class="virtual-spacer" :style="{ height: `${eventWindow.top}px` }" aria-hidden="true"><td :colspan="9"></td></tr>
+            <tr v-for="(event, index) in visibleEvents" :key="eventWindow.start + index">
               <td>{{ clock(event.time) }}</td>
               <td
                 class="target-cell"
@@ -408,18 +463,15 @@ onUnmounted(() => {
               <td>{{ cacheTTL(event.cacheTtlSeconds) }}</td>
               <td>{{ millis(event.durationMs) }}</td>
             </tr>
+            <tr v-if="eventWindow.bottom" class="virtual-spacer" :style="{ height: `${eventWindow.bottom}px` }" aria-hidden="true"><td :colspan="9"></td></tr>
           </tbody>
         </table>
         <div v-if="!events.length" class="empty-inline">
           <svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM8 9h8M8 13h5" /></svg>
           <span>还没有播放请求</span>
         </div>
-        <div v-if="eventPageCount > 1" class="pager" aria-label="播放流水分页">
-          <button class="pager-button" :disabled="eventPage <= 1" @click="previousEventPage">上一页</button>
-          <span>第 {{ eventPage }} / {{ eventPageCount }} 页 · 共 {{ events.length }} 条</span>
-          <button class="pager-button" :disabled="eventPage >= eventPageCount" @click="nextEventPage">下一页</button>
-        </div>
       </div>
+      <div class="list-count">共 {{ events.length }} 条 · 滚动浏览</div>
     </section>
 
     <section class="activity-card log-card">
@@ -446,8 +498,9 @@ onUnmounted(() => {
           </button>
         </div>
       </div>
-      <div class="log-stream">
-        <div v-for="(entry, index) in pagedVisible" :key="index" class="log-line">
+      <div ref="logScroller" class="log-stream" @scroll="onLogScroll">
+        <div v-if="logWindow.top" class="virtual-spacer" :style="{ height: `${logWindow.top}px` }" aria-hidden="true"></div>
+        <div v-for="(entry, index) in visibleLogs" :key="logWindow.start + index" class="log-line">
           <span class="log-time">{{ stamp(entry.time) }}</span>
           <span :class="levelClass(entry.level)">{{ entry.level }}</span>
           <span
@@ -458,16 +511,13 @@ onUnmounted(() => {
             @focusout="hideTooltip"
           >{{ entry.message }}</span>
         </div>
+        <div v-if="logWindow.bottom" class="virtual-spacer" :style="{ height: `${logWindow.bottom}px` }" aria-hidden="true"></div>
         <div v-if="!visible.length" class="empty-inline">
           <svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM8 9h8M8 13h5" /></svg>
           <span>暂无日志</span>
         </div>
-        <div v-if="logPageCount > 1" class="pager" aria-label="服务日志分页">
-          <button class="pager-button" :disabled="logPage <= 1" @click="previousLogPage">上一页</button>
-          <span>第 {{ logPage }} / {{ logPageCount }} 页 · 共 {{ visible.length }} 条</span>
-          <button class="pager-button" :disabled="logPage >= logPageCount" @click="nextLogPage">下一页</button>
-        </div>
       </div>
+      <div class="list-count">共 {{ visible.length }} 条 · 滚动浏览</div>
     </section>
   </section>
 </template>
