@@ -36,7 +36,16 @@ var ErrPointerUnavailable = errors.New("strm pointer file is not readable inside
 const (
 	audiobookshelfCacheTTL = 15 * time.Minute
 	embyFallbackCacheTTL   = 2 * time.Hour
+	// cmecloudCacheTTL 是直链落在移动云盘（cmecloud.cn）时的固定缓存上限。
+	// 这类直链的有效期远短于其它网盘，沿用 Emby 那条 2 小时的回退会让客户端
+	// 在缓存命中之后拿到一条已经失效的地址 —— 现象是「突然有一批播不了」。
+	cmecloudCacheTTL = 15 * time.Minute
 )
+
+// cmecloudCacheKeyword 是识别移动云盘直链的关键词。按子串匹配而不是比对主机名
+// 后缀：这个词可能出现在路径或查询参数里（直链本身又是从上游给的地址解析来的，
+// 形态不受我们控制），只要出现就按移动云盘处理。
+const cmecloudCacheKeyword = "cmecloud.cn"
 
 // Resolution is the outcome of resolving one media reference.
 type Resolution struct {
@@ -191,24 +200,58 @@ func (r *Resolver) ResolveWithSource(ctx context.Context, provider upstream.Prov
 }
 
 func (r *Resolver) cacheTTLFor(provider upstream.Provider, resolution *Resolution, fallback time.Duration) time.Duration {
-	if provider == nil || !provider.Type().IsEmbyFamily() || resolution == nil {
+	if resolution == nil {
 		return fallback
 	}
-	if ttl, ok := directURLTTL(resolution); ok {
-		return ttl
+	ttl := fallback
+	if provider != nil && provider.Type().IsEmbyFamily() {
+		if fromURL, ok := directURLTTL(resolution); ok {
+			ttl = fromURL
+		}
 	}
-	return fallback
+	// 移动云盘直链封顶 15 分钟。只往下压、不往上抬：直链自带 `t` 时那个时间才是
+	// 它真正的寿命，`t` 已经过期（ttl 为 0，等于不缓存）也必须保持不缓存。
+	if ttl > cmecloudCacheTTL && cmecloudDirectLink(resolution) {
+		return cmecloudCacheTTL
+	}
+	return ttl
+}
+
+// directLinkCandidates 列出这次解析结果里客户端会真正请求到的直链：FinalURL 是
+// 最终交给客户端的那一条，Target.URL 是它的解析来源（未跟随跳转时两者相同）。
+//
+// 只收这两条、不收 Hops：跳转链的中间跳是我们自己在预检时走掉的，客户端根本不会
+// 去请求它，它过不过期都不影响播放，拿它当判据只会误伤。
+func directLinkCandidates(resolution *Resolution) []string {
+	if resolution == nil {
+		return nil
+	}
+	candidates := make([]string, 0, 2)
+	if resolution.FinalURL != "" {
+		candidates = append(candidates, resolution.FinalURL)
+	}
+	if resolution.Target != nil && resolution.Target.URL != "" {
+		candidates = append(candidates, resolution.Target.URL)
+	}
+	return candidates
+}
+
+// cmecloudDirectLink 判断解析出来的直链是不是走移动云盘（cmecloud.cn）。
+func cmecloudDirectLink(resolution *Resolution) bool {
+	for _, candidate := range directLinkCandidates(resolution) {
+		// 主机名大小写不敏感，直链里的域名可能是全大写写法。
+		if strings.Contains(strings.ToLower(candidate), cmecloudCacheKeyword) {
+			return true
+		}
+	}
+	return false
 }
 
 func directURLTTL(resolution *Resolution) (time.Duration, bool) {
 	var earliest time.Time
 	foundValid := false
 	now := time.Now()
-	candidates := []string{resolution.FinalURL}
-	if resolution.Target != nil {
-		candidates = append(candidates, resolution.Target.URL)
-	}
-	for _, candidate := range candidates {
+	for _, candidate := range directLinkCandidates(resolution) {
 		parsed, err := urlx.Parse(candidate)
 		if err != nil {
 			continue

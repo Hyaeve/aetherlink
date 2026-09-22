@@ -178,6 +178,151 @@ func TestFnosSharesEmbyFamilyDirectLinkCachePolicy(t *testing.T) {
 	}
 }
 
+// 移动云盘（cmecloud.cn）的直链有效期远短于其它网盘。沿用 Emby 那条「没带 t 就
+// 固定 2 小时」的回退，客户端会在缓存命中之后拿到一条已经失效的地址，现象是
+// 「过一会儿突然一批播不了」，而播放流水里还写着缓存命中。固定规则：这类直链
+// 封顶 15 分钟。
+//
+// 表里带三条对照：别的网盘仍是 2 小时（证明被压的是这一类直链，不是所有直链）、
+// 移动云盘只出现在跳转链中间时仍是 2 小时（客户端不会去请求中间跳）、
+// Audiobookshelf 本来就是 15 分钟（不该被这条规则顺手改成别的值）。
+func TestCmecloudDirectLinkIsCachedForAtMostFifteenMinutes(t *testing.T) {
+	mediaResolver := New(config.Cache{TTL: 5 * time.Hour, MaxSize: 4}, config.Redirect{})
+	emby := testUpstream(t, config.UpstreamEmby, "emby", "http://127.0.0.1:8096")
+	fnos := testUpstream(t, config.UpstreamFnos, "飞牛影视", "http://127.0.0.1:8005")
+	audiobookshelf := testUpstream(t, config.UpstreamAudiobookshelf, "abs", "http://127.0.0.1:13378")
+
+	cases := []struct {
+		name       string
+		provider   upstream.Provider
+		resolution *Resolution
+		want       time.Duration
+	}{
+		{
+			name:       "Emby 的移动云盘直链",
+			provider:   emby,
+			resolution: remoteResolution("https://dl.cmecloud.cn/abc/白色巨塔.m4a"),
+			want:       cmecloudCacheTTL,
+		},
+		{
+			name:       "飞牛的移动云盘直链（与 Emby 同一套策略）",
+			provider:   fnos,
+			resolution: remoteResolution("https://dl.cmecloud.cn/abc/白色巨塔.m4a"),
+			want:       cmecloudCacheTTL,
+		},
+		{
+			// 按子串匹配，不比对主机名后缀：关键词出现在路径里也算。
+			name:       "关键词落在路径里也认",
+			provider:   emby,
+			resolution: remoteResolution("https://cdn.example/d/cmecloud.cn/abc/book.m4a"),
+			want:       cmecloudCacheTTL,
+		},
+		{
+			name:       "关键词落在查询参数里也认",
+			provider:   emby,
+			resolution: remoteResolution("https://cdn.example/play?src=https%3A%2F%2Fdl.cmecloud.cn%2Fabc"),
+			want:       cmecloudCacheTTL,
+		},
+		{
+			// 域名大小写不敏感，直链里可能是全大写写法。
+			name:       "全大写域名也认",
+			provider:   emby,
+			resolution: remoteResolution("https://DL.CMECLOUD.CN/abc/book.m4a"),
+			want:       cmecloudCacheTTL,
+		},
+		{
+			// 跟随跳转后交给客户端的是 FinalURL，它落在移动云盘上同样按 15 分钟。
+			name:     "只有 FinalURL 落在移动云盘上",
+			provider: emby,
+			resolution: &Resolution{
+				Target:   &strm.Target{Type: strm.TargetRemote, URL: "https://short.example/x"},
+				FinalURL: "https://dl.cmecloud.cn/abc/book.m4a",
+			},
+			want: cmecloudCacheTTL,
+		},
+		{
+			name:       "别的网盘不受影响（仍是 2 小时）",
+			provider:   emby,
+			resolution: remoteResolution("https://cdn.example/book.m4a"),
+			want:       embyFallbackCacheTTL,
+		},
+		{
+			// 移动云盘只出现在跳转链中间：客户端拿到的是最后那一跳，中间跳过不过期
+			// 都与播放无关，拿它当判据只会让这一类直链被无谓地压到 15 分钟。
+			name:     "只在跳转链中间出现时不算",
+			provider: emby,
+			resolution: &Resolution{
+				Target:   &strm.Target{Type: strm.TargetRemote, URL: "https://short.example/x"},
+				FinalURL: "https://cdn.example/abc/book.m4a",
+				Hops:     []string{"https://dl.cmecloud.cn/abc/x", "https://cdn.example/abc/book.m4a"},
+			},
+			want: embyFallbackCacheTTL,
+		},
+		{
+			name:       "Audiobookshelf 本来就是 15 分钟",
+			provider:   audiobookshelf,
+			resolution: remoteResolution("https://cdn.example/book.m4a"),
+			want:       audiobookshelfCacheTTL,
+		},
+	}
+	for _, test := range cases {
+		fallback := mediaResolver.cacheTTL(test.provider)
+		if got := mediaResolver.cacheTTLFor(test.provider, test.resolution, fallback); got != test.want {
+			t.Errorf("%s：缓存 ttl = %v, want %v", test.name, got, test.want)
+		}
+	}
+}
+
+// 上限只往下压、不往上抬：直链自带 `t` 时那个时间才是它真正的寿命，比 15 分钟
+// 短就得按它来 —— 否则等于我们主动把一条已经过期的地址继续发给客户端。
+func TestCmecloudDirectLinkKeepsEarlierExpiryFromT(t *testing.T) {
+	mediaResolver := New(config.Cache{TTL: 5 * time.Hour, MaxSize: 4}, config.Redirect{})
+	emby := testUpstream(t, config.UpstreamEmby, "emby", "http://127.0.0.1:8096")
+	expiry := time.Now().Add(40 * time.Second).Unix()
+
+	signed := remoteResolution(fmt.Sprintf("https://dl.cmecloud.cn/abc/book.m4a?t=%d", expiry))
+	ttl := mediaResolver.cacheTTLFor(emby, signed, mediaResolver.cacheTTL(emby))
+	if ttl < 30*time.Second || ttl > 41*time.Second {
+		t.Fatalf("移动云盘签名直链的缓存 ttl = %v, want 约 40s（应按直链的 t 到期，而不是被抬到 15 分钟）", ttl)
+	}
+}
+
+// 另一半：`t` 比 15 分钟更长时按 15 分钟封顶；`t` 已经过期时保持不缓存（ttl 为 0），
+// 不能被这条规则顺手改成「缓存 15 分钟」—— 那等于把一条死链当成新链存下来。
+func TestCmecloudDirectLinkCapsLaterTExpiryAndKeepsExpired(t *testing.T) {
+	mediaResolver := New(config.Cache{TTL: 5 * time.Hour, MaxSize: 4}, config.Redirect{})
+	emby := testUpstream(t, config.UpstreamEmby, "emby", "http://127.0.0.1:8096")
+
+	longLived := remoteResolution(fmt.Sprintf("https://dl.cmecloud.cn/abc/book.m4a?t=%d", time.Now().Add(3*time.Hour).Unix()))
+	if got := mediaResolver.cacheTTLFor(emby, longLived, mediaResolver.cacheTTL(emby)); got != cmecloudCacheTTL {
+		t.Fatalf("t 还有 3 小时的移动云盘直链缓存 ttl = %v, want %v（封顶）", got, cmecloudCacheTTL)
+	}
+
+	expired := remoteResolution(fmt.Sprintf("https://dl.cmecloud.cn/abc/book.m4a?t=%d", time.Now().Add(-time.Minute).Unix()))
+	if got := mediaResolver.cacheTTLFor(emby, expired, mediaResolver.cacheTTL(emby)); got != 0 {
+		t.Fatalf("t 已过期的移动云盘直链缓存 ttl = %v, want 0（不缓存，而不是 15 分钟）", got)
+	}
+}
+
+// testUpstream 造一个真实的上游实例，省掉每个用例里重复的 New + 错误处理。
+func testUpstream(t *testing.T, upstreamType config.UpstreamType, name, baseURL string) upstream.Provider {
+	t.Helper()
+	provider, err := upstream.New(config.Upstream{
+		Name:    name,
+		Type:    upstreamType,
+		BaseURL: baseURL,
+		APIKey:  "test-key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return provider
+}
+
+func remoteResolution(url string) *Resolution {
+	return &Resolution{Target: &strm.Target{Type: strm.TargetRemote, URL: url}}
+}
+
 func TestRedirectModesApplyToClientIPRegardlessOfTarget(t *testing.T) {
 	resolver := New(config.Cache{}, config.Redirect{})
 	publicResolution := &Resolution{Target: &strm.Target{Type: strm.TargetRemote, URL: "https://cdn.example/video.mkv"}}
