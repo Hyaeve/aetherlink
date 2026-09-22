@@ -41,6 +41,11 @@ const (
 	// 在缓存命中之后拿到一条已经失效的地址 —— 现象是「突然有一批播不了」。
 	// 它是**固定值**：关键词命中就是 15 分钟，不看直链自带的 `t`（原因见 cacheTTLFor）。
 	cmecloudCacheTTL = 15 * time.Minute
+	// resolverCacheMax 是解析结果缓存寿命的全站上限，任何一档都不能超过它
+	// （用户 2026-09-22 要求「最多缓存 24h，超过则缓存 24h」）。它同时兜住两件事：
+	// 直链自带的 `t` 报出很远的时间（有的网盘给的是「一个月后」），以及配置里
+	// 把 Cache.TTL 调得过大 —— 两者都按 24 小时截断。
+	resolverCacheMax = 24 * time.Hour
 )
 
 // cmecloudCacheKeyword 是识别移动云盘直链的关键词。按子串匹配而不是比对主机名
@@ -236,23 +241,29 @@ func cacheNamespaceOf(provider upstream.Provider) string {
 func (r *Resolver) Close() { r.cache.close() }
 
 func (r *Resolver) cacheTTLFor(provider upstream.Provider, resolution *Resolution, fallback time.Duration) time.Duration {
-	if resolution == nil {
-		return fallback
-	}
-	// 移动云盘直链（含 cmecloud.cn）**固定**缓存 cmecloudCacheTTL，不读它自带的 `t`：
-	// 关键词命中就是 15 分钟。这类直链上的 `t` 多半不是到期时间戳（移动云盘给的就是
-	// 一个像签名的值），拿它当寿命会把这一档整个抵消掉 —— 旧实现按「在 15 分钟的基础上
-	// 往下压」写，`t` 取不到有效值时压成 0，而 0 在 put() 里等于不入缓存，界面上就
-	// 显示成「不缓存」。这一支也必须**先于**下面 Emby 系按 `t` 的分支判定。
-	if cmecloudDirectLink(resolution) {
-		return cmecloudCacheTTL
-	}
-	if provider != nil && provider.Type().IsEmbyFamily() {
-		if fromURL, ok := directURLTTL(resolution); ok {
-			return fromURL
+	ttl := fallback
+	if resolution != nil {
+		// 移动云盘直链（含 cmecloud.cn）**固定**缓存 cmecloudCacheTTL，不读它自带的 `t`：
+		// 关键词命中就是 15 分钟。这类直链上的 `t` 多半不是到期时间戳（移动云盘给的就是
+		// 一个像签名的值），拿它当寿命会把这一档整个抵消掉 —— 旧实现按「在 15 分钟的基础上
+		// 往下压」写，`t` 取不到有效值时压成 0，而 0 在 put() 里等于不入缓存，界面上就
+		// 显示成「不缓存」。这一支也必须**先于**下面 Emby 系按 `t` 的分支判定。
+		switch {
+		case cmecloudDirectLink(resolution):
+			ttl = cmecloudCacheTTL
+		case provider != nil && provider.Type().IsEmbyFamily():
+			if fromURL, ok := directURLTTL(resolution); ok {
+				ttl = fromURL
+			}
 		}
 	}
-	return fallback
+	// 全站统一封顶 resolverCacheMax（24 小时），放在最后一步、统一收口：不管上面走的是
+	// 移动云盘的固定值、Emby 系按 `t` 算出的寿命，还是配置里那一档回退值，超过 24 小时
+	// 都截成 24 小时。已经过期的直链这里仍是 0（0 不大于上限），依旧不入缓存。
+	if ttl > resolverCacheMax {
+		ttl = resolverCacheMax
+	}
+	return ttl
 }
 
 // directLinkCandidates 列出这次解析结果里客户端会真正请求到的直链：FinalURL 是

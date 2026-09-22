@@ -317,6 +317,64 @@ func TestCmecloudDirectLinkIgnoresT(t *testing.T) {
 	}
 }
 
+// 缓存寿命全站封顶 24 小时（用户 2026-09-22 要求「最多缓存 24h，超过则缓存 24h」）。
+//
+// 为什么需要这条上限：直链自带的 `t` 有的给得非常远（见过报到「一个月后」的），照它
+// 缓存等于把一条地址长期钉在缓存里 —— 中间这条地址被上游换掉了我们也发现不了，客户端
+// 拿到的是半年前的解析结果；配置里的 Cache.TTL 同样可能被调得过大。两者都在 cacheTTLFor
+// 的出口处统一截到 24 小时。
+//
+// 表里带四条对照，证明这条上限只做「截断」而不是「一律改成 24h」：
+// `t` 只有 23 小时的原样保留、只剩 40 秒的原样保留、已经过期的照旧是 0
+// （0 在 put() 里等于不入缓存，绝不能被上限抬起来）、20 分钟那一档
+// （移动云盘 / Audiobookshelf）不受影响。
+func TestResolverCacheIsCappedAtTwentyFourHours(t *testing.T) {
+	mediaResolver := New(config.Cache{TTL: 5 * time.Hour, MaxSize: 4}, config.Redirect{})
+	emby := testUpstream(t, config.UpstreamEmby, "emby", "http://127.0.0.1:8096")
+	audiobookshelf := testUpstream(t, config.UpstreamAudiobookshelf, "abs", "http://127.0.0.1:13378")
+
+	signedLater := func(d time.Duration) *Resolution {
+		return remoteResolution(fmt.Sprintf("https://cdn.example/白色巨塔.mkv?t=%d", time.Now().Add(d).Unix()))
+	}
+
+	cases := []struct {
+		name       string
+		provider   upstream.Provider
+		resolution *Resolution
+		// fallback 为 0 表示按 provider 推出（走 resolver.cacheTTL）。
+		fallback time.Duration
+		want     time.Duration
+		// tol 是允许的偏差，0 表示精确相等（只有按 `t` 现算的那几条需要）。
+		tol time.Duration
+	}{
+		{"t 报到 30 天后，按 24 小时截断", emby, signedLater(30 * 24 * time.Hour), 0, resolverCacheMax, 0},
+		{"t 是 25 小时后，按 24 小时截断", emby, signedLater(25 * time.Hour), 0, resolverCacheMax, 0},
+		{"t 是 23 小时后，原样保留", emby, signedLater(23 * time.Hour), 0, 23 * time.Hour, time.Minute},
+		{"t 只剩 40 秒，原样保留", emby, signedLater(40 * time.Second), 0, 40 * time.Second, 5 * time.Second},
+		{"t 已过期，仍是 0（不入缓存）", emby, signedLater(-time.Minute), 0, 0, 0},
+		{"直链没有 t，回退 2 小时", emby, remoteResolution("https://cdn.example/白色巨塔.mkv"), 0, embyFallbackCacheTTL, 0},
+		{"配置里的 TTL 是 7 天，同样按 24 小时截断", nil, remoteResolution("https://cdn.example/白色巨塔.mkv"), 7 * 24 * time.Hour, resolverCacheMax, 0},
+		{"移动云盘那一档 15 分钟不受影响", emby, remoteResolution("https://dl.cmecloud.cn/abc/白色巨塔.mkv"), 0, cmecloudCacheTTL, 0},
+		{"Audiobookshelf 那一档 15 分钟不受影响", audiobookshelf, remoteResolution("https://cdn.example/book.m4a"), 0, audiobookshelfCacheTTL, 0},
+	}
+	for _, test := range cases {
+		fallback := test.fallback
+		if fallback == 0 {
+			fallback = mediaResolver.cacheTTL(test.provider)
+		}
+		got := mediaResolver.cacheTTLFor(test.provider, test.resolution, fallback)
+		if test.tol == 0 {
+			if got != test.want {
+				t.Errorf("%s：缓存 ttl = %v, want %v", test.name, got, test.want)
+			}
+			continue
+		}
+		if got < test.want-test.tol || got > test.want+test.tol {
+			t.Errorf("%s：缓存 ttl = %v, want 约 %v（±%v）", test.name, got, test.want, test.tol)
+		}
+	}
+}
+
 // testUpstream 造一个真实的上游实例，省掉每个用例里重复的 New + 错误处理。
 func testUpstream(t *testing.T, upstreamType config.UpstreamType, name, baseURL string) upstream.Provider {
 	t.Helper()
