@@ -1397,11 +1397,14 @@ input:focus-visible + .toggle-control {
 
 .log-message {
   min-width: 0;
-  /* 2026-09-22 起日志改成虚拟列表，行高必须一致，所以不再折行：超长的那条截断成一行，
-     悬停时由 .log-floating-tooltip 展开全文（那段逻辑本来就是「截断了才弹」）。 */
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  /* 2026-09-22 用户要求「允许日志多行展示」，这一档不再截断：正文多长就铺多行。
+     虚拟滚动因此不能再用单一固定行高（见 LogsView 的 logOffsets / measureLogRows，
+     行高逐条实测并按「级别 + 正文」缓存），所以这里**不要**再加 max-height /
+     line-clamp —— 那会重新把行高钉死。用 pre-wrap 而不是 pre-line：日志正文里的
+     缩进与换行要原样保留。悬停展开全文的 .log-floating-tooltip 保留成兜底
+     （它的逻辑本来就是「截断了才弹」，正常情况下不会再弹）。 */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .log-floating-tooltip {

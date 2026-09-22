@@ -13,18 +13,27 @@ const levelFilter = ref('all')
 const outcomeFilter = ref('all')
 const autoRefresh = ref(true)
 // 虚拟滚动（2026-09-22 起不再分页）：两块列表各自只渲染视口附近的行，用上下两个
-// 占位元素把滚动条撑到真实长度，滚到底就是最后一条。行高取实测值（样式改了不用跟着
-// 改数字），一条都没有、量不到时用下面的兜底值。
-const ROW_FALLBACK = { event: 41, log: 43 }
+// 占位元素把滚动条撑到真实长度，滚到底就是最后一条。播放流水表的行高一致，一个实测
+// 值就够；服务日志允许折行（用户要求「允许日志多行展示」），行高不再整齐，改用逐行
+// 实测高度 + 前缀和，见下面的 LOG_ROW_ESTIMATE / logOffsets / measureLogRows。
+const EVENT_ROW_FALLBACK = 41
 const OVERSCAN = 8
+// 日志行高的兜底值与缓存上限：一条都没量到时按 ESTIMATE 估，量到多少就是多少。
+// 高度按「级别 + 正文」缓存 —— 列表每 5 秒整份刷一次，下标会变而内容不变，按下标存
+// 等于每轮轮询都退回估算值、滚动条跟着跳。上限只是防一份超长运行的日志把内存撑起来。
+const LOG_ROW_ESTIMATE = 43
+const LOG_HEIGHTS_LIMIT = 20000
+const logHeights = new Map()
+const logHeightsVersion = ref(0)
 const eventScroller = ref(null)
 const logScroller = ref(null)
 const eventScrollTop = ref(0)
 const logScrollTop = ref(0)
 const eventViewport = ref(0)
 const logViewport = ref(0)
-const eventRowHeight = ref(ROW_FALLBACK.event)
-const logRowHeight = ref(ROW_FALLBACK.log)
+const eventRowHeight = ref(EVENT_ROW_FALLBACK)
+// 折行位置只跟宽度有关，记下上次量到的宽度：没变就不必把量好的高度全丢掉重来。
+let logMeasuredWidth = 0
 const copiedTarget = ref('')
 const copiedUserAgent = ref('')
 const hoverTooltip = ref(null)
@@ -82,9 +91,21 @@ const eventWindow = computed(() =>
   windowRange(events.value.length, eventScrollTop.value, eventViewport.value, eventRowHeight.value)
 )
 const visibleEvents = computed(() => events.value.slice(eventWindow.value.start, eventWindow.value.end))
-const logWindow = computed(() =>
-  windowRange(visible.value.length, logScrollTop.value, logViewport.value, logRowHeight.value)
-)
+// logOffsets 是每行「上边界」的高度前缀和（长度 = 行数 + 1），变高列表的全部几何都从
+// 它出来：二分找视口首行、上下占位取差值。它只依赖列表与实测高度、不依赖滚动位置，
+// 所以滚动本身不会触发重算。后端日志是 5000 条环形缓冲，重算成本可以忽略。
+const logOffsets = computed(() => {
+  // 读一下版本号建立依赖：量到新高度时它 ++，这份前缀和才会重算。
+  void logHeightsVersion.value
+  const list = visible.value
+  const offsets = new Array(list.length + 1)
+  offsets[0] = 0
+  for (let index = 0; index < list.length; index += 1) {
+    offsets[index + 1] = offsets[index] + logRowHeightOf(list[index])
+  }
+  return offsets
+})
+const logWindow = computed(() => logWindowRange(logOffsets.value, logScrollTop.value, logViewport.value))
 const visibleLogs = computed(() => visible.value.slice(logWindow.value.start, logWindow.value.end))
 
 // 换筛选条件等于换了一份列表，滚动位置得回到顶部，否则会停在一片空白上。
@@ -97,6 +118,10 @@ function resetScroll(scroller, scrollTop) {
 
 watch(outcomeFilter, () => resetScroll(eventScroller, eventScrollTop))
 watch(levelFilter, () => resetScroll(logScroller, logScrollTop))
+// 渲染完补量一次日志行高：滚动、筛选与 5 秒轮询都会把新行带进视口，它们的真实高度
+// 只有渲染完才量得到。flush: 'post' 保证量的时候 DOM 已经更新；量到的变化只会让前缀和
+// 重算一轮（第二次量到的值与缓存相同就停），不会来回转。
+watch(logWindow, () => measureLogRows(), { flush: 'post' })
 
 // 一眼能看出问题的诊断结论：有播放请求但一次都没跳转，就直接说清最可能的原因。
 const diagnosis = computed(() => {
@@ -266,6 +291,44 @@ function windowRange(total, scrollTop, viewport, rowHeight) {
   return { start, end, top: start * rowHeight, bottom: (total - end) * rowHeight }
 }
 
+// logWindowRange 是「行高不一」那一档的算法（服务日志用），几何全部来自前缀和
+// offsets（长度 = 行数 + 1，offsets[i] 是第 i 行的上边界）。先二分出视口顶部落在哪一行，
+// 再往下累加到铺满视口，前后各放 OVERSCAN 行。上下占位直接取前缀和差值 —— 行高不整齐时
+// 「下标 × 行高」算出来的位置是错的，滚动条长度会与实际内容对不上。
+function logWindowRange(offsets, scrollTop, viewport) {
+  const total = offsets.length - 1
+  if (total <= 0) return { start: 0, end: 0, top: 0, bottom: 0 }
+  const first = firstVisibleRow(offsets, Math.max(0, scrollTop))
+  const bottomEdge = Math.max(0, scrollTop) + Math.max(viewport, LOG_ROW_ESTIMATE)
+  let end = first
+  while (end < total && offsets[end] < bottomEdge) end += 1
+  const start = Math.max(0, first - OVERSCAN)
+  end = Math.min(total, Math.max(end + OVERSCAN, first + 1))
+  return { start, end, top: offsets[start], bottom: offsets[total] - offsets[end] }
+}
+
+// firstVisibleRow 二分找出「最后一个上边界 <= scrollTop 的行」。offsets[0] 恒为 0，
+// 所以结果一定落在 [0, total]，滚到底时返回的就是最后一行。
+function firstVisibleRow(offsets, scrollTop) {
+  let low = 0
+  let high = offsets.length - 1
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2)
+    if (offsets[middle] <= scrollTop) low = middle
+    else high = middle - 1
+  }
+  return low
+}
+
+// 日志行高按内容缓存，键取「级别 + 正文」而不是下标：列表每 5 秒整份换新，下标会变。
+function logHeightKey(entry) {
+  return `${entry.level}\u0000${entry.message}`
+}
+
+function logRowHeightOf(entry) {
+  return logHeights.get(logHeightKey(entry)) || LOG_ROW_ESTIMATE
+}
+
 function onEventScroll(event) {
   eventScrollTop.value = event.target.scrollTop
 }
@@ -274,15 +337,29 @@ function onLogScroll(event) {
   logScrollTop.value = event.target.scrollTop
 }
 
+// invalidateLogHeights 把整份实测高度作废。只有宽度变了才需要：折行位置只由宽度决定，
+// 高度也是按内容缓存的，所以宽度一变旧值就全错；清掉之后下一帧会重新量。
+function invalidateLogHeights() {
+  if (logHeights.size === 0) return
+  logHeights.clear()
+  logHeightsVersion.value += 1
+}
+
 // refreshViewport 量两块滚动区的高度。窗口缩放、侧栏展开、卡片高度跟着视口走，
 // 都靠它跟上 —— 只量一次会算错该渲染多少行。
 function refreshViewport() {
   if (eventScroller.value) eventViewport.value = eventScroller.value.clientHeight
-  if (logScroller.value) logViewport.value = logScroller.value.clientHeight
+  if (!logScroller.value) return
+  logViewport.value = logScroller.value.clientHeight
+  const width = logScroller.value.clientWidth
+  if (width !== logMeasuredWidth) {
+    logMeasuredWidth = width
+    invalidateLogHeights()
+  }
 }
 
-// measureRowHeight 量一行渲染出来的真实高度，量到就记住。量不到（列表空、还没渲染）
-// 就保持上一次的值，别退回兜底值 —— 那会让滚动位置整体偏一截。
+// measureRowHeight 量「行高一致」那一档的一行真实高度，量到就记住。量不到（列表空、
+// 还没渲染）就保持上一次的值，别退回兜底值 —— 那会让滚动位置整体偏一截。
 function measureRowHeight(scroller, selector, target) {
   const row = scroller.value?.querySelector(selector)
   if (!row) return
@@ -290,10 +367,32 @@ function measureRowHeight(scroller, selector, target) {
   if (height > 1) target.value = height
 }
 
+// measureLogRows 把当前渲染出来的日志行逐个量一遍，按内容记进 logHeights。只有高度真的
+// 变了（差 0.5px 以上）才计数，一帧里的多处改动在末尾合并成**一次**前缀和重算 ——
+// 否则「量 → 失效 → 重算 → 再量」会自己转圈。
+function measureLogRows() {
+  const scroller = logScroller.value
+  if (!scroller) return
+  let changed = false
+  scroller.querySelectorAll('.log-line').forEach((row) => {
+    const entry = visible.value[Number(row.dataset.index)]
+    if (!entry) return
+    const height = row.getBoundingClientRect().height
+    if (height <= 1) return
+    const key = logHeightKey(entry)
+    const stored = logHeights.get(key)
+    if (stored !== undefined && Math.abs(stored - height) < 0.5) return
+    if (logHeights.size >= LOG_HEIGHTS_LIMIT) logHeights.clear()
+    logHeights.set(key, height)
+    changed = true
+  })
+  if (changed) logHeightsVersion.value += 1
+}
+
 function syncVirtualList() {
   refreshViewport()
   measureRowHeight(eventScroller, 'tbody tr:not(.virtual-spacer)', eventRowHeight)
-  measureRowHeight(logScroller, '.log-line', logRowHeight)
+  measureLogRows()
 }
 
 function isTruncated(target) {
@@ -500,7 +599,7 @@ onUnmounted(() => {
       </div>
       <div ref="logScroller" class="log-stream" @scroll="onLogScroll">
         <div v-if="logWindow.top" class="virtual-spacer" :style="{ height: `${logWindow.top}px` }" aria-hidden="true"></div>
-        <div v-for="(entry, index) in visibleLogs" :key="logWindow.start + index" class="log-line">
+        <div v-for="(entry, index) in visibleLogs" :key="logWindow.start + index" class="log-line" :data-index="logWindow.start + index">
           <span class="log-time">{{ stamp(entry.time) }}</span>
           <span :class="levelClass(entry.level)">{{ entry.level }}</span>
           <span
