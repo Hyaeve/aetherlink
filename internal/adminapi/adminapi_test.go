@@ -816,10 +816,10 @@ func TestPurgeCacheRequiresToken(t *testing.T) {
 	}
 }
 
-// newPersistentEnv 和 newBareEnv 是同一套东西，只是会话存储挂在磁盘上——等价于
-// main.go 里那一行 auth.OpenStore。用来验证「保持登录」真的能扛过容器重启。
-// 返回值里带上会话文件路径，测试可以拿它在「重启后」重新开一个 Store。
-func newPersistentEnv(t *testing.T) (*testEnv, string) {
+// newRestartableEnv 与 newBareEnv 是同一套东西，只是配置目录是真的（和 main.go 一样
+// 走 config.LoadOrCreate）。额外把那个目录返回给用例：用来数「跑完登录之后盘上多了
+// 什么」—— 「会话不落盘」这件事只有这样才验得住。
+func newRestartableEnv(t *testing.T) (*testEnv, string) {
 	t.Helper()
 	root := t.TempDir()
 	strmPath := filepath.Join(root, "001.strm")
@@ -845,22 +845,37 @@ func newPersistentEnv(t *testing.T) (*testEnv, string) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	sessionPath := filepath.Join(root, "sessions.json")
-	sessions := auth.OpenStore(time.Hour, sessionPath)
+	// 与 main.go 一致：会话存储只在内存里，没有「往哪写」这一说。
+	sessions := auth.NewStore(time.Hour)
 	return &testEnv{
 		handler:  New(rt, sessions).Handler(),
 		rt:       rt,
 		sessions: sessions,
 		strmPath: pathmap.Normalize(strmPath),
 		confPath: confPath,
-	}, sessionPath
+	}, root
 }
 
-// 登录页勾了「保持登录」，后端就得按「7 天 + 落盘」签发，并把这个选择如实回报，
-// 前端据此确认自己勾的到底生效没有。重启之后（同一个会话文件上重开一套 API）
-// 那个令牌必须还能用。
-func TestLoginRememberSurvivesRestart(t *testing.T) {
-	env, sessionPath := newPersistentEnv(t)
+// dirSnapshot 记下目录里有哪些文件（不看内容），用来对比「跑完之后多了什么」。
+func dirSnapshot(t *testing.T, dir string) map[string]bool {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		names[entry.Name()] = true
+	}
+	return names
+}
+
+// 登录页勾了「保持登录」，后端按固定 7 天签发，并把这个选择如实回报，前端据此确认
+// 自己勾的到底生效没有。但它**只放宽有效期，不放宽作用范围**：容器重启之后这张令牌
+// 必须失效 —— 用户 2026-09-22 明确「容器重启仍然需要重新登录」。
+func TestLoginRememberDoesNotSurviveRestart(t *testing.T) {
+	env, root := newRestartableEnv(t)
+	before := dirSnapshot(t, root)
 	body := `{"username":"` + auth.DefaultUsername + `","password":"` + auth.DefaultPassword + `","remember":true}`
 	recorder := env.do(http.MethodPost, BasePath+"/login", body, "")
 	if recorder.Code != http.StatusOK {
@@ -880,19 +895,33 @@ func TestLoginRememberSurvivesRestart(t *testing.T) {
 	if delta := time.Until(response.Expires) - auth.DefaultRememberTTL; delta > time.Minute || delta < -time.Minute {
 		t.Fatalf("expiresAt = %v, want about %v from now", response.Expires, auth.DefaultRememberTTL)
 	}
+	if !env.sessions.Valid(response.Token) {
+		t.Fatal("容器还在跑的时候，刚签发的「保持登录」令牌必须是有效的")
+	}
 
-	// 容器重启。
-	restarted := auth.OpenStore(time.Hour, sessionPath)
-	if !restarted.Valid(response.Token) {
-		t.Fatal("a remembered token should still be accepted after a restart")
+	// 容器重启：换一套全新的会话存储（等价于 main.go 重启时重新 NewStore）。
+	if auth.NewStore(time.Hour).Valid(response.Token) {
+		t.Fatal("容器重启后「保持登录」也必须重新登录")
+	}
+
+	// 会话不落盘：配置目录里一个文件都不许多出来。曾经这里会写 sessions.json，
+	// 那正是让「重启还得登录」失效的东西。
+	after := dirSnapshot(t, root)
+	if len(after) != len(before) {
+		t.Fatalf("配置目录里的文件数变了：%v -> %v", before, after)
+	}
+	for name := range after {
+		if !before[name] {
+			t.Fatalf("配置目录里多出了 %q：会话不该落盘", name)
+		}
 	}
 }
 
-// 没勾的那一半：普通的 12 小时内存会话，容器一重启就必须重新登录。
+// 没勾的那一半：普通的 12 小时内存会话，容器一重启同样要重新登录。
 func TestLoginWithoutRememberDoesNotSurviveRestart(t *testing.T) {
-	env, sessionPath := newPersistentEnv(t)
+	env, _ := newRestartableEnv(t)
 	token := env.login(t, auth.DefaultUsername, auth.DefaultPassword)
-	if auth.OpenStore(time.Hour, sessionPath).Valid(token) {
+	if auth.NewStore(time.Hour).Valid(token) {
 		t.Fatal("a session without remember must not survive a restart")
 	}
 }

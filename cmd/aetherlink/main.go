@@ -106,10 +106,9 @@ func main() {
 		}
 	}
 
-	// 会话存储挂在配置文件旁边：普通会话只在内存里（重启即失效），勾了「保持登录」
-	// 的那些会把指纹写进 sessions.json，容器重启后仍能恢复。放在同一个目录下，
-	// 备份/迁移配置时它会跟着走。
-	sessions := auth.OpenStore(auth.DefaultSessionTTL, filepath.Join(filepath.Dir(*configPath), "sessions.json"))
+	// 会话存储只在内存里：容器一重启所有登录态一起失效。勾了「保持登录」的会话
+	// 有效期是 7 天，但同样活不过重启（用户 2026-09-22 明确的边界）。
+	sessions := auth.NewStore(auth.DefaultSessionTTL)
 	admin := adminapi.New(rt, sessions)
 
 	if cfg.Auth.DefaultCredentials {

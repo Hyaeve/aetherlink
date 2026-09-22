@@ -2,9 +2,6 @@ package auth
 
 import (
 	"errors"
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -175,11 +172,14 @@ func TestSessionStoreExpiresAndRevokesAll(t *testing.T) {
 	}
 }
 
-// 勾了「保持登录」的会话要扛过容器重启，靠的是磁盘上那个文件——而不是令牌本身。
-// 所以这里既验「重启之后还能用」，也验「文件里没有可以直接拿去用的令牌」。
-func TestRememberedSessionSurvivesRestart(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sessions.json")
-	store := OpenStore(time.Hour, path)
+// 「保持登录」只放宽有效期，不放宽作用范围：它让**签发它的那个浏览器**在 7 天内
+// 不必重新登录，前提是容器没重启过。重启之后所有会话一起失效 —— 这是用户
+// 2026-09-22 明确要的边界（此前有一版把指纹落盘到 sessions.json 扛重启，已撤掉）。
+//
+// 「重启」在这里由「另起一个 Store」代表：现在没有任何会话离开过内存，所以
+// 「新 Store 认不出旧令牌」与「容器重启后要重新登录」是同一件事。
+func TestRememberedSessionDoesNotSurviveRestart(t *testing.T) {
+	store := NewStore(time.Hour)
 	token, expires, err := store.IssueRemembered()
 	if err != nil {
 		t.Fatalf("IssueRemembered returned error: %v", err)
@@ -189,67 +189,47 @@ func TestRememberedSessionSurvivesRestart(t *testing.T) {
 	if delta := expires.Sub(want); delta > time.Minute || delta < -time.Minute {
 		t.Fatalf("expires = %v, want about %v", expires, want)
 	}
-
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("remembered session should be written to %s: %v", path, err)
-	}
-	if strings.Contains(string(raw), token) {
-		t.Fatal("the session file must not contain the token itself")
-	}
-	if !strings.Contains(string(raw), fingerprint(token)) {
-		t.Fatal("the session file should key the session by its fingerprint")
+	if !store.Valid(token) {
+		t.Fatal("容器还在跑的时候，「保持登录」的令牌必须是有效的")
 	}
 
-	// 模拟容器重启：同一个路径上重开一个 Store，旧令牌必须仍然有效。
-	restarted := OpenStore(time.Hour, path)
-	if !restarted.Valid(token) {
-		t.Fatal("a remembered token should survive a restart")
+	// 模拟容器重启。
+	restarted := NewStore(time.Hour)
+	if restarted.Valid(token) {
+		t.Fatal("容器重启后「保持登录」也必须失效，不能靠旧令牌免登录进来")
 	}
-	if restarted.Count() != 1 {
-		t.Fatalf("restored count = %d, want 1", restarted.Count())
+	if restarted.Count() != 0 {
+		t.Fatalf("restarted count = %d, want 0", restarted.Count())
 	}
 }
 
-// 不勾「保持登录」的会话就该是「重启即失效」：它不但不能被恢复，也不该顺手往
-// 盘上写一个文件出来。
-func TestOrdinarySessionIsNotPersisted(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sessions.json")
-	store := OpenStore(time.Hour, path)
-	token, _, err := store.Issue()
+// 「保持登录」到点就失效：7 天是硬期限，不是「只要还在用就一直续」。7 天等不起，
+// 所以直接把记录里的过期时间改到过去 —— 对 Valid 来说这与「时间真的到了」等价。
+func TestExpiredRememberedSessionIsRejected(t *testing.T) {
+	store := NewStore(time.Hour)
+	token, _, err := store.IssueRemembered()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("ordinary sessions must not create %s (stat err = %v)", path, err)
-	}
-	if OpenStore(time.Hour, path).Valid(token) {
-		t.Fatal("an ordinary session must not survive a restart")
-	}
-}
+	key := fingerprint(token)
+	store.mu.Lock()
+	record := store.sessions[key]
+	record.expires = time.Now().Add(-time.Minute)
+	store.sessions[key] = record
+	store.mu.Unlock()
 
-// 「保持登录」到点就失效：文件里那条过期的记录不能被恢复回来。
-func TestExpiredRememberedSessionIsNotRestored(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sessions.json")
-	past := time.Now().Add(-time.Minute).Format(time.RFC3339Nano)
-	body := `{"sessions":[{"key":"` + fingerprint("stale-token") + `","expires":"` + past + `"}]}`
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	store := OpenStore(time.Hour, path)
-	if store.Valid("stale-token") {
-		t.Fatal("an expired remembered session must not come back")
+	if store.Valid(token) {
+		t.Fatal("过期的「保持登录」不该还算有效")
 	}
 	if store.Count() != 0 {
-		t.Fatalf("count = %d, want 0", store.Count())
+		t.Fatalf("count = %d, want 0（过期记录要被顺手清掉）", store.Count())
 	}
 }
 
 // 「保持登录」不随使用顺延：Valid 走多少次，记录的过期时间都还是签发时那一个。
 // 要是随用随顺延，「维持 7 天」就变成了「只要还在用就永不过期」。
 func TestRememberedSessionDoesNotSlide(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sessions.json")
-	store := OpenStore(time.Hour, path)
+	store := NewStore(time.Hour)
 	token, _, err := store.IssueRemembered()
 	if err != nil {
 		t.Fatal(err)
@@ -271,7 +251,7 @@ func TestRememberedSessionDoesNotSlide(t *testing.T) {
 	}
 
 	// 对照组：普通会话就该顺延，否则长时间操作中途会掉线。
-	ordinary := OpenStore(time.Hour, filepath.Join(t.TempDir(), "sessions.json"))
+	ordinary := NewStore(time.Hour)
 	ordinaryToken, _, err := ordinary.Issue()
 	if err != nil {
 		t.Fatal(err)
@@ -293,28 +273,9 @@ func TestRememberedSessionDoesNotSlide(t *testing.T) {
 	}
 }
 
-// 改密码之后「谁都别再进来」：RevokeAll 得把盘上的「保持登录」一起清掉，
-// 否则重启之后那条记录又把人放进来，与改密码的意图正好相反。
-func TestRevokeAllClearsRememberedSessionsOnDisk(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sessions.json")
-	store := OpenStore(time.Hour, path)
-	token, _, err := store.IssueRemembered()
-	if err != nil {
-		t.Fatal(err)
-	}
-	store.RevokeAll()
-	if store.Valid(token) {
-		t.Fatal("RevokeAll should invalidate the in-memory session")
-	}
-	if OpenStore(time.Hour, path).Valid(token) {
-		t.Fatal("RevokeAll should also drop the persisted session")
-	}
-}
-
-// 注销单个「保持登录」会话同样要落到盘上，不然重启之后它又活了。
-func TestRevokeRememberedDropsItFromDisk(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sessions.json")
-	store := OpenStore(time.Hour, path)
+// 注销「保持登录」的会话要立刻生效，而且不牵连别人；改密码走的 RevokeAll 连它一并清掉。
+func TestRevokeRememberedSessionOnlyDropsThatOne(t *testing.T) {
+	store := NewStore(time.Hour)
 	doomed, _, err := store.IssueRemembered()
 	if err != nil {
 		t.Fatal(err)
@@ -325,52 +286,27 @@ func TestRevokeRememberedDropsItFromDisk(t *testing.T) {
 	}
 	store.Revoke(doomed)
 
-	restarted := OpenStore(time.Hour, path)
-	if restarted.Valid(doomed) {
-		t.Fatal("a revoked remembered session must not come back after a restart")
+	if store.Valid(doomed) {
+		t.Fatal("注销掉的「保持登录」不该还能用")
 	}
-	if !restarted.Valid(keeper) {
-		t.Fatal("revoking one remembered session must not disturb the others")
+	if !store.Valid(keeper) {
+		t.Fatal("注销一条不该牵连另一条")
 	}
-}
+	if store.Count() != 1 {
+		t.Fatalf("count = %d, want 1", store.Count())
+	}
 
-// 会话文件坏掉不该让服务起不来，更不该变成「默认放行」。
-func TestCorruptSessionFileIsIgnored(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sessions.json")
-	if err := os.WriteFile(path, []byte("{ 这不是 JSON"), 0o600); err != nil {
-		t.Fatal(err)
+	// 改密码的意思就是「谁都别再进来」。
+	store.RevokeAll()
+	if store.Valid(keeper) {
+		t.Fatal("RevokeAll 之后「保持登录」也必须失效")
 	}
-	store := OpenStore(time.Hour, path)
 	if store.Count() != 0 {
 		t.Fatalf("count = %d, want 0", store.Count())
 	}
-	if store.Valid("anything") {
-		t.Fatal("a corrupt session file must not authenticate anybody")
-	}
-	// 读坏了也照样能签发新会话，界面不该因此卡住。
-	token, _, err := store.IssueRemembered()
-	if err != nil {
-		t.Fatalf("IssueRemembered after a corrupt file returned error: %v", err)
-	}
-	if !store.Valid(token) {
-		t.Fatal("a freshly issued remembered token should be valid")
-	}
 }
 
-// 没给路径时（NewStore，或 OpenStore 传了个空白路径）「保持登录」退化成普通的
-// 内存会话：能签能验，只是重启之后就没了。
-func TestStoreWithoutPathKeepsRememberedSessionsInMemory(t *testing.T) {
-	stores := map[string]*Store{
-		"NewStore":             NewStore(time.Hour),
-		"OpenStore-empty-path": OpenStore(time.Hour, "   "),
-	}
-	for name, store := range stores {
-		token, _, err := store.IssueRemembered()
-		if err != nil {
-			t.Fatalf("%s: IssueRemembered returned error: %v", name, err)
-		}
-		if !store.Valid(token) {
-			t.Fatalf("%s: a remembered token should still be valid in memory", name)
-		}
-	}
-}
+// 这里不再有「会话文件」相关的用例：会话已经不落盘了（见 Store 的注释）。
+// 「重启之后认不出旧令牌」由 TestRememberedSessionDoesNotSurviveRestart 钉住；
+// 「一个文件都不写」由 adminapi 的 TestRememberedSessionDoesNotWriteToDisk 端到端
+// 钉住 —— 那一层才拿得到配置目录，能真的去数目录里有什么。

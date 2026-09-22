@@ -332,7 +332,6 @@ function toggleAccountMenu() {
       <label class="inline login-remember">
         <input type="checkbox" v-model="rememberLogin" />
         <span>保持登录</span>
-        <small>7 天内无需重新登录</small>
       </label>
       <button class="primary block" :disabled="authBusy" @click="submitLogin">
         {{ authBusy ? '登录中…' : '登录' }}

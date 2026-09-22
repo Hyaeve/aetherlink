@@ -77,8 +77,9 @@ const jsonBody = (payload) => ({ body: JSON.stringify(payload ?? {}) })
 
 export const api = {
   bootstrap: () => request('/bootstrap'),
-  // remember 来自登录页的「保持登录」：勾上之后后端会把会话落盘，容器重启也不用
-  // 重登（7 天有效）；不勾就还是重启即失效的普通会话。
+  // remember 来自登录页的「保持登录」：勾上之后后端签发的会话管 7 天（固定不顺延），
+  // 但**只对当前这个浏览器、且容器没重启过**有效 —— 容器一重启所有会话一起失效。
+  // 不勾就还是 12 小时、随用顺延的普通会话。
   login: (username, password, remember = false) =>
     request('/login', { method: 'POST', ...jsonBody({ username, password, remember: !!remember }) }),
   logout: () => request('/logout', { method: 'POST', ...jsonBody({}) }),

@@ -175,7 +175,7 @@ func (a *API) handleLogin(writer http.ResponseWriter, request *http.Request) {
 }
 
 // issueSession 按登录页的选择签发会话：remembered 为真时签发「保持登录」令牌，
-// 它会落盘、能扛过容器重启（有效期见 auth.DefaultRememberTTL）。
+// 有效期见 auth.DefaultRememberTTL（7 天、不顺延，但活不过容器重启）。
 func (a *API) issueSession(writer http.ResponseWriter, remembered bool) {
 	issue := a.sessions.Issue
 	if remembered {
